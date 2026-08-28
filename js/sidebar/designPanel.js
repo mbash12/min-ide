@@ -56,6 +56,7 @@ function connectedToSelected () {
     tab &&
     parsed &&
     parsed.isFigmaFile &&
+    lastStatus &&
     lastStatus.running &&
     ctx &&
     ctx.fileKey === parsed.fileKey &&
