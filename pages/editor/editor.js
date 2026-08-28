@@ -103,9 +103,10 @@ function setDirty (value) {
   if (dirty !== value) {
     dirty = value
     updateTitle()
-    if (value) {
-      window.postMessage({ message: 'editor-dirty' }, window.location.toString())
-    }
+    // Keep the browser UI's close guard in sync in both directions. The
+    // editor page can be destroyed directly by the host, so its own
+    // beforeunload handler is not sufficient on its own.
+    window.postMessage({ message: 'editor-dirty', dirty: value }, window.location.toString())
   }
 }
 
@@ -265,8 +266,18 @@ function createEditor (content) {
 }
 
 // warn on close if there are unsaved changes
+let allowUnload = false
+
+// Called by the browser UI after the user confirms that unsaved changes may
+// be discarded. This lets an intentional tab close/navigation pass through
+// the page's beforeunload handler as well.
+window.editorAllowUnload = function () {
+  allowUnload = true
+  setDirty(false)
+}
+
 window.addEventListener('beforeunload', function (e) {
-  if (dirty) {
+  if (dirty && !allowUnload) {
     e.preventDefault()
     e.returnValue = ''
   }

@@ -117,6 +117,21 @@ updateStatusPill()
 
 const STORAGE_KEY = 'workspaceProfiles'
 const profileColors = ['#5b8def', '#43a047', '#f4511e', '#8e24aa', '#00897b', '#d81b60', '#6d4c41', '#546e7a']
+var pendingProfileDeletes = {}
+
+window.addEventListener('message', function (e) {
+  if (!e.origin.startsWith('min://') || !e.data || e.data.message !== 'profileDeleteResult') return
+  const result = e.data.result || {}
+  const onResult = pendingProfileDeletes[result.profileId]
+  if (!onResult) return
+  delete pendingProfileDeletes[result.profileId]
+  onResult(result.ok === true)
+})
+
+function requestProfileDelete (profileId, onResult) {
+  pendingProfileDeletes[profileId] = onResult
+  window.postMessage({ message: 'profileDeleteRequested', profileId: profileId }, window.location.toString())
+}
 
 function getProfiles () {
   try {
@@ -288,24 +303,31 @@ function renderProfiles () {
     deleteBtn.className = 'profile-delete i carbon:trash-can'
     deleteBtn.title = l('taskProfileDelete')
     deleteBtn.addEventListener('click', function () {
-      const all = getProfiles().filter(function (p) { return p.id !== profile.id })
-      saveProfiles(all)
-      try {
-        const keys = ['taskRestoreData', 'workspaceRestoreData']
-        keys.forEach(function (k) {
-          const raw = localStorage.getItem(k)
-          if (!raw) return
-          const data = JSON.parse(raw)
-          const arr = data.workspaces || data.tasks || (data.state && (data.state.workspaces || data.state.tasks))
-          if (!arr) return
-          let changed = false
-          arr.forEach(function (ws) {
-            if (ws.profileId === profile.id) { ws.profileId = null; changed = true }
+      requestProfileDelete(profile.id, function (allowed) {
+        if (!allowed) return
+        const all = getProfiles().filter(function (p) { return p.id !== profile.id })
+        saveProfiles(all)
+        try {
+          const keys = ['taskRestoreData', 'workspaceRestoreData']
+          keys.forEach(function (k) {
+            const raw = localStorage.getItem(k)
+            if (!raw) return
+            const data = JSON.parse(raw)
+            const arr = data.workspaces || data.tasks || (data.state && (data.state.workspaces || data.state.tasks))
+            if (!arr) return
+            let changed = false
+            arr.forEach(function (ws) {
+              if (ws.profileId === profile.id) { ws.profileId = null; changed = true }
+            })
+            if (changed) localStorage.setItem(k, JSON.stringify(data))
           })
-          if (changed) localStorage.setItem(k, JSON.stringify(data))
-        })
-      } catch (e) {}
-      renderProfiles()
+        } catch (e) {}
+        renderProfiles()
+        // Acknowledge only after persistent profile data has been updated.
+        // The host can now safely recreate views using the default partition,
+        // including this settings view if it used the deleted profile.
+        window.postMessage({ message: 'profileDeleted', profileId: profile.id }, window.location.toString())
+      })
     })
     row.appendChild(deleteBtn)
 

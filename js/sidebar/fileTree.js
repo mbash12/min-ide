@@ -35,17 +35,21 @@ function getWorkspacePath () {
 
 function getWorkspaceId () {
   const ws = tasks.getSelected()
-  return ws && ws.id
+  return ws && ws.id != null ? String(ws.id) : null
 }
 
 /* ----- per-workspace state persistence ----- */
 
 let currentWorkspaceId = null
 
-async function loadSavedState () {
-  if (!currentWorkspaceId) return
+async function loadSavedState (workspaceId) {
+  workspaceId = workspaceId || currentWorkspaceId
+  if (!workspaceId) return
   try {
-    const state = await uiStateDB.getFileTreeState('tree:' + currentWorkspaceId)
+    const state = await uiStateDB.getFileTreeState('tree:' + workspaceId)
+    // A second workspace can be selected while the state is being read. Do
+    // not let the slower response overwrite the newly selected workspace.
+    if (workspaceId !== currentWorkspaceId) return
     if (!state || !state.expandedPaths) return
     expandedPaths.clear()
     state.expandedPaths.forEach(function (p) { expandedPaths.add(p) })
@@ -64,6 +68,27 @@ async function persistState () {
 
 function persistStateSoon () {
   persistState().catch(function () {})
+}
+
+/* WorkspaceList emits both names for compatibility with older task-aware
+ * consumers. They describe one selection, so handle the pair through one
+ * idempotent handler rather than restoring and persisting twice. */
+function onWorkspaceSelected (workspaceId) {
+  const selectedWorkspaceId = getWorkspaceId()
+  const nextWorkspaceId = workspaceId != null && workspaceId !== ''
+    ? String(workspaceId)
+    : selectedWorkspaceId
+  // Ignore a queued compatibility event if another selection has already
+  // superseded it before the deferred event callback ran.
+  if (workspaceId != null && workspaceId !== '' && selectedWorkspaceId && nextWorkspaceId !== selectedWorkspaceId) return
+  if (nextWorkspaceId === currentWorkspaceId) return
+
+  persistStateSoon()
+  currentWorkspaceId = nextWorkspaceId
+  expandedPaths.clear()
+  loadSavedState(nextWorkspaceId).then(function () {
+    if (nextWorkspaceId === currentWorkspaceId) render()
+  })
 }
 
 /* ----- row rendering ----- */
@@ -579,22 +604,8 @@ const fileTree = {
     })
 
     // re-render when the selected workspace changes or its path is updated
-    tasks.on('workspace-selected', function () {
-      persistStateSoon()
-      currentWorkspaceId = getWorkspaceId()
-      expandedPaths.clear()
-      loadSavedState().then(function () {
-        render()
-      })
-    })
-    tasks.on('task-selected', function () {
-      persistStateSoon()
-      currentWorkspaceId = getWorkspaceId()
-      expandedPaths.clear()
-      loadSavedState().then(function () {
-        render()
-      })
-    })
+    tasks.on('workspace-selected', onWorkspaceSelected)
+    tasks.on('task-selected', onWorkspaceSelected)
     tasks.on('state-sync-change', function () {
       const wsPath = getWorkspacePath()
       if (wsPath !== lastRenderedPath) {

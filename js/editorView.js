@@ -25,6 +25,36 @@ const editorView = {
     return editorView.isEditorURL(tabs.get(tabId)?.url)
   },
 
+  /* The editor page reports its dirty state through the view IPC bridge. Keep
+  the confirmation here so every host action (close, profile switch, archive,
+  and preview replacement) uses the same small guard. */
+  isDirty: function (tabId) {
+    const webviews = require('webviews.js')
+    return editorView.isEditorTab(tabId) && webviews.isEditorDirty(tabId)
+  },
+  confirmDiscard: function (tabId) {
+    if (!editorView.isDirty(tabId)) {
+      return true
+    }
+
+    const tab = tabs.get(tabId)
+    const name = tab && tab.title ? ' in "' + tab.title + '"' : ''
+    return typeof confirm !== 'function' || confirm('Discard unsaved changes' + name + '?')
+  },
+  allowDiscard: function (tabId) {
+    const webviews = require('webviews.js')
+    if (!editorView.isDirty(tabId)) {
+      return
+    }
+
+    // Clear the renderer-side state immediately, then let the page disable
+    // its own beforeunload warning before the view is destroyed or navigated.
+    webviews.setEditorDirty(tabId, false)
+    if (webviews.hasViewForTab(tabId)) {
+      webviews.callAsync(tabId, 'executeJavaScript', 'window.editorAllowUnload && window.editorAllowUnload()')
+    }
+  },
+
   /* extracts the file path from an editor tab's URL */
   getFilePath: function (tabId) {
     const tab = tabs.get(tabId)
@@ -85,7 +115,11 @@ const editorView = {
         browserUI.switchToTab(previewId)
         return previewId
       }
+      if (!editorView.confirmDiscard(previewId)) {
+        return previewId
+      }
       const url = editorView.getEditorURL(filePath)
+      editorView.allowDiscard(previewId)
       tabs.update(previewId, { url: url })
       require('webviews.js').update(previewId, url)
       browserUI.switchToTab(previewId)
@@ -118,9 +152,25 @@ const editorView = {
 // when a preview tab is edited, make it persistent (VSCode behavior)
 try {
   const webviews = require('webviews.js')
-  webviews.bindIPC('editorBecomeDirty', function (tabId) {
+  webviews.bindIPC('editorBecomeDirty', function (tabId, args) {
+    const isDirty = !args || args[0] !== false
+    webviews.setEditorDirty(tabId, isDirty)
     if (tabs.get(tabId)?.preview) {
-      tabs.update(tabId, { preview: false })
+      if (isDirty) {
+        tabs.update(tabId, { preview: false })
+      }
+    }
+  })
+
+  // App/window close is the one destruction path that does not pass through
+  // browserUI. The main renderer's beforeunload event gives Electron a chance
+  // to ask before any dirty editor view is torn down with the window.
+  window.addEventListener('beforeunload', function (e) {
+    if (Object.keys(webviews.editorDirtyTabs).some(function (tabId) {
+      return webviews.isEditorDirty(tabId)
+    })) {
+      e.preventDefault()
+      e.returnValue = ''
     }
   })
 } catch (e) {}

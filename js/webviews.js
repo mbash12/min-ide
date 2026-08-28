@@ -76,6 +76,10 @@ function setAudioMutedOnCreate (tabId, muted) {
 const webviews = {
   viewFullscreenMap: {}, // tabId, isFullscreen
   selectedId: null,
+  // Editor pages report their unsaved state through editorView. Keep this in
+  // the shared view layer so it is also cleared when a view is recreated by a
+  // profile change, navigation, or a remote window update.
+  editorDirtyTabs: {},
   placeholderRequests: [],
   asyncCallbacks: {},
   splitProvider: null, // set by splitView.initialize() - provides split view state
@@ -86,6 +90,16 @@ const webviews = {
   IPCEvents: [],
   hasViewForTab: function(tabId) {
     return tabId && tasks.getTaskContainingTab(tabId) && tasks.getTaskContainingTab(tabId).tabs.get(tabId).hasWebContents
+  },
+  setEditorDirty: function (tabId, isDirty) {
+    if (isDirty) {
+      webviews.editorDirtyTabs[tabId] = true
+    } else {
+      delete webviews.editorDirtyTabs[tabId]
+    }
+  },
+  isEditorDirty: function (tabId) {
+    return !!webviews.editorDirtyTabs[tabId]
   },
   bindEvent: function (event, fn) {
     webviews.events.push({
@@ -265,7 +279,7 @@ const webviews = {
   destroy: function (id) {
     // if the destroyed tab is part of a split view, exit split mode first
     // (this also determines which tab remains visible)
-    if (webviews.splitProvider && webviews.splitProvider.isSplit() && webviews.splitProvider.getPaneIds().includes(id)) {
+    if (webviews.splitProvider && webviews.splitProvider.getGroupForTab && webviews.splitProvider.getGroupForTab(id)) {
       webviews.splitProvider.handleTabDestroyed(id)
     }
 
@@ -280,6 +294,7 @@ const webviews = {
     ipc.send('destroyView', id)
 
     delete webviews.viewFullscreenMap[id]
+    delete webviews.editorDirtyTabs[id]
     if (webviews.selectedId === id) {
       webviews.selectedId = null
     }

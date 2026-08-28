@@ -1405,7 +1405,19 @@ async function refreshState () {
   } catch (e) {}
 }
 
-function onWorkspaceChange () {
+/* WorkspaceList emits both names for compatibility with older task-aware
+ * consumers. They describe one selection, so restore the session only once
+ * for the pair. */
+function onWorkspaceChange (workspaceId) {
+  const selectedWorkspaceId = getActiveWorkspaceId()
+  const nextWorkspaceId = workspaceId != null && workspaceId !== ''
+    ? String(workspaceId)
+    : selectedWorkspaceId
+  // Ignore a queued compatibility event if another selection has already
+  // superseded it before the deferred event callback ran.
+  if (workspaceId != null && workspaceId !== '' && selectedWorkspaceId && nextWorkspaceId !== selectedWorkspaceId) return
+  if (nextWorkspaceId === activeWorkspaceId) return
+
   closeHistoryDrawer()
   hideSlashMenu()
   refreshState()
@@ -1417,6 +1429,8 @@ async function initialize () {
 
   /* re-scope the chat whenever the workspace/task changes, like the other
   sidebar panels (file tree, git) */
+  // Keep both event names for compatibility; onWorkspaceChange de-duplicates
+  // the pair emitted by WorkspaceList.setSelected().
   tasks.on('workspace-selected', onWorkspaceChange)
   tasks.on('task-selected', onWorkspaceChange)
 

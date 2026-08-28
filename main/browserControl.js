@@ -1141,32 +1141,30 @@ async function browserControlPointer (op, params) {
   }
   try { target.view.webContents.focus() } catch (e) {}
   await browserControlSleep(40)
-  if (params.acceptDialog) {
-    const actP = browserControlRunInView(target.view, Object.assign({}, params, { op: 'click', button: button, clickCount: clickCount }))
-    dialog = await dialogWait
-    try { await actP } catch (e) {}
-  } else {
-    try {
-      const wc = target.view.webContents
-      const x = Math.round(loc.x)
-      const y = Math.round(loc.y)
-      wc.sendInputEvent({ type: 'mouseMove', x: x, y: y, modifiers: modifiers })
-      if (op !== 'hover') {
-        const holdMs = typeof params.holdMs === 'number' ? params.holdMs : 0
-        let n
-        for (n = 1; n <= clickCount; n++) {
-          wc.sendInputEvent({ type: 'mouseDown', x: x, y: y, button: button, clickCount: n, modifiers: modifiers })
-          if (holdMs && n === clickCount) await browserControlSleep(Math.min(holdMs, 10000))
-          wc.sendInputEvent({ type: 'mouseUp', x: x, y: y, button: button, clickCount: n, modifiers: modifiers })
-        }
+  let inputError = null
+  try {
+    const wc = target.view.webContents
+    const x = Math.round(loc.x)
+    const y = Math.round(loc.y)
+    wc.sendInputEvent({ type: 'mouseMove', x: x, y: y, modifiers: modifiers })
+    if (op !== 'hover') {
+      const holdMs = typeof params.holdMs === 'number' ? params.holdMs : 0
+      let n
+      for (n = 1; n <= clickCount; n++) {
+        wc.sendInputEvent({ type: 'mouseDown', x: x, y: y, button: button, clickCount: n, modifiers: modifiers })
+        if (holdMs && n === clickCount) await browserControlSleep(Math.min(holdMs, 10000))
+        wc.sendInputEvent({ type: 'mouseUp', x: x, y: y, button: button, clickCount: n, modifiers: modifiers })
       }
-    } catch (e) {}
-    const domOp = (op === 'dblclick' || op === 'rightclick' || op === 'hover') ? op : 'click'
-    await browserControlRunInView(target.view, Object.assign({}, params, {
-      op: domOp,
-      button: button,
-      clickCount: clickCount
-    }))
+    }
+  } catch (e) {
+    inputError = (e && e.message) || String(e)
+  }
+  if (params.acceptDialog) {
+    dialog = await dialogWait
+  }
+  if (inputError) {
+    browserControlRestoreChromeFocus(target.keepChromeFocus)
+    return { ok: false, error: inputError, dialog: dialog }
   }
   if (op === 'click' || op === 'dblclick' || op === 'rightclick') {
     await browserControlAfterPossibleNavigation(target.view)
@@ -1198,6 +1196,7 @@ async function browserControlDrag (params) {
   if (!to || to.ok === false) return to || { ok: false, error: 'Drag target not found' }
   try { target.view.webContents.focus() } catch (e) {}
   await browserControlSleep(40)
+  let inputError = null
   try {
     const wc = target.view.webContents
     const moves = Math.max(2, Math.min(40, typeof params.moves === 'number' ? params.moves : 12))
@@ -1218,10 +1217,12 @@ async function browserControlDrag (params) {
       await browserControlSleep(8)
     }
     wc.sendInputEvent({ type: 'mouseUp', x: x1, y: y1, button: 'left', clickCount: 1 })
-  } catch (e) {}
-  const result = await browserControlRunInView(target.view, Object.assign({}, params, { op: 'drag' }))
+  } catch (e) {
+    inputError = (e && e.message) || String(e)
+  }
   browserControlRestoreChromeFocus(target.keepChromeFocus)
-  return result || { ok: true, from: from.name, to: to.name }
+  if (inputError) return { ok: false, error: inputError }
+  return { ok: true, from: from.name, to: to.name }
 }
 
 async function browserControlScreenshot (params) {

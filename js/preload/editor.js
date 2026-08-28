@@ -15,7 +15,7 @@ window.addEventListener('message', function (e) {
   const requestId = data.requestId
 
   if (data.message === 'editor-dirty') {
-    ipc.send('editorBecomeDirty')
+    ipc.send('editorBecomeDirty', data.dirty !== false)
     return
   }
 

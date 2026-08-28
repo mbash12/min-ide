@@ -16,6 +16,8 @@ let currentWorkspacePath = null
 let currentGitRoot = null
 let currentStatus = null
 let isLoading = false
+let loadingWorkspacePath = null
+let refreshGeneration = 0
 let commitMessage = ''
 
 let currentBranches = null
@@ -36,7 +38,7 @@ function getWorkspacePath () {
 
 function getWorkspaceId () {
   const ws = tasks.getSelected()
-  return ws && ws.id
+  return ws && ws.id != null ? String(ws.id) : null
 }
 
 /* ----- per-workspace state persistence ----- */
@@ -48,11 +50,15 @@ function getStateKey () {
 /* sections collapsed by default on first run (Branches, Graph) */
 const defaultCollapsedSections = ['branches', 'graph']
 
-async function loadSavedState () {
-  const key = getStateKey()
+async function loadSavedState (workspaceId) {
+  workspaceId = workspaceId || currentWorkspaceId
+  const key = workspaceId ? 'git:' + workspaceId : null
   if (!key) return
   try {
     const state = await uiStateDB.getGitPanelState(key)
+    // A later selection may have happened while the state was loading. Do
+    // not apply the old workspace's draft or graph state to the new one.
+    if (workspaceId !== currentWorkspaceId) return
     collapsedSections.clear()
     if (state && state.collapsedSections) {
       ;(state.collapsedSections || []).forEach(function (s) { collapsedSections.add(s) })
@@ -83,6 +89,39 @@ async function persistState () {
 /* saves the panel's state without awaiting; used by fire-and-forget callers */
 function persistStateSoon () {
   persistState().catch(function () {})
+}
+
+/* WorkspaceList emits both names for compatibility with older task-aware
+ * consumers. They describe one selection, so process the pair only once. */
+function onWorkspaceSelected (workspaceId) {
+  const selectedWorkspaceId = getWorkspaceId()
+  const nextWorkspaceId = workspaceId != null && workspaceId !== ''
+    ? String(workspaceId)
+    : selectedWorkspaceId
+  // Ignore a queued compatibility event if another selection has already
+  // superseded it before the deferred event callback ran.
+  if (workspaceId != null && workspaceId !== '' && selectedWorkspaceId && nextWorkspaceId !== selectedWorkspaceId) return
+  if (nextWorkspaceId === currentWorkspaceId) return
+
+  persistStateSoon()
+  refreshGeneration++
+  isLoading = false
+  loadingWorkspacePath = null
+  currentWorkspaceId = nextWorkspaceId
+  currentWorkspacePath = null
+  currentGitRoot = null
+  currentStatus = null
+  currentBranches = null
+  currentGraph = null
+  currentLogDetailed = null
+  commitMessage = ''
+  collapsedSections.clear()
+  defaultCollapsedSections.forEach(function (section) { collapsedSections.add(section) })
+  graphScrollTop = 0
+  graphExpandedCommit = null
+  loadSavedState(nextWorkspaceId).then(function () {
+    if (nextWorkspaceId === currentWorkspaceId) refresh()
+  })
 }
 
 function statusLetterColor (status) {
@@ -463,47 +502,31 @@ async function discardFiles (files) {
   await refresh()
 }
 
-async function fetchBranches () {
-  if (!currentGitRoot) {
-    currentBranches = null
-    return
-  }
+async function fetchBranches (gitRoot) {
+  if (!gitRoot) return null
   try {
-    const result = await ipc.invoke('gitBranches', currentGitRoot)
+    const result = await ipc.invoke('gitBranches', gitRoot)
     if (result && !result.error && result.branches) {
-      currentBranches = result
-    } else {
-      currentBranches = null
+      return result
     }
   } catch (e) {
-    currentBranches = null
   }
+  return null
 }
 
-async function fetchGraph () {
-  if (!currentGitRoot) {
-    currentGraph = null
-    currentLogDetailed = null
-    return
-  }
+async function fetchGraph (gitRoot) {
+  if (!gitRoot) return { graph: null, commits: null }
   try {
     const [graphResult, logResult] = await Promise.all([
-      ipc.invoke('gitGraph', currentGitRoot, 30),
-      ipc.invoke('gitLogDetailed', currentGitRoot, 30)
+      ipc.invoke('gitGraph', gitRoot, 30),
+      ipc.invoke('gitLogDetailed', gitRoot, 30)
     ])
-    if (graphResult && !graphResult.error) {
-      currentGraph = graphResult.graph || graphResult
-    } else {
-      currentGraph = null
-    }
-    if (logResult && !logResult.error && logResult.commits) {
-      currentLogDetailed = logResult.commits
-    } else {
-      currentLogDetailed = null
+    return {
+      graph: graphResult && !graphResult.error ? (graphResult.graph || graphResult) : null,
+      commits: logResult && !logResult.error && logResult.commits ? logResult.commits : null
     }
   } catch (e) {
-    currentGraph = null
-    currentLogDetailed = null
+    return { graph: null, commits: null }
   }
 }
 
@@ -1122,8 +1145,9 @@ function buildGraphSection () {
 }
 
 async function refresh () {
-  if (isLoading) return
   const wsPath = getWorkspacePath()
+  if (isLoading && loadingWorkspacePath === wsPath) return
+  const generation = ++refreshGeneration
   currentWorkspacePath = wsPath
   if (!wsPath) {
     currentGitRoot = null
@@ -1132,15 +1156,22 @@ async function refresh () {
     return
   }
   isLoading = true
+  loadingWorkspacePath = wsPath
   const loadingEl = panel.querySelector('.git-loading')
   if (loadingEl) loadingEl.hidden = false
   try {
     const status = await ipc.invoke('gitStatus', wsPath)
+    if (generation !== refreshGeneration || getWorkspacePath() !== wsPath) return
     if (status && status.isRepo) {
-      currentGitRoot = status.gitRoot || wsPath
+      const gitRoot = status.gitRoot || wsPath
       currentStatus = status
       // fetch branches and graph in parallel when repo exists
-      await Promise.all([fetchBranches(), fetchGraph()])
+      const [branches, graph] = await Promise.all([fetchBranches(gitRoot), fetchGraph(gitRoot)])
+      if (generation !== refreshGeneration || getWorkspacePath() !== wsPath) return
+      currentGitRoot = gitRoot
+      currentBranches = branches
+      currentGraph = graph.graph
+      currentLogDetailed = graph.commits
     } else if (status && status.isRepo === false) {
       currentGitRoot = null
       currentStatus = { isRepo: false }
@@ -1152,10 +1183,15 @@ async function refresh () {
       currentStatus = status
     }
   } catch (e) {
+    if (generation !== refreshGeneration || getWorkspacePath() !== wsPath) return
     currentStatus = { error: e.message }
+  } finally {
+    if (generation === refreshGeneration) {
+      isLoading = false
+      loadingWorkspacePath = null
+    }
   }
-  isLoading = false
-  if (getWorkspacePath() === wsPath) {
+  if (generation === refreshGeneration && getWorkspacePath() === wsPath) {
     render()
   }
 }
@@ -1353,25 +1389,10 @@ const gitPanel = {
     loadSavedState().then(function () {
       render()
     })
-    // re-render on workspace change
-    tasks.on('workspace-selected', function () {
-      persistStateSoon()
-      currentWorkspaceId = getWorkspaceId()
-      commitMessage = ''
-      currentStatus = null
-      loadSavedState().then(function () {
-        refresh()
-      })
-    })
-    tasks.on('task-selected', function () {
-      persistStateSoon()
-      currentWorkspaceId = getWorkspaceId()
-      commitMessage = ''
-      currentStatus = null
-      loadSavedState().then(function () {
-        refresh()
-      })
-    })
+    // re-render on workspace change (both event names are retained for
+    // compatibility; onWorkspaceSelected de-duplicates their pair)
+    tasks.on('workspace-selected', onWorkspaceSelected)
+    tasks.on('task-selected', onWorkspaceSelected)
     tasks.on('state-sync-change', function () {
       const wsPath = getWorkspacePath()
       if (wsPath !== currentWorkspacePath) {

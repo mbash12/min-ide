@@ -20,6 +20,7 @@ let modelCatalogCache = null // cached model list (from the pi SDK catalog) for 
 keeps each workspace's own conversation and context. */
 const agentSessions = new Map() // sessionKey -> { sessionKey, workspaceId, cwd, apiKey, modelId, provider, session, unsubscribe, modelRuntime, resolvedModel }
 const prefsByCwd = new Map() // sessionKey -> { modelId, provider, thinkingLevel }
+const sessionInitPromises = new Map() // sessionKey -> { signature, promise }
 
 /* The pi SDK is the execution engine and we use it fully (its model catalog,
 sessions, etc.). To keep Min a distinct product from the pi CLI that may be
@@ -222,12 +223,26 @@ function getSessionsRoot () {
   }
 }
 
+/* SessionManager's default directory is keyed by cwd. Min workspaces need a
+ * stronger boundary: two workspaces may intentionally share a cwd, and a
+ * workspace may have no folder at all. Keep each workspace in its own stable
+ * directory below Min's userData-backed sessions root. Hashing the key keeps
+ * arbitrary imported workspace ids out of the filesystem path. */
+function getWorkspaceSessionDir (workspaceId, cwd) {
+  const sessionsRoot = getSessionsRoot()
+  if (!sessionsRoot) return null
+  const sessionKey = getSessionKey(workspaceId, cwd)
+  const digest = require('crypto').createHash('sha256').update(sessionKey).digest('hex')
+  return require('path').join(sessionsRoot, 'workspaces', 'ws-' + digest)
+}
+
 function isAllowedSessionPath (sessionPath) {
   if (!sessionPath || typeof sessionPath !== 'string') return false
   const pathMod = require('path')
+  const sessionsRoot = getSessionsRoot()
+  if (!sessionsRoot) return false
   const resolved = pathMod.resolve(sessionPath)
-  const root = pathMod.resolve(getSessionsRoot())
-  if (!root) return false
+  const root = pathMod.resolve(sessionsRoot)
   if (!/\.jsonl$/i.test(resolved)) return false
   const prefix = root.endsWith(pathMod.sep) ? root : root + pathMod.sep
   return resolved === root || resolved.startsWith(prefix)
@@ -274,7 +289,31 @@ async function destroySession (sessionKey) {
   agentSessions.delete(sessionKey)
 }
 
-async function resolveSessionFile (sdk, effectiveCwd, options, prefs, existing) {
+async function listWorkspaceSessions (sdk, effectiveCwd, sessionDir) {
+  let listed = []
+  try {
+    listed = sessionDir
+      // A workspace directory is already the scope. list(cwd, dir) applies
+      // an additional cwd filter, which would hide a workspace's history if
+      // its folder is later missing or changed.
+      ? await sdk.SessionManager.listAll(sessionDir)
+      : await sdk.SessionManager.list(effectiveCwd)
+    listed = listed || []
+  } catch (e) {}
+
+  /* Sessions created before workspace-scoped storage live in pi's cwd-based
+   * directory. Keep those available as a migration bridge, but only while the
+   * new workspace directory is empty; once a workspace has new sessions its
+   * history remains strictly scoped. */
+  if (listed.length || !sessionDir) return listed
+  try {
+    return (await sdk.SessionManager.list(effectiveCwd)) || []
+  } catch (e) {
+    return listed
+  }
+}
+
+async function resolveSessionFile (sdk, effectiveCwd, sessionDir, options, prefs, existing) {
   options = options || {}
   if (options.createNew) return { path: null }
   if (options.openPath) {
@@ -293,7 +332,7 @@ async function resolveSessionFile (sdk, effectiveCwd, options, prefs, existing) 
   if (options.restoreRecent) {
     if (prefs.skipRestore) return { path: null, none: true }
     try {
-      const listed = await sdk.SessionManager.list(effectiveCwd)
+      const listed = await listWorkspaceSessions(sdk, effectiveCwd, sessionDir)
       if (listed && listed.length) {
         listed.sort(function (a, b) {
           return (+new Date(b.modified)) - (+new Date(a.modified))
@@ -320,11 +359,45 @@ function broadcastAgentEvent (data, sessionKey, workspaceId) {
   })
 }
 
-async function ensureSession (workspaceId, cwd, options) {
+/* Coalesce restores/opens for the same workspace. The SDK session is only
+ * published after asynchronous setup completes, so without this guard two
+ * rapid prompts or the compatibility selection events could both create and
+ * replace AgentSession instances for one key. */
+function ensureSession (workspaceId, cwd, options) {
+  const sessionKey = getSessionKey(workspaceId, cwd)
+  const pending = sessionInitPromises.get(sessionKey)
+  const signature = JSON.stringify(options || {})
+  if (pending) {
+    if (pending.signature === signature) return pending.promise
+    // A deliberate open/create request must not be swallowed by an earlier
+    // automatic restore. Serialize the distinct operation and re-evaluate the
+    // live session/config when the first initialization finishes.
+    return pending.promise.then(function () {
+      return ensureSession(workspaceId, cwd, options)
+    })
+  }
+
+  const promise = ensureSessionInternal(workspaceId, cwd, options)
+  const pendingEntry = { signature: signature, promise: promise }
+  sessionInitPromises.set(sessionKey, pendingEntry)
+  promise.then(function () {
+    if (sessionInitPromises.get(sessionKey) === pendingEntry) {
+      sessionInitPromises.delete(sessionKey)
+    }
+  }, function () {
+    if (sessionInitPromises.get(sessionKey) === pendingEntry) {
+      sessionInitPromises.delete(sessionKey)
+    }
+  })
+  return promise
+}
+
+async function ensureSessionInternal (workspaceId, cwd, options) {
   options = options || {}
   const sessionKey = getSessionKey(workspaceId, cwd)
   const clientWorkspaceId = getClientWorkspaceId(workspaceId)
   const effectiveCwd = getEffectiveCwd(cwd)
+  const sessionDir = getWorkspaceSessionDir(workspaceId, cwd)
   const prefs = prefsByCwd.get(sessionKey) || {}
   const apiKey = settings.get('openrouterApiKey') || null
   const modelId = prefs.modelId || settings.get('agentModel') || 'anthropic/claude-3.5-sonnet'
@@ -342,7 +415,7 @@ async function ensureSession (workspaceId, cwd, options) {
   }
 
   const sdk = await loadPiSdk()
-  const resolved = await resolveSessionFile(sdk, effectiveCwd, options, prefs, existing)
+  const resolved = await resolveSessionFile(sdk, effectiveCwd, sessionDir, options, prefs, existing)
   if (resolved.invalid) return null
   if (resolved.none) return null
 
@@ -364,12 +437,12 @@ async function ensureSession (workspaceId, cwd, options) {
   let sessionManager
   try {
     if (resolved.path) {
-      sessionManager = sdk.SessionManager.open(resolved.path, undefined, effectiveCwd)
+      sessionManager = sdk.SessionManager.open(resolved.path, sessionDir || undefined, effectiveCwd)
     } else {
-      sessionManager = sdk.SessionManager.create(effectiveCwd)
+      sessionManager = sdk.SessionManager.create(effectiveCwd, sessionDir || undefined)
     }
   } catch (err) {
-    sessionManager = sdk.SessionManager.create(effectiveCwd)
+    sessionManager = sdk.SessionManager.create(effectiveCwd, sessionDir || undefined)
   }
 
   const builtinTools = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']
@@ -670,11 +743,16 @@ ipc.handle('agent-get-state', async function (e, data) {
 
 ipc.handle('agent-list-sessions', async function (e, data) {
   registerSender(e.sender)
+  const workspaceId = data && data.workspaceId
   const cwd = data && data.cwd
   const query = (data && data.query) ? String(data.query).trim().toLowerCase() : ''
   try {
     const sdk = await loadPiSdk()
-    const listed = await sdk.SessionManager.list(getEffectiveCwd(cwd))
+    const listed = await listWorkspaceSessions(
+      sdk,
+      getEffectiveCwd(cwd),
+      getWorkspaceSessionDir(workspaceId, cwd)
+    )
     let items = listed || []
     if (query) {
       items = items.filter(function (info) {
@@ -687,7 +765,7 @@ ipc.handle('agent-list-sessions', async function (e, data) {
     items.sort(function (a, b) {
       return (+new Date(b.modified)) - (+new Date(a.modified))
     })
-    const snap = snapshotState(data && data.workspaceId, cwd)
+    const snap = snapshotState(workspaceId, cwd)
     return {
       ok: true,
       currentPath: snap.sessionPath,

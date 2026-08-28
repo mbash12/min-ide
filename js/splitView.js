@@ -96,8 +96,16 @@ const splitView = {
       return
     }
 
-    // reuse an existing group that contains one of the tabs
+    // Reuse an existing group that contains one of the tabs. A tab can only
+    // belong to one group; remove any other groups that contain either side
+    // before assigning the pair so stale/old state cannot leave a tab in two
+    // groups at once.
     let group = splitView.getGroupForTab(tabAId) || splitView.getGroupForTab(tabBId)
+    splitView.groups.slice().reverse().forEach(function (candidate) {
+      if (candidate !== group && (candidate.paneTabIds.includes(tabAId) || candidate.paneTabIds.includes(tabBId))) {
+        splitView.removeGroup(splitView.groups.indexOf(candidate))
+      }
+    })
     if (group) {
       group.paneTabIds = [tabAId, tabBId]
     } else {
@@ -235,7 +243,10 @@ const splitView = {
       .map((group, index) => ({ group, index }))
       .filter(({ group }) => group.paneTabIds.includes(tabId))
 
-    affectedGroups.forEach(({ group, index }) => {
+    // remove from the end because removing a group changes later indices
+    affectedGroups.reverse().forEach(({ group }) => {
+      const index = splitView.groups.indexOf(group)
+      if (index < 0) return
       const otherPaneId = group.paneTabIds[1 - group.paneTabIds.indexOf(tabId)]
       splitView.removeGroup(index, otherPaneId)
     })
@@ -382,18 +393,47 @@ const splitView = {
     }
     return null
   },
+  /* removes both the visible split and all paused groups. Workspace/profile
+  lifecycle changes use this instead of destroy(), since paused groups are
+  otherwise left behind and can later point at unrelated tabs. */
+  clearAll: function (preferredActiveId) {
+    const activeGroup = splitView.getActiveGroup()
+    const hadActiveGroup = activeGroup !== null
+    const activeId = preferredActiveId || (activeGroup && activeGroup.paneTabIds[activeGroup.activePane]) || tabs.getSelected()
+
+    splitView.activeGroupIndex = null
+    splitView.groups = []
+
+    if (hadActiveGroup) {
+      if (activeId) {
+        ipc.send('unsplitView', {
+          activeId: activeId,
+          bounds: splitView.webviews.getViewBounds(activeId)
+        })
+        if (splitView.webviews.hasViewForTab(activeId)) {
+          splitView.webviews.setSelected(activeId, { focus: true })
+        }
+      }
+      if (splitView.onLayoutChange) {
+        splitView.onLayoutChange(false)
+      }
+    }
+
+    if (splitView.selectionAnchor) {
+      splitView.selectionAnchor = null
+      if (splitView.onSelectionChange) {
+        splitView.onSelectionChange(false)
+      }
+    }
+    splitView.notifyGroupsChanged()
+  },
   /* destroys all groups when switching tasks */
   handleTaskSwitch: function () {
-    splitView.groups = []
-    splitView.activeGroupIndex = null
-    splitView.notifyGroupsChanged()
+    splitView.clearAll()
   },
   /* destroys all groups when a pane enters HTML fullscreen (needs the whole window) */
   handleHtmlFullscreen: function () {
-    splitView.pause()
-    splitView.groups = []
-    splitView.activeGroupIndex = null
-    splitView.notifyGroupsChanged()
+    splitView.clearAll()
   },
 
   /* starts the split-pair selection flow: the tab bar enters a mode where the

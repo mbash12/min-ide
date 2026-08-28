@@ -12,6 +12,16 @@ window.addEventListener('message', function (e) {
     ipc.send('setSetting', { key: e.data.key, value: e.data.value })
   }
 
+  /* Profile management is rendered in a webview, while workspace state lives
+  in the main renderer. Ask that renderer to update live tasks before the
+  profile page removes the shared profile record. */
+  if (e.data && e.data.message === 'profileDeleteRequested' && e.data.profileId) {
+    ipc.send('profileDeleteRequested', e.data.profileId)
+  }
+  if (e.data && e.data.message === 'profileDeleted' && e.data.profileId) {
+    ipc.send('profileDeleted', e.data.profileId)
+  }
+
   /* AI provider tab of the Pro Settings page (min://proSettings): pages run
   with context
   isolation, so they can't call ipc directly — relay these requests and send
@@ -72,5 +82,11 @@ window.addEventListener('message', function (e) {
 ipc.on('receiveSettingsData', function (e, data) {
   if (window.location.toString().startsWith('min://')) { // probably redundant, but might as well check
     window.postMessage({ message: 'receiveSettingsData', settings: data }, window.location.toString())
+  }
+})
+
+ipc.on('profileDeleteResult', function (e, data) {
+  if (window.location.toString().startsWith('min://')) {
+    window.postMessage({ message: 'profileDeleteResult', result: data }, window.location.toString())
   }
 })

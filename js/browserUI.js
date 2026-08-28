@@ -11,6 +11,16 @@ var tabBar = require('navbar/tabBar.js')
 var tabEditor = require('navbar/tabEditor.js')
 var searchbar = require('searchbar/searchbar.js')
 var splitView = require('splitView.js')
+var editorView = require('editorView.js')
+
+/* Ask before throwing away any editor content that only exists in a view.
+The check is intentionally renderer-side: closeTab and workspace actions are
+synchronous today, while editor pages report their state over view IPC. */
+function confirmDiscardTabs (tabList) {
+  return tabList.every(function (tab) {
+    return editorView.confirmDiscard(tab.id)
+  })
+}
 
 /* creates a new task */
 
@@ -83,19 +93,35 @@ function moveTabRight (tabId = tabs.getSelected()) {
 
 function destroyTask (id) {
   var task = tasks.get(id)
+  if (!task || !confirmDiscardTabs(task.tabs.get())) {
+    return false
+  }
 
-  task.tabs.forEach(function (tab) {
+  // A task lifecycle change invalidates both the shown split and paused
+  // groups. Clear them before destroying the task's views.
+  splitView.clearAll()
+
+  task.tabs.get().forEach(function (tab) {
+    editorView.allowDiscard(tab.id)
     webviews.destroy(tab.id)
   })
 
   tasks.destroy(id)
+  return true
 }
 
 /* destroys the webview and tab element for a tab */
-function destroyTab (id) {
+function destroyTab (id, options) {
+  options = options || {}
+  if (!options.skipDirtyCheck && !editorView.confirmDiscard(id)) {
+    return false
+  }
+
+  editorView.allowDiscard(id)
+
   // if the destroyed tab is part of a split view, exit split mode first,
   // keeping the other pane's tab visible
-  if (splitView.isSplit() && splitView.getPaneIds().includes(id)) {
+  if (splitView.getGroupForTab(id)) {
     splitView.handleTabDestroyed(id)
   }
 
@@ -103,6 +129,7 @@ function destroyTab (id) {
   tabs.destroy(id) // remove from state - returns the index of the destroyed tab
   tabBar.updateMultiSelected() // remove any leftover multi-select highlights
   webviews.destroy(id) // remove the webview
+  return true
 }
 
 /* destroys a task, and either switches to the next most-recent task or creates a new one */
@@ -110,7 +137,9 @@ function destroyTab (id) {
 function closeTask (taskId) {
   var previousCurrentTask = tasks.getSelected().id
 
-  destroyTask(taskId)
+  if (!destroyTask(taskId)) {
+    return false
+  }
 
   if (taskId === previousCurrentTask) {
     // the current task was destroyed, find another task to switch to
@@ -150,7 +179,9 @@ function closeTab (tabId, options) {
     var nextTab =
     tabs.getAtIndex(currentIndex - 1) || tabs.getAtIndex(currentIndex + 1)
 
-    destroyTab(tabId)
+    if (!destroyTab(tabId)) {
+      return false
+    }
 
     if (nextTab) {
       switchToTab(nextTab.id, { focusWebview: options.focusWebview !== false })
@@ -158,7 +189,7 @@ function closeTab (tabId, options) {
       addTab()
     }
   } else {
-    destroyTab(tabId)
+    return destroyTab(tabId)
   }
 }
 
@@ -189,22 +220,26 @@ function setWindowTitle () {
 /* changes the profile (session partition) used by a task. All existing views
 of the task are destroyed so they get recreated with the new partition. */
 
-function setTaskProfile (taskId, profileId) {
+function setTaskProfile (taskId, profileId, options) {
+  options = options || {}
   var task = tasks.get(taskId)
   if (!task) {
-    return
+    return false
   }
 
   if (task.profileId === profileId) {
-    return
+    return true
   }
 
-  // pause split view first so the panes don't hold on to the old views
-  if (splitView.isSplit()) {
-    splitView.destroy()
+  if (!options.skipDirtyCheck && !confirmDiscardTabs(task.tabs.get())) {
+    return false
   }
 
-  task.tabs.forEach(function (tab) {
+  // Drop every group, including paused groups, before replacing the views.
+  splitView.clearAll()
+
+  task.tabs.get().forEach(function (tab) {
+    editorView.allowDiscard(tab.id)
     webviews.destroy(tab.id)
   })
 
@@ -218,6 +253,66 @@ function setTaskProfile (taskId, profileId) {
       addTab()
     }
   }
+  return true
+}
+
+/* Handles a profile being deleted from Pro Settings. The live workspace
+assignment is updated first, and all old views are recreated lazily against
+the default partition instead of leaving the deleted profile id in memory. */
+function getProfileDeletionTasks (profileId) {
+  return tasks.filter(function (task) {
+    return task.profileId === profileId
+  })
+}
+
+function confirmProfileDeletion (profileId) {
+  const affectedTasks = getProfileDeletionTasks(profileId)
+  const affectedTabs = []
+  affectedTasks.forEach(function (task) {
+    affectedTabs.push.apply(affectedTabs, task.tabs.get())
+  })
+  return confirmDiscardTabs(affectedTabs)
+}
+
+function applyProfileDeleted (profileId) {
+  if (!profileId) {
+    return false
+  }
+
+  const affectedTasks = getProfileDeletionTasks(profileId)
+
+  const selectedTask = tasks.getSelected()
+  const selectedTaskId = selectedTask && selectedTask.id
+  const selectedTabId = selectedTask && selectedTask.tabs.getSelected()
+
+  splitView.clearAll()
+  affectedTasks.forEach(function (task) {
+    task.tabs.get().forEach(function (tab) {
+      editorView.allowDiscard(tab.id)
+      webviews.destroy(tab.id)
+    })
+    tasks.update(task.id, { profileId: null })
+  })
+
+  // Recreate the selected tab immediately so the user does not see a blank
+  // content area after deleting the profile. Other workspaces recreate views
+  // when they are selected.
+  if (selectedTaskId && affectedTasks.some(function (task) { return task.id === selectedTaskId })) {
+    const task = tasks.get(selectedTaskId)
+    if (selectedTabId && task.tabs.has(selectedTabId)) {
+      switchToTab(selectedTabId, { focusWebview: true })
+    } else if (task.tabs.count() === 0) {
+      addTab()
+    }
+  }
+  return true
+}
+
+function handleProfileDeleted (profileId) {
+  if (!profileId || !confirmProfileDeletion(profileId)) {
+    return false
+  }
+  return applyProfileDeleted(profileId)
 }
 
 /* archives a task: switches away from it if it is open, destroys all of its
@@ -227,8 +322,15 @@ the regular workspace list. Its state is kept so it can be restored later. */
 function archiveTask (id) {
   var task = tasks.get(id)
   if (!task || task.archived) {
-    return
+    return false
   }
+
+  if (!confirmDiscardTabs(task.tabs.get())) {
+    return false
+  }
+
+  // Archived tasks must not retain paused groups or stale attached views.
+  splitView.clearAll()
 
   // if this workspace is open in the current window, switch away from it first
 
@@ -252,9 +354,11 @@ function archiveTask (id) {
 
   // free the memory used by the task's views; they are recreated lazily when the task is restored
 
-  tasks.get(id).tabs.forEach(function (tab) {
+  tasks.get(id).tabs.get().forEach(function (tab) {
+    editorView.allowDiscard(tab.id)
     webviews.destroy(tab.id)
   })
+  return true
 }
 
 /* restores an archived task and switches back to it, recreating its views */
@@ -275,8 +379,8 @@ function restoreTask (id, options) {
 function switchToTask (id, options) {
   options = options || {}
 
-  // switching tasks destroys the split group
-  splitView.destroy()
+  // switching tasks destroys the visible and all paused split groups
+  splitView.clearAll()
 
   tasks.setSelected(id)
 
@@ -387,6 +491,32 @@ webviews.bindIPC('close-window', function (tabId, args) {
   closeTab(tabId)
 })
 
+/* Pro Settings lives in a webview, so its localStorage update cannot mutate
+the live task objects directly. The preload relay delivers the deleted id to
+this renderer, which moves affected workspaces to the default profile and
+recreates their views. */
+webviews.bindIPC('profileDeleted', function (tabId, args) {
+  applyProfileDeleted(args && args[0])
+})
+
+/* Request/response form used by Pro Settings. Confirm before the page removes
+the profile from localStorage; this avoids leaving live tasks pointing at a
+profile that was deleted after an unsaved-editor prompt was canceled. */
+webviews.bindIPC('profileDeleteRequested', function (tabId, args) {
+  const profileId = args && args[0]
+  const allowed = !!profileId && confirmProfileDeletion(profileId)
+  if (!allowed) {
+    if (webviews.hasViewForTab(tabId)) {
+      webviews.callAsync(tabId, 'send', ['profileDeleteResult', { profileId: profileId, ok: false }])
+    }
+    return
+  }
+
+  if (webviews.hasViewForTab(tabId)) {
+    webviews.callAsync(tabId, 'send', ['profileDeleteResult', { profileId: profileId, ok: true }])
+  }
+})
+
 ipc.on('set-file-view', function (e, data) {
   tabs.get().forEach(function (tab) {
     if (tab.url === data.url) {
@@ -444,6 +574,7 @@ module.exports = {
   moveTabLeft,
   moveTabRight,
   setTaskProfile,
+  handleProfileDeleted,
   archiveTask,
   restoreTask,
   addWorkspace,

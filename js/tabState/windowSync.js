@@ -1,6 +1,7 @@
 const browserUI = require('browserUI.js')
 const workspaceDrawer = require('workspaceDrawer/workspaceDrawer.js')
 const webviews = require('webviews.js')
+const editorView = require('editorView.js')
 
 const windowSync = {
 
@@ -66,9 +67,11 @@ const windowSync = {
             // the profile (session partition) changed: destroy the task's views
             // so they are recreated with the new partition
             if (event[2] === 'profileId' || event[2] === 'archived') {
+              browserUI.splitView.clearAll()
               const task = tasks.get(event[1])
               if (task) {
-                task.tabs.forEach(function (tab) {
+                task.tabs.get().forEach(function (tab) {
+                  editorView.allowDiscard(tab.id)
                   webviews.destroy(tab.id)
                 })
               }

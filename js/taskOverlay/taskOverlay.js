@@ -3,6 +3,8 @@ const { ipcRenderer } = require('electron')
 var webviews = require('webviews.js')
 var keybindings = require('keybindings.js')
 var browserUI = require('browserUI.js')
+var editorView = require('editorView.js')
+var splitView = require('splitView.js')
 var tabBar = require('navbar/tabBar.js')
 var tabEditor = require('navbar/tabEditor.js')
 var focusMode = require('focusMode.js')
@@ -52,6 +54,12 @@ function deleteTabFromOverlay (item) {
   var tabId = item.getAttribute('data-tab')
 
   var task = tasks.getTaskContainingTab(tabId)
+
+  if (!editorView.confirmDiscard(tabId)) return
+  editorView.allowDiscard(tabId)
+  if (splitView.getGroupForTab(tabId)) {
+    splitView.handleTabDestroyed(tabId)
+  }
 
   tasks.get(task.id).tabs.destroy(tabId)
   webviews.destroy(tabId)
@@ -279,15 +287,9 @@ function showProfileManager (anchor) {
       deleteButton.className = 'profile-popup-delete i carbon:trash-can'
       deleteButton.title = l('taskProfileDelete')
       deleteButton.addEventListener('click', function () {
-        // tasks using this profile fall back to the default session
-        tasks.forEach(function (task) {
-          if (task.profileId === profile.id) {
-            task.tabs.forEach(function (tab) {
-              webviews.destroy(tab.id)
-            })
-            tasks.update(task.id, { profileId: null })
-          }
-        })
+        // Move live workspaces to the default session first. This also asks
+        // before discarding an unsaved editor and clears split groups.
+        if (!browserUI.handleProfileDeleted(profile.id)) return
         profiles.removeProfile(profile.id)
         taskOverlay.render()
         showProfileManager(anchor)
