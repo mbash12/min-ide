@@ -395,20 +395,30 @@ body.dark-mode .docs-row:focus-visible {
   white-space: nowrap;
 }
 .docs-row-privacy {
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  gap: 3px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
   cursor: pointer;
-  font-size: 10px;
-  opacity: 0.72;
+  opacity: 0.58;
 }
+.docs-row-privacy:hover { background: rgba(127, 127, 127, 0.14); opacity: 1; }
+.docs-row-privacy:focus-visible {
+  outline: 2px solid var(--sidebar-accent, #3b82f6);
+  outline-offset: -2px;
+  opacity: 1;
+}
+.docs-row-privacy[aria-pressed="true"] { color: var(--sidebar-accent, #3b82f6); opacity: 0.9; }
+.docs-row-privacy:disabled { cursor: default; opacity: 0.32; }
 .docs-lock-icon {
-  font-size: 13px !important;
-}
-.docs-private-toggle {
-  margin: 0;
-  cursor: pointer;
+  font-size: 15px !important;
 }
 .docs-row-actions {
   display: flex;
@@ -2275,6 +2285,460 @@ body.dark-mode .agent-popover-search {
 .agent-popover-thinking .agent-popover-item,
 .agent-popover-thinking .agent-popover-item * {
   font-size: 14px;
+}
+
+/* Shared sidebar primitives. These keep panel chrome consistent without
+   coupling the individual panel modules or their data/rendering logic. */
+#sidebar {
+  --sidebar-space-1: 4px;
+  --sidebar-space-2: 8px;
+  --sidebar-space-3: 12px;
+  --sidebar-row-radius: 5px;
+  --sidebar-hover: rgba(0, 0, 0, 0.055);
+  --sidebar-active: rgba(59, 130, 246, 0.11);
+  --sidebar-border: rgba(0, 0, 0, 0.08);
+  --sidebar-muted: 0.62;
+  --sidebar-accent: #3b82f6;
+  --sidebar-panel-bg: #fff;
+}
+body.dark-mode #sidebar {
+  --sidebar-hover: rgba(255, 255, 255, 0.075);
+  --sidebar-active: rgba(96, 165, 250, 0.14);
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-panel-bg: rgb(37, 41, 48);
+}
+
+.sidebar-panel-header,
+.file-tree-header {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 6px 8px 6px 12px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--sidebar-border);
+  flex-shrink: 0;
+}
+.sidebar-panel-title,
+.file-tree-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px !important;
+  font-weight: 650;
+  letter-spacing: 0.045em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: 0.78;
+}
+.sidebar-panel-header-actions,
+.file-tree-header-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.sidebar-icon-button,
+.git-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 15px !important;
+  opacity: 0.68;
+}
+.sidebar-icon-button:hover,
+.git-icon-button:hover {
+  background: var(--sidebar-hover);
+  opacity: 1;
+}
+.sidebar-icon-button:focus-visible,
+.git-icon-button:focus-visible,
+.sidebar-button:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -2px;
+}
+.sidebar-icon-button:disabled,
+.git-icon-button:disabled {
+  cursor: default;
+  opacity: 0.32;
+}
+.sidebar-icon-button.small,
+.git-icon-button.small {
+  width: 22px;
+  height: 22px;
+  font-size: 13px !important;
+}
+
+.sidebar-empty-state {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  min-height: 156px;
+  padding: 24px 18px;
+  box-sizing: border-box;
+  text-align: center;
+}
+.sidebar-empty-icon {
+  font-size: 24px !important;
+  opacity: 0.34;
+}
+.sidebar-empty-message {
+  max-width: 260px;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: var(--sidebar-muted);
+}
+.sidebar-button {
+  min-height: 28px;
+  padding: 5px 12px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+}
+.sidebar-button:hover { background: var(--sidebar-hover); }
+.sidebar-button.primary {
+  border-color: var(--sidebar-accent);
+  background: var(--sidebar-accent);
+  color: #fff;
+}
+.sidebar-button.primary:hover { filter: brightness(1.08); }
+.sidebar-button:disabled { cursor: default; opacity: 0.45; }
+
+/* List actions overlay the trailing edge. Hidden actions therefore no longer
+   consume horizontal space or push titles toward the center. */
+.docs-row,
+.git-file-row,
+.playbook-row-main {
+  position: relative;
+}
+.docs-row-actions,
+.git-file-actions,
+.playbook-row-actions {
+  display: none;
+  position: absolute;
+  z-index: 1;
+  right: 6px;
+  top: 50%;
+  margin: 0;
+  padding-left: 12px;
+  transform: translateY(-50%);
+  background: linear-gradient(90deg, transparent, var(--sidebar-panel-bg, white) 12px);
+  opacity: 1;
+}
+.docs-row-actions { right: 34px; }
+.docs-row:hover .docs-row-actions,
+.docs-row:focus-within .docs-row-actions,
+.git-file-row:hover .git-file-actions,
+.git-file-row:focus-within .git-file-actions,
+.playbook-row:hover .playbook-row-actions,
+.playbook-row:focus-within .playbook-row-actions,
+.playbook-row.running .playbook-row-actions {
+  display: flex;
+}
+.docs-row:focus-within .docs-row-actions,
+.git-file-row:focus-within .git-file-actions,
+.playbook-row:focus-within .playbook-row-actions {
+  opacity: 1;
+}
+.docs-row:hover,
+.docs-row:focus-visible,
+.git-file-row:hover,
+.playbook-row:hover {
+  background-color: var(--sidebar-hover);
+}
+.playbook-row.running { background-color: var(--sidebar-active); }
+
+.activity-bar-tab:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -3px;
+  opacity: 1;
+}
+
+/* VS Code-inspired sidebar system. Deliberately scoped away from the AI
+   panel: its composer, picker pills, input, and work log retain their own UI. */
+#sidebar {
+  --vsc-sidebar-bg: #f3f3f3;
+  --vsc-activity-bg: #2c2c2c;
+  --vsc-hover-bg: rgba(0, 0, 0, 0.06);
+  --vsc-selected-bg: rgba(0, 0, 0, 0.1);
+  --vsc-border: rgba(0, 0, 0, 0.12);
+  --vsc-focus: #0078d4;
+  --vsc-foreground: #3b3b3b;
+  --vsc-muted-foreground: #6f6f6f;
+  background: var(--vsc-sidebar-bg);
+  color: var(--vsc-foreground);
+}
+body.dark-mode #sidebar {
+  --vsc-sidebar-bg: #181818;
+  --vsc-activity-bg: #181818;
+  --vsc-hover-bg: rgba(255, 255, 255, 0.075);
+  --vsc-selected-bg: rgba(255, 255, 255, 0.12);
+  --vsc-border: #2b2b2b;
+  --vsc-focus: #0078d4;
+  --vsc-foreground: #cccccc;
+  --vsc-muted-foreground: #969696;
+  background: var(--vsc-sidebar-bg);
+  color: var(--vsc-foreground);
+}
+#activity-bar,
+body.dark-mode #activity-bar {
+  width: 48px;
+  padding-top: 2px;
+  background: var(--vsc-activity-bg);
+}
+.activity-bar-tab {
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  opacity: 0.58;
+}
+.activity-bar-tab.codicon { font-size: 22px !important; }
+.activity-bar-tab:hover { background: transparent; opacity: 0.9; }
+.activity-bar-tab.active {
+  border-left-color: var(--vsc-focus);
+  background: transparent;
+  color: #fff;
+  opacity: 1;
+}
+#sidebar-panels,
+body.dark-mode #sidebar-panels {
+  border-left: 1px solid var(--vsc-border);
+  background: var(--vsc-sidebar-bg);
+}
+
+:is(#sidebar-panel-files, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-panel-header, .file-tree-header) {
+  min-height: 35px;
+  height: 35px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--vsc-border);
+  background: transparent;
+  gap: 6px;
+}
+:is(#sidebar-panel-files, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-panel-title, .file-tree-title) {
+  font-size: 11px !important;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 35px;
+  opacity: 0.9;
+}
+
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-icon-button, .git-icon-button, .git-file-action-btn) {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px !important;
+  opacity: 0.72;
+}
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-icon-button, .git-icon-button, .git-file-action-btn):hover {
+  background: var(--vsc-hover-bg);
+  opacity: 1;
+}
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-icon-button, .git-icon-button, .git-file-action-btn):focus-visible {
+  outline: 1px solid var(--vsc-focus);
+  outline-offset: -1px;
+}
+
+#sidebar-panel-files .file-tree-row,
+#sidebar-panel-git .git-file-row,
+#sidebar-panel-git .git-branch-item {
+  min-height: 24px;
+  height: 24px;
+  gap: 6px;
+  font-size: 13px;
+}
+#sidebar-panel-docs .docs-row {
+  min-height: 38px;
+  padding: 4px 8px 4px 10px;
+  gap: 7px;
+}
+#sidebar-panel-playbook .playbook-row {
+  padding: 7px 8px 7px 10px;
+  border-bottom-color: var(--vsc-border);
+}
+:is(#sidebar-panel-files .file-tree-row, #sidebar-panel-git .git-file-row, #sidebar-panel-git .git-branch-item, #sidebar-panel-docs .docs-row, #sidebar-panel-playbook .playbook-row):hover {
+  background: var(--vsc-hover-bg);
+}
+#sidebar-panel-files .file-tree-row.selected,
+#sidebar-panel-git .git-branch-item.current,
+#sidebar-panel-playbook .playbook-row.running {
+  background: var(--vsc-selected-bg);
+}
+
+#sidebar-panel-docs .docs-row-privacy {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 3px;
+}
+#sidebar-panel-docs .docs-lock-icon { font-size: 14px !important; }
+#sidebar-panel-docs .docs-row-actions { right: 32px; gap: 2px; }
+:is(#sidebar-panel-docs .docs-row-actions, #sidebar-panel-git .git-file-actions, #sidebar-panel-playbook .playbook-row-actions) {
+  right: 6px;
+  gap: 2px;
+  padding-left: 10px;
+  background: linear-gradient(90deg, transparent, var(--vsc-sidebar-bg) 10px);
+}
+#sidebar-panel-docs .docs-row-actions { right: 32px; }
+
+#sidebar-panel-git .git-header {
+  padding: 6px 8px;
+  border-bottom-color: var(--vsc-border);
+  background: transparent;
+}
+#sidebar-panel-git .git-commit-box,
+#sidebar-panel-git .git-section { border-bottom-color: var(--vsc-border); }
+#sidebar-panel-git .git-section-header {
+  min-height: 24px;
+  padding: 0 6px 0 4px;
+  font-size: 11px;
+}
+
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-button, .git-action-button, .git-commit-button, .design-connect-btn) {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 2px;
+  font-size: 12px;
+  font-weight: 400;
+}
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-button.primary, .git-action-button.primary, .git-commit-button:not(.secondary), .design-connect-btn) {
+  border-color: #0078d4;
+  background: #0078d4;
+  color: #fff;
+}
+
+#sidebar-panel-design .design-body {
+  gap: 10px;
+  padding: 8px 10px 14px;
+}
+#sidebar-panel-design .design-context {
+  gap: 6px;
+  padding: 8px;
+  border-color: var(--vsc-border);
+  border-radius: 3px;
+  background: var(--vsc-hover-bg);
+}
+
+/* AI participates in the sidebar system too. The composer and everything
+   inside .agent-composer are intentionally absent from these selectors. */
+#sidebar-panel-ai :is(.file-tree-header, .agent-header) {
+  min-height: 35px;
+  height: 35px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--vsc-border);
+  background: transparent;
+}
+#sidebar-panel-ai .file-tree-title {
+  font-size: 11px !important;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 35px;
+  opacity: 0.9;
+}
+#sidebar-panel-ai .agent-header .git-icon-button,
+#sidebar-panel-ai .agent-history-delete {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px !important;
+}
+#sidebar-panel-ai .agent-header .git-icon-button:hover,
+#sidebar-panel-ai .agent-history-delete:hover {
+  background: var(--vsc-hover-bg);
+  opacity: 1;
+}
+#sidebar-panel-ai .agent-header .git-icon-button:focus-visible,
+#sidebar-panel-ai .agent-history-delete:focus-visible {
+  outline: 1px solid var(--vsc-focus);
+  outline-offset: -1px;
+}
+#sidebar-panel-ai .agent-history,
+body.dark-mode #sidebar-panel-ai .agent-history {
+  background: var(--vsc-sidebar-bg);
+}
+#sidebar-panel-ai .agent-history-search-wrap { padding: 8px; }
+#sidebar-panel-ai .agent-history-search {
+  height: 26px;
+  padding: 3px 7px;
+  border-color: var(--vsc-border);
+  border-radius: 2px;
+  font-size: 12px;
+}
+#sidebar-panel-ai .agent-history-search:focus {
+  border-color: var(--vsc-focus);
+  outline: 1px solid var(--vsc-focus);
+  outline-offset: -1px;
+}
+#sidebar-panel-ai .agent-history-list { padding: 2px 0 8px; }
+#sidebar-panel-ai .agent-history-item {
+  gap: 2px;
+  padding: 1px 6px;
+}
+#sidebar-panel-ai .agent-history-item-main {
+  gap: 1px;
+  min-height: 38px;
+  padding: 5px 7px;
+  border-radius: 3px;
+}
+#sidebar-panel-ai .agent-history-item-main:hover,
+body.dark-mode #sidebar-panel-ai .agent-history-item-main:hover {
+  background: var(--vsc-hover-bg);
+}
+#sidebar-panel-ai .agent-history-item.active .agent-history-item-main,
+body.dark-mode #sidebar-panel-ai .agent-history-item.active .agent-history-item-main {
+  background: var(--vsc-selected-bg);
+}
+#sidebar-panel-ai .agent-history-item-title,
+#sidebar-panel-ai .agent-history-item-title * { font-size: 13px; }
+#sidebar-panel-ai .agent-history-item-meta,
+#sidebar-panel-ai .agent-history-item-meta * {
+  color: var(--vsc-muted-foreground);
+  font-size: 11px;
+  opacity: 1;
+}
+#sidebar-panel-ai .agent-transcript {
+  gap: 8px;
+  padding-top: 6px;
+}
+#sidebar-panel-ai .agent-work-row {
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+#sidebar-panel-ai .agent-work-row:hover { background: var(--vsc-hover-bg); }
+#sidebar-panel-ai .agent-work-toggle {
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 3px;
 }
 .agent-popover-item:hover {
   background: rgba(127, 127, 127, 0.14);

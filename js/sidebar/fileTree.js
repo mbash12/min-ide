@@ -12,6 +12,7 @@ survives restarts. */
 const remoteMenu = require('remoteMenuRenderer.js')
 const fileIcons = require('sidebar/fileIcons.js')
 const uiStateDB = require('util/uiStateDB.js')
+const sidebarUI = require('sidebar/ui.js')
 
 const panel = document.getElementById('sidebar-panel-files')
 
@@ -549,31 +550,18 @@ function render () {
 /* ----- header (title bar, consistent with the git panel) ----- */
 
 function buildHeader () {
-  const header = document.createElement('div')
-  header.className = 'file-tree-header'
-
-  const title = document.createElement('div')
-  title.className = 'file-tree-title'
-  title.textContent = l('sidebarFileTree') || 'File Tree'
-  header.appendChild(title)
-
-  const actions = document.createElement('div')
-  actions.className = 'file-tree-header-actions'
-
-  const refreshButton = document.createElement('button')
-  refreshButton.className = 'codicon codicon-refresh git-icon-button'
-  refreshButton.title = l('fileTreeRefresh')
-  refreshButton.addEventListener('click', refreshTree)
-  actions.appendChild(refreshButton)
-
-  const collapseButton = document.createElement('button')
-  collapseButton.className = 'codicon codicon-collapse-all git-icon-button'
-  collapseButton.title = l('fileTreeCollapseAll')
-  collapseButton.addEventListener('click', collapseAll)
-  actions.appendChild(collapseButton)
-
-  header.appendChild(actions)
-  return header
+  return sidebarUI.createPanelHeader({
+    title: l('sidebarFileTree') || 'File Tree',
+    actions: [{
+      icon: 'codicon-refresh',
+      label: l('fileTreeRefresh'),
+      onClick: refreshTree
+    }, {
+      icon: 'codicon-collapse-all',
+      label: l('fileTreeCollapseAll'),
+      onClick: collapseAll
+    }]
+  })
 }
 
 const fileTree = {

@@ -7,6 +7,7 @@
 const customDataStore = require('util/customDataStore.js')
 const docsView = require('docsView.js')
 const promptModal = require('promptModal.js')
+const sidebarUI = require('sidebar/ui.js')
 
 const panel = document.getElementById('sidebar-panel-docs')
 
@@ -105,67 +106,40 @@ function isCurrentRefresh (workspaceId, sequence) {
 }
 
 function buildHeader () {
-  const header = document.createElement('div')
-  header.className = 'file-tree-header docs-header'
-
-  const title = document.createElement('div')
-  title.className = 'file-tree-title'
-  title.textContent = t('sidebarDocs', 'Docs')
-  header.appendChild(title)
-
-  const actions = document.createElement('div')
-  actions.className = 'file-tree-header-actions'
-
-  const addButton = document.createElement('button')
-  addButton.type = 'button'
-  addButton.className = 'codicon codicon-add git-icon-button'
-  addButton.title = t('docsNew', 'New document')
-  addButton.setAttribute('aria-label', addButton.title)
-  addButton.disabled = !currentWorkspaceId || creating
-  addButton.addEventListener('click', function (event) {
-    event.stopPropagation()
-    createDocument()
+  return sidebarUI.createPanelHeader({
+    title: t('sidebarDocs', 'Docs'),
+    className: 'docs-header',
+    actions: [{
+      icon: 'codicon-add',
+      label: t('docsNew', 'New document'),
+      disabled: !currentWorkspaceId || creating,
+      onClick: function (event) {
+        event.stopPropagation()
+        createDocument()
+      }
+    }, {
+      icon: 'codicon-refresh',
+      label: t('docsRefresh', 'Refresh'),
+      disabled: !currentWorkspaceId || isLoading,
+      onClick: function (event) {
+        event.stopPropagation()
+        refresh()
+      }
+    }]
   })
-  actions.appendChild(addButton)
-
-  const refreshButton = document.createElement('button')
-  refreshButton.type = 'button'
-  refreshButton.className = 'codicon codicon-refresh git-icon-button'
-  refreshButton.title = t('docsRefresh', 'Refresh')
-  refreshButton.setAttribute('aria-label', refreshButton.title)
-  refreshButton.disabled = !currentWorkspaceId || isLoading
-  refreshButton.addEventListener('click', function (event) {
-    event.stopPropagation()
-    refresh()
-  })
-  actions.appendChild(refreshButton)
-
-  header.appendChild(actions)
-  return header
-}
-
-function buildCreateButton () {
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = 'docs-action-button primary'
-  button.textContent = t('docsNew', 'New document')
-  button.disabled = creating
-  button.addEventListener('click', function (event) {
-    event.stopPropagation()
-    createDocument()
-  })
-  return button
 }
 
 function buildEmptyState () {
-  const state = document.createElement('div')
-  state.className = 'docs-empty-state'
-  const message = document.createElement('div')
-  message.className = 'docs-empty-message'
-  message.textContent = t('docsEmpty', 'No documents yet.')
-  state.appendChild(message)
-  state.appendChild(buildCreateButton())
-  return state
+  return sidebarUI.createEmptyState({
+    icon: 'codicon-note',
+    message: t('docsEmpty', 'No documents yet.'),
+    actionLabel: t('docsNew', 'New document'),
+    actionDisabled: creating,
+    onAction: function (event) {
+      event.stopPropagation()
+      createDocument()
+    }
+  })
 }
 
 function buildErrorState () {
@@ -215,26 +189,22 @@ function buildRow (documentData) {
   }
   row.appendChild(content)
 
-  const privacy = document.createElement('label')
+  const privacy = document.createElement('button')
+  privacy.type = 'button'
   privacy.className = 'docs-row-privacy'
-  privacy.title = t('docsPrivateHint', 'Private documents are unavailable to AI.')
-  privacy.addEventListener('click', function (event) { event.stopPropagation() })
+  privacy.title = isPrivate
+    ? t('docsPrivateHint', 'Private documents are unavailable to AI.')
+    : t('docsMakePrivate', 'Make private')
+  privacy.setAttribute('aria-label', privacy.title)
+  privacy.setAttribute('aria-pressed', String(isPrivate))
   const lock = document.createElement('i')
-  lock.className = 'docs-lock-icon codicon codicon-lock-small'
-  lock.hidden = !isPrivate
+  lock.className = 'docs-lock-icon codicon ' + (isPrivate ? 'codicon-lock' : 'codicon-unlock')
   lock.setAttribute('aria-hidden', 'true')
   privacy.appendChild(lock)
-  const privateInput = document.createElement('input')
-  privateInput.type = 'checkbox'
-  privateInput.className = 'docs-private-toggle'
-  privateInput.checked = isPrivate
-  privateInput.setAttribute('aria-label', t('docsPrivate', 'Private'))
-  privateInput.title = t('docsPrivate', 'Private')
-  privateInput.addEventListener('click', function (event) { event.stopPropagation() })
-  privateInput.addEventListener('change', function () {
-    updatePrivate(documentData, privateInput, privateInput.checked)
+  privacy.addEventListener('click', function (event) {
+    event.stopPropagation()
+    updatePrivate(documentData, privacy, !isPrivate)
   })
-  privacy.appendChild(privateInput)
   row.appendChild(privacy)
 
   const actions = document.createElement('div')
@@ -467,6 +437,8 @@ async function updatePrivate (documentData, input, value) {
   const sequence = (privateUpdateSequences.get(documentData.id) || 0) + 1
   privateUpdateSequences.set(documentData.id, sequence)
   const desired = value === true
+  input.disabled = true
+  input.setAttribute('aria-busy', 'true')
 
   try {
     const result = await ensureStoreMethod('updateDocument')(workspaceId, documentData.id, { private: desired })
@@ -480,11 +452,13 @@ async function updatePrivate (documentData, input, value) {
     render()
   } catch (error) {
     if (privateUpdateSequences.get(documentData.id) !== sequence) return
-    input.checked = !desired
     if (currentWorkspaceId === workspaceId) {
       lastError = error && error.message ? error.message : t('docsSaveError', 'Could not save document')
       render()
     }
+  } finally {
+    input.removeAttribute('aria-busy')
+    input.disabled = false
   }
 }
 

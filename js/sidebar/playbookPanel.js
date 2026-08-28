@@ -4,6 +4,7 @@ live in .min/playbooks; without one they are stored in Min per workspace. */
 
 const editorView = require('editorView.js')
 const promptModal = require('promptModal.js')
+const sidebarUI = require('sidebar/ui.js')
 
 const panel = document.getElementById('sidebar-panel-playbook')
 
@@ -36,52 +37,33 @@ function t (key, fallback) {
 }
 
 function buildHeader () {
-  const header = document.createElement('div')
-  header.className = 'file-tree-header'
-
-  const title = document.createElement('div')
-  title.className = 'file-tree-title'
-  title.textContent = t('sidebarPlaybook', 'Playbook')
-  header.appendChild(title)
-
-  const actions = document.createElement('div')
-  actions.className = 'file-tree-header-actions'
-
-  const addButton = document.createElement('button')
-  addButton.className = 'codicon codicon-add git-icon-button'
-  addButton.title = t('playbookNew', 'New playbook')
-  addButton.addEventListener('click', function (e) {
-    e.stopPropagation()
-    createPlaybook()
+  return sidebarUI.createPanelHeader({
+    title: t('sidebarPlaybook', 'Playbook'),
+    actions: [{
+      icon: 'codicon-add',
+      label: t('playbookNew', 'New playbook'),
+      onClick: function (event) {
+        event.stopPropagation()
+        createPlaybook()
+      }
+    }, {
+      icon: 'codicon-refresh',
+      label: t('playbookRefresh', 'Refresh'),
+      onClick: function () { refresh() }
+    }]
   })
-  actions.appendChild(addButton)
-
-  const refreshButton = document.createElement('button')
-  refreshButton.className = 'codicon codicon-refresh git-icon-button'
-  refreshButton.title = t('playbookRefresh', 'Refresh')
-  refreshButton.addEventListener('click', function () { refresh() })
-  actions.appendChild(refreshButton)
-
-  header.appendChild(actions)
-  return header
 }
 
 function buildEmptyState () {
-  const wrap = document.createElement('div')
-  wrap.className = 'git-empty-state'
-  const p = document.createElement('div')
-  p.className = 'git-empty-message'
-  p.textContent = t('playbookEmpty', 'No playbooks yet. Ask the Agent to automate a repeated browser task, or create one here.')
-  wrap.appendChild(p)
-  const btn = document.createElement('button')
-  btn.className = 'git-action-button primary'
-  btn.textContent = t('playbookNew', 'New playbook')
-  btn.addEventListener('click', function (e) {
-    e.stopPropagation()
-    createPlaybook()
+  return sidebarUI.createEmptyState({
+    icon: 'codicon-checklist',
+    message: t('playbookEmpty', 'No playbooks yet. Ask the Agent to automate a repeated browser task, or create one here.'),
+    actionLabel: t('playbookNew', 'New playbook'),
+    onAction: function (event) {
+      event.stopPropagation()
+      createPlaybook()
+    }
   })
-  wrap.appendChild(btn)
-  return wrap
 }
 
 function listFingerprint (list) {
