@@ -1,0 +1,2668 @@
+/* VSCode-style sidebar: a vertical activity bar with tab icons and a panel
+   that holds the content of the active tab. The sidebar shifts the webviews
+   instead of overlaying them. */
+
+#sidebar {
+  position: fixed;
+  top: calc(36px + var(--control-space-top));
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: row;
+  z-index: 4;
+  background: #fff;
+  color: #000;
+  --sb-width: 6px;
+  --sb-thumb: rgba(127, 127, 127, 0.38);
+  --sb-thumb-hover: rgba(127, 127, 127, 0.55);
+}
+#sidebar[hidden] {
+  display: none;
+}
+body.dark-mode #sidebar {
+  background: rgb(37, 41, 48);
+  color: lightgrey;
+  --sb-thumb: rgba(255, 255, 255, 0.16);
+  --sb-thumb-hover: rgba(255, 255, 255, 0.28);
+}
+
+/* vertical strip of tab icons on the left */
+
+#activity-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 44px;
+  flex-shrink: 0;
+  padding-top: 0.25em;
+  background: rgb(50, 52, 58);
+  color: lightgrey;
+}
+body.dark-mode #activity-bar {
+  background: rgb(25, 28, 33);
+}
+
+.activity-bar-bottom {
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+/* when the panel is collapsed, the sidebar is just the activity bar */
+#sidebar.panel-collapsed #sidebar-panels {
+  display: none;
+}
+
+.activity-bar-tab {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+  opacity: 0.55;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  box-sizing: border-box;
+}
+.activity-bar-tab.codicon {
+  font-size: 20px !important;
+}
+.activity-bar-tab:hover {
+  opacity: 0.9;
+  background: rgba(255, 255, 255, 0.08);
+}
+.activity-bar-tab.active {
+  opacity: 1;
+  color: #fff;
+  border-left-color: cornflowerblue;
+}
+
+/* panel that holds the content of the active tab */
+
+#sidebar-panels {
+  position: relative;
+  width: 300px; /* overridden by JS when the user resizes the sidebar */
+  flex-shrink: 0;
+  border-left: 1px solid rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+body.dark-mode #sidebar-panels {
+  border-left-color: rgba(255, 255, 255, 0.1);
+}
+
+/* drag handle on the right edge of the sidebar. The visible strip is thin,
+but the padding extends the grab area so it is easier to hit. */
+
+#sidebar-resizer {
+  width: 3px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  /* extend the clickable area without changing the layout */
+  margin-right: -6px;
+  padding-right: 6px;
+  background-clip: content-box;
+}
+#sidebar-resizer:hover,
+body.is-resizing-sidebar #sidebar-resizer {
+  background-color: rgba(0, 0, 0, 0.15);
+}
+body.dark-mode #sidebar-resizer:hover,
+body.dark-mode.is-resizing-sidebar #sidebar-resizer {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+body.is-resizing-sidebar {
+  cursor: col-resize;
+  user-select: none;
+}
+.sidebar-panel {
+  display: none;
+  height: 100%;
+  padding: 1em;
+  box-sizing: border-box;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+.sidebar-panel.active {
+  display: block;
+  overflow-y: auto;
+}
+/* hidden tabs/panels (no workspace path) always stay hidden */
+.activity-bar-tab[hidden],
+.sidebar-panel[hidden] {
+  display: none !important;
+}
+.sidebar-panel-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 13px;
+  opacity: 0.5;
+  text-align: center;
+}
+
+/* compact prompt/confirm, same look as workspace modal but sized for the panel */
+#sidebar-prompt-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  background: rgba(255, 255, 255, 0.55);
+}
+body.dark-mode #sidebar-prompt-backdrop {
+  background: rgba(33, 37, 43, 0.55);
+}
+#sidebar-prompt-backdrop[hidden] {
+  display: none !important;
+}
+.sidebar-prompt-modal {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 50%;
+  z-index: 16;
+  transform: translateY(-50%);
+  padding: 0.85em 0.95em 0.9em;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  animation: sidebar-prompt-appear 0.18s;
+}
+body.dark-mode .sidebar-prompt-modal {
+  background-color: rgb(33, 37, 43);
+}
+@keyframes sidebar-prompt-appear {
+  0% {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.94);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+}
+.sidebar-prompt-modal .modal-title {
+  font-size: 1.05em;
+  margin-bottom: 0.6em;
+}
+.sidebar-prompt-modal .modal-close-button {
+  top: 0.4em;
+  right: 0.4em;
+  font-size: 1.25em !important;
+}
+#app-prompt-message {
+  margin: 0 0 0.7em;
+  font-size: 12px;
+  line-height: 1.4;
+}
+#app-prompt-message[hidden],
+#app-prompt-field[hidden] {
+  display: none !important;
+}
+.sidebar-prompt-modal .ws-modal-field {
+  gap: 0.45em;
+  margin-bottom: 0.55em;
+}
+.sidebar-prompt-modal .ws-modal-field label {
+  width: 48px;
+  min-width: 48px;
+  font-size: 12px;
+}
+.sidebar-prompt-modal .ws-modal-field input[type="text"] {
+  padding: 0.35em 0.5em;
+  font-size: 12px;
+}
+.sidebar-prompt-modal .ws-modal-actions {
+  justify-content: flex-end;
+  margin-top: 0.75em;
+}
+#app-prompt-ok {
+  background: royalblue;
+  color: #fff;
+  border: 0;
+  padding: 0.35em 0.85em;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+#app-prompt-ok:hover {
+  background: #3255c7;
+}
+#app-prompt-cancel {
+  background: rgba(0, 0, 0, 0.06);
+  border: 0;
+  padding: 0.35em 0.75em;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+#app-prompt-cancel:hover {
+  background: rgba(0, 0, 0, 0.12);
+}
+body.dark-mode #app-prompt-cancel {
+  background: rgba(255, 255, 255, 0.1);
+  color: lightgrey;
+}
+body.dark-mode #app-prompt-cancel:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+body.dark-mode #app-prompt-ok {
+  background: #4169e1;
+}
+body.dark-mode #app-prompt-ok:hover {
+  background: #5578e8;
+}
+
+/* file tree in the Files panel */
+
+#sidebar-panel-files {
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+#sidebar-panel-files.active {
+  display: flex;
+  overflow: hidden;
+}
+
+/* header with title + action buttons, and the scrollable body (like git) */
+
+.file-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 6px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+body.dark-mode .file-tree-header {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.file-tree-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.9;
+  flex: 1;
+}
+.file-tree-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.file-tree-header-actions .git-icon-button {
+  width: 22px;
+  height: 22px;
+  font-size: 16px !important;
+}
+.file-tree-search-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 12px;
+  color: inherit;
+}
+/* keep the field transparent in dark mode too (base.css styles inputs) */
+body.dark-mode .file-tree-search-input {
+  background: transparent;
+  color: inherit;
+  border-color: transparent;
+}
+.file-tree-search-input::placeholder {
+  opacity: 0.5;
+}
+.file-tree-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding-right: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 13px;
+  box-sizing: border-box;
+  gap: 6px;
+}
+/* the icon aligns with the chevron of sibling folders */
+.file-tree-icon {
+  margin-left: 0;
+}
+.file-tree-row:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+body.dark-mode .file-tree-row:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.file-tree-row.selected {
+  background: rgba(0, 0, 0, 0.1);
+}
+body.dark-mode .file-tree-row.selected {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* inline editor for create/rename */
+.file-tree-edit-input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  background: transparent;
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  border-radius: 3px;
+  outline: none;
+  font-size: 13px;
+  color: inherit;
+  padding: 0 4px;
+}
+.file-tree-edit-holder {
+  flex: 1;
+  min-width: 0;
+}
+
+/* VSCode-style indentation guide: one vertical line per level, aligned under
+the parent row's chevron. --tree-depth is set on the children container by
+fileTree.js and counts the nesting level of the rows inside it. The container
+is a sibling of its folder row, so the line position is (depth-1)*10 + 10px. */
+.file-tree-children {
+  position: relative;
+}
+.file-tree-children:not([hidden])::before {
+  content: '';
+  position: absolute;
+  left: calc((var(--tree-depth) - 1) * 8px + 8px);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+}
+body.dark-mode .file-tree-children:not([hidden])::before {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.file-tree-chevron {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  padding: 1px;
+  color: rgba(0, 0, 0, 0.4);
+  transform-box: view-box;
+  transform-origin: center;
+  transition: transform 0.1s ease;
+}
+.file-tree-chevron.expanded {
+  transform: rotate(90deg);
+}
+body.dark-mode .file-tree-chevron {
+  color: rgba(255, 255, 255, 0.4);
+}
+.file-tree-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+  user-select: none;
+}
+
+.file-tree-label {
+  font-size: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-tree-empty,
+.file-tree-error {
+  padding: 1em;
+  font-size: 0.9em;
+  opacity: 0.6;
+  line-height: 1.4;
+}
+
+/* sidebar toggle button in the navbar */
+
+#sidebar-toggle-button {
+  width: 36px;
+  padding: 0;
+}
+#sidebar-toggle-button.codicon {
+  font-size: 16px !important;
+}
+#sidebar-toggle-button:hover,
+#sidebar-toggle-button.active {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.075);
+}
+body.dark-mode #sidebar-toggle-button:hover,
+body.dark-mode #sidebar-toggle-button.active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* hide the toggle button in focus mode, like the other navbar actions */
+body.is-focus-mode #sidebar-toggle-button {
+  display: none;
+}
+/* Source Control (git) panel — VSCode-like */
+
+#sidebar-panel-git {
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+#sidebar-panel-git.active {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.git-header {
+  padding: 6px 8px 6px;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+  flex-shrink: 0;
+  background: rgba(0,0,0,0.02);
+}
+body.dark-mode .git-header {
+  background: rgba(255,255,255,0.02);
+}
+body.dark-mode .git-header {
+  border-bottom-color: rgba(255,255,255,0.08);
+}
+.git-branch-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.git-branch-row .codicon-source-control {
+  font-size: 14px;
+  opacity: 0.8;
+}
+.git-branch-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-sync-info {
+  font-size: 11px;
+  opacity: 0.6;
+  font-weight: 400;
+}
+.git-root-label {
+  font-size: 10px;
+  opacity: 0.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.git-icon-button {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  font-size: 14px !important;
+}
+.git-icon-button:hover { opacity: 1; background: rgba(128,128,128,0.18); }
+.git-icon-button.small { width: 20px; height: 20px; font-size: 12px !important; }
+
+.git-commit-box {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+body.dark-mode .git-commit-box { border-bottom-color: rgba(255,255,255,0.06); }
+
+.git-commit-input {
+  width: 100%;
+  min-height: 56px;
+  max-height: 120px;
+  resize: vertical;
+  background: rgba(0,0,0,0.04);
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  color: inherit;
+  outline: none;
+  box-sizing: border-box;
+}
+body.dark-mode .git-commit-input {
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(255,255,255,0.12);
+}
+.git-commit-input:focus {
+  border-color: cornflowerblue;
+}
+.git-commit-input::placeholder { opacity: 0.5; }
+
+.git-commit-actions {
+  display: flex;
+  gap: 6px;
+}
+.git-commit-button {
+  flex: 1;
+  padding: 6px 10px;
+  background: #0e639c;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.git-commit-button:hover { background: #1177bb; }
+.git-commit-button:disabled { opacity: 0.5; cursor: default; }
+.git-commit-button.secondary {
+  background: rgba(128,128,128,0.18);
+  color: inherit;
+  font-weight: 400;
+}
+.git-commit-button.secondary:hover { background: rgba(128,128,128,0.28); }
+body.dark-mode .git-commit-button.secondary {
+  background: rgba(255,255,255,0.1);
+}
+
+.git-section {
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+  flex-shrink: 0;
+}
+body.dark-mode .git-section { border-bottom-color: rgba(255,255,255,0.06); }
+
+/* the changes area fills the panel height between the commit box and the
+Branches/Graph sections; it scrolls independently */
+.git-changes-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.git-section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  user-select: none;
+}
+.git-section-header:hover { background: rgba(128,128,128,0.1); }
+.git-section-chevron {
+  font-size: 14px !important;
+  transition: transform 0.15s ease;
+  opacity: 0.6;
+}
+.git-section.collapsed .git-section-chevron { transform: rotate(-90deg); }
+.git-section-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-section-header-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.git-section-body { padding: 2px 0 4px; }
+.git-section.collapsed .git-section-body { display: none; }
+.git-section-empty {
+  padding: 4px 10px 6px 22px;
+  font-size: 11px;
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.git-file-row {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px 0 20px;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.git-file-row:hover { background: rgba(0,0,0,0.06); }
+body.dark-mode .git-file-row:hover { background: rgba(255,255,255,0.08); }
+.git-file-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 14px;
+  text-align: center;
+  opacity: 0.9;
+}
+.git-file-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: 4px;
+  opacity: 0;
+}
+.git-file-row:hover .git-file-actions { opacity: 1; }
+.git-file-action-btn {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  font-size: 12px !important;
+  padding: 0;
+}
+.git-file-action-btn:hover { opacity: 1; background: rgba(128,128,128,0.2); }
+
+.git-empty-state, .git-not-repo {
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+}
+.git-empty-message {
+  font-size: 12px;
+  opacity: 0.6;
+  line-height: 1.4;
+  text-align: center;
+}
+.git-action-button {
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(0,0,0,0.12);
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.git-action-button.primary {
+  background: #0e639c;
+  color: #fff;
+  border-color: #0e639c;
+}
+.git-action-button:hover { background: rgba(128,128,128,0.12); }
+.git-action-button.primary:hover { background: #1177bb; }
+.git-error {
+  padding: 12px;
+  font-size: 12px;
+  color: #f85149;
+  line-height: 1.4;
+}
+.git-loading {
+  padding: 12px;
+  font-size: 12px;
+  opacity: 0.6;
+}
+.git-clean-message {
+  padding: 12px;
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: center;
+}
+
+/* Playbook panel */
+
+#sidebar-panel-playbook {
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+#sidebar-panel-playbook.active {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.playbook-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.playbook-row {
+  padding: 8px 8px 8px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+}
+body.dark-mode .playbook-row {
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+.playbook-row:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+.playbook-row.running {
+  background: rgba(14, 99, 156, 0.08);
+}
+.playbook-row.error .playbook-meta {
+  color: #f85149;
+}
+.playbook-row-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.playbook-row-main > .codicon {
+  margin-top: 2px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.playbook-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.playbook-name {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playbook-meta,
+.playbook-progress {
+  font-size: 11px;
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.playbook-progress {
+  opacity: 0.85;
+}
+.playbook-row-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  opacity: 0;
+}
+.playbook-row:hover .playbook-row-actions,
+.playbook-row.running .playbook-row-actions {
+  opacity: 1;
+}
+.playbook-detail {
+  margin: 6px 0 2px 22px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.08);
+  font-size: 14px;
+  line-height: 1.45;
+  opacity: 0.85;
+}
+.playbook-step {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playbook-step.active {
+  font-weight: 600;
+  opacity: 1;
+}
+
+/* activity bar badge (like VSCode's SCM count) */
+.activity-bar-tab { position: relative; }
+.activity-bar-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: #007acc;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+/* === Git panel: VSCode-like composition refinements === */
+
+/* Top title + action bar (like VSCode Source Control title) */
+.git-title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 6px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+body.dark-mode .git-title-bar {
+  border-bottom-color: rgba(255,255,255,0.06);
+}
+.git-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.9;
+  flex: 1;
+}
+.git-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.git-title-actions .git-icon-button {
+  width: 22px;
+  height: 22px;
+  font-size: 16px !important;
+}
+
+/* Repo / Branches section */
+.git-repo-section .git-branch-list {
+  max-height: 160px;
+  overflow-y: auto;
+}
+.git-branch-item {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px 0 20px;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.git-branch-item:hover {
+  background: rgba(0,0,0,0.06);
+}
+body.dark-mode .git-branch-item:hover {
+  background: rgba(255,255,255,0.08);
+}
+.git-branch-item.current {
+  background: rgba(14,99,156,0.12);
+  font-weight: 600;
+}
+body.dark-mode .git-branch-item.current {
+  background: rgba(14,99,156,0.25);
+}
+.git-branch-item .codicon-git-branch {
+  font-size: 14px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.git-branch-item.current .codicon-git-branch {
+  color: #0e639c;
+  opacity: 1;
+}
+.git-branch-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.git-branch-meta {
+  font-size: 11px;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+.git-branch-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.git-branch-item:hover .git-branch-actions {
+  opacity: 1;
+}
+.git-branch-action-btn {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  font-size: 12px !important;
+  padding: 0;
+}
+.git-branch-action-btn:hover {
+  opacity: 1;
+  background: rgba(128,128,128,0.2);
+}
+
+/* Graph section */
+.git-graph {
+  padding: 0;
+  font-family: 'Cascadia Code', 'Fira Code', 'Droid Sans Mono', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow: hidden;
+}
+.git-graph-container {
+  max-height: 200px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+}
+.git-graph-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 8px 0 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.git-graph-row:hover {
+  background: rgba(0,0,0,0.06);
+}
+body.dark-mode .git-graph-row:hover {
+  background: rgba(255,255,255,0.08);
+}
+.git-graph-row.expanded {
+  background: rgba(0,0,0,0.07);
+}
+body.dark-mode .git-graph-row.expanded {
+  background: rgba(255,255,255,0.1);
+}
+.git-graph-lane {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  min-width: 16px;
+  height: 20px;
+  line-height: 0;
+}
+.git-graph-lane-svg {
+  flex-shrink: 0;
+  display: block;
+}
+.git-graph-hash {
+  font-size: 11px;
+  opacity: 0.5;
+  flex-shrink: 0;
+  width: 52px;
+}
+.git-graph-refs {
+  opacity: 0.6;
+  margin-left: 6px;
+  font-size: 10px;
+}
+.git-graph-message {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.git-graph-author {
+  font-size: 11px;
+  opacity: 0.5;
+  flex-shrink: 0;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-graph-date {
+  font-size: 10px;
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+.git-graph-empty {
+  padding: 8px 12px;
+  font-size: 11px;
+  opacity: 0.5;
+  font-style: italic;
+}
+
+/* commit detail + diff viewer (expanded graph row) */
+.git-graph-detail {
+  padding: 4px 10px 6px 16px;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+  background: rgba(0,0,0,0.02);
+}
+body.dark-mode .git-graph-detail {
+  border-bottom-color: rgba(255,255,255,0.05);
+  background: rgba(255,255,255,0.02);
+}
+.git-graph-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.git-graph-detail-hash {
+  font-weight: 600;
+  opacity: 0.8;
+}
+.git-graph-detail-author {
+  opacity: 0.6;
+}
+.git-graph-detail-refs {
+  opacity: 0.6;
+  font-size: 10px;
+}
+.git-graph-detail-message {
+  font-size: 12px;
+  margin-top: 2px;
+  word-break: break-word;
+}
+.git-graph-diff {
+  margin-top: 6px;
+  font-family: 'Cascadia Code', 'Fira Code', 'Droid Sans Mono', monospace;
+  font-size: 11px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 3px;
+}
+body.dark-mode .git-graph-diff {
+  border-color: rgba(255,255,255,0.08);
+}
+.git-graph-diff-loading,
+.git-graph-diff-empty {
+  padding: 6px 8px;
+  opacity: 0.5;
+  font-style: italic;
+}
+.git-graph-diff-hunk {
+  padding: 3px 8px;
+  background: rgba(14,99,156,0.1);
+  color: #0e639c;
+  font-weight: 600;
+}
+body.dark-mode .git-graph-diff-hunk {
+  color: #4fc3f7;
+}
+.git-graph-diff-line {
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.git-graph-diff-line.added {
+  background: rgba(115,201,145,0.18);
+}
+.git-graph-diff-line.removed {
+  background: rgba(248,81,73,0.15);
+}
+.git-graph-diff-line.context {
+  opacity: 0.75;
+}
+
+/* Harmonized typography across sidebar */
+.sidebar-panel {
+  font-size: 13px;
+  line-height: 1.4;
+}
+.sidebar-panel .git-section-title,
+.sidebar-panel .file-tree-label,
+.sidebar-panel .git-branch-name,
+.sidebar-panel .git-file-label {
+  font-size: 13px;
+  line-height: 1.4;
+}
+.git-commit-input {
+  font-size: 13px;
+}
+.git-section-header {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.git-root-label,
+.git-sync-info,
+.git-branch-meta,
+.git-graph-date {
+  font-size: 11px;
+}
+
+/* AI agent panel (like Files/Git: no panel padding, header + scrollable
+body + composer) */
+
+#sidebar-panel-ai {
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+#sidebar-panel-ai.active {
+  display: flex;
+  overflow: hidden;
+}
+
+/* ===== AI agent panel (t3.chat-style) ===== */
+
+.agent-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  position: relative;
+}
+
+.agent-header {
+  padding: 0 8px 0 12px;
+  min-height: 36px;
+  flex-shrink: 0;
+}
+.agent-header .git-icon-button.active {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.18);
+}
+
+.agent-history {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #fff;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-18px);
+  transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.32, 0.72, 0, 1), visibility 0s linear 0.22s;
+}
+body.dark-mode .agent-history {
+  background: rgb(37, 41, 48);
+}
+.agent-history.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.32, 0.72, 0, 1), visibility 0s linear 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-history,
+  .agent-history.open {
+    transition: none;
+  }
+}
+.agent-history-search-wrap {
+  flex-shrink: 0;
+  padding: 8px 10px 6px;
+}
+.agent-history-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+body.dark-mode .agent-history-search {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: transparent;
+}
+.agent-history-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0 12px;
+}
+.agent-history-empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 13px;
+  opacity: 0.5;
+}
+.agent-history-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 4px;
+}
+.agent-history-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.agent-history-item-main:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+body.dark-mode .agent-history-item-main:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.agent-history-item.active .agent-history-item-main {
+  background: rgba(127, 127, 127, 0.16);
+}
+body.dark-mode .agent-history-item.active .agent-history-item-main {
+  background: rgba(255, 255, 255, 0.1);
+}
+.agent-history-item-title,
+.agent-history-item-title * {
+  font-size: 13px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-item-meta,
+.agent-history-item-meta * {
+  font-size: 11px;
+  opacity: 0.5;
+}
+.agent-history-delete {
+  opacity: 0;
+  flex-shrink: 0;
+}
+.agent-history-item:hover .agent-history-delete,
+.agent-history-item:focus-within .agent-history-delete {
+  opacity: 0.55;
+}
+.agent-history-delete:hover {
+  opacity: 1 !important;
+  background: rgba(207, 34, 46, 0.12);
+  color: #cf222e;
+}
+
+.agent-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 0 12px;
+}
+
+.agent-message {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 2px 14px;
+  max-width: 100%;
+  margin: 0;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.agent-message-user {
+  align-self: flex-end;
+  white-space: pre-wrap;
+  background: rgba(128, 128, 128, 0.16);
+  border-radius: 16px;
+  padding: 10px 12px;
+  margin: 2px 12px 2px auto;
+  max-width: 80%;
+  font-weight: 400;
+}
+.agent-message-user,
+.agent-message-user * {
+  font-size: 13px;
+}
+
+.agent-message-assistant {
+  align-self: stretch;
+  white-space: normal;
+  background: transparent;
+  padding: 2px 16px;
+}
+body.dark-mode .agent-message-user {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.agent-md,
+.agent-md * {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.agent-md > :first-child {
+  margin-top: 0;
+}
+.agent-md > :last-child {
+  margin-bottom: 0;
+}
+.agent-md p,
+.agent-md ul,
+.agent-md ol,
+.agent-md blockquote,
+.agent-md pre,
+.agent-md .agent-md-code,
+.agent-md .agent-md-table-wrap {
+  margin: 0.55em 0;
+}
+.agent-md h1,
+.agent-md h2,
+.agent-md h3,
+.agent-md h4,
+.agent-md h5,
+.agent-md h6 {
+  margin: 0.9em 0 0.35em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.agent-md h1 { font-size: 17px; }
+.agent-md h2 { font-size: 15px; }
+.agent-md h3 { font-size: 14px; }
+.agent-md h4,
+.agent-md h5,
+.agent-md h6 { font-size: 13px; }
+.agent-md ul,
+.agent-md ol {
+  padding-left: 1.35em;
+}
+.agent-md ul { list-style-type: disc; }
+.agent-md ol { list-style-type: decimal; }
+.agent-md ul ul { list-style-type: circle; }
+.agent-md ul ul ul { list-style-type: square; }
+.agent-md ol ol { list-style-type: lower-alpha; }
+.agent-md li + li {
+  margin-top: 0.2em;
+}
+.agent-md li::marker {
+  font-size: 13px;
+}
+.agent-md li.agent-md-task {
+  list-style: none;
+  margin-left: -0.35em;
+}
+.agent-md li.agent-md-task input[type="checkbox"] {
+  margin-right: 0.4em;
+  vertical-align: middle;
+}
+.agent-md a {
+  color: #2563eb;
+  text-decoration: none;
+}
+.agent-md a:hover {
+  text-decoration: underline;
+}
+body.dark-mode .agent-md a {
+  color: #60a5fa;
+}
+.agent-md blockquote {
+  border-left: 2px solid rgba(127, 127, 127, 0.35);
+  padding: 0.15em 0 0.15em 0.75em;
+  margin-left: 0;
+  opacity: 0.85;
+}
+.agent-md hr {
+  border: none;
+  border-top: 1px solid rgba(127, 127, 127, 0.28);
+  margin: 0.85em 0;
+}
+.agent-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+.agent-md :not(pre) > code {
+  font-family: "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  font-size: 12px !important;
+  background: rgba(127, 127, 127, 0.14);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.agent-md-code {
+  border: 1px solid rgba(127, 127, 127, 0.22);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(127, 127, 127, 0.07);
+}
+body.dark-mode .agent-md-code {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.22);
+}
+.agent-md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 4px 10px;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.16);
+}
+body.dark-mode .agent-md-code-head {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.agent-md-code-lang {
+  font-size: 11px !important;
+  font-family: inherit;
+  opacity: 0.55;
+  text-transform: lowercase;
+}
+.agent-md-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  opacity: 0.55;
+  cursor: pointer;
+  color: inherit;
+}
+.agent-md-copy .codicon {
+  font-size: 13px !important;
+}
+.agent-md-copy:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.16);
+}
+.agent-md-code pre,
+.agent-md pre {
+  margin: 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  font-family: "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  font-size: 12px !important;
+  line-height: 1.45;
+  white-space: pre;
+}
+.agent-md-code pre code,
+.agent-md pre code {
+  font-size: 12px !important;
+  font-family: inherit;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+.agent-md-table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(127, 127, 127, 0.2);
+  border-radius: 8px;
+}
+body.dark-mode .agent-md-table-wrap {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.agent-md table {
+  width: 100%;
+  min-width: max-content;
+  border-collapse: collapse;
+}
+.agent-md th,
+.agent-md td {
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.16);
+}
+.agent-md th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.agent-md tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.agent-transcript > .agent-message:first-child {
+  margin-top: 8px;
+}
+.agent-transcript > .agent-message:last-child {
+  margin-bottom: 4px;
+}
+
+/* t3code-style grouped tool work log: collapsed shows the latest call */
+.agent-work-group {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 12px;
+  padding: 2px 0;
+}
+.agent-work-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  color: inherit;
+  opacity: 0.62;
+}
+.agent-work-row,
+.agent-work-row span {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.agent-work-row .codicon {
+  font-size: 14px !important;
+  width: 20px;
+  text-align: center;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+.agent-work-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-work-status {
+  font-size: 12px !important;
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+.agent-work-row.running {
+  opacity: 0.9;
+}
+.agent-work-row.error {
+  opacity: 0.95;
+}
+.agent-work-row.error .codicon-error {
+  color: #cf222e;
+  opacity: 0.85;
+}
+.agent-work-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+  opacity: 0.55;
+  font-family: inherit;
+  text-align: left;
+}
+.agent-work-toggle,
+.agent-work-toggle span {
+  font-size: 12px;
+}
+.agent-work-toggle .codicon {
+  font-size: 12px !important;
+  width: 20px;
+  text-align: center;
+  opacity: 0.7;
+}
+.agent-work-toggle:hover {
+  background: rgba(127, 127, 127, 0.12);
+  opacity: 0.85;
+}
+body.dark-mode .agent-work-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.agent-thinking {
+  align-self: stretch;
+  margin: 0 16px;
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.5;
+  font-style: italic;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.agent-thinking,
+.agent-thinking * {
+  font-size: 12px;
+}
+
+.agent-error-line {
+  align-self: stretch;
+  margin: 0 14px;
+  color: #cf222e;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* composer: a rounded card pinned to the bottom of the panel */
+.agent-composer {
+  position: relative;
+  padding: 10px;
+  flex-shrink: 0;
+}
+
+.agent-composer-card {
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 18px;
+  background: #ffffff;
+  padding: 10px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+body.dark-mode .agent-composer-card {
+  border-color: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: none;
+}
+
+.agent-input {
+  width: 100%;
+  box-sizing: border-box;
+  display: block;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 2px 2px;
+  max-height: 220px;
+}
+/* base.css forces a background on dark-mode textareas/inputs */
+body.dark-mode .agent-input {
+  background: transparent;
+}
+.agent-input::placeholder {
+  opacity: 0.5;
+}
+
+.agent-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.agent-composer-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.agent-composer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ghost pill buttons (model + thinking selectors) */
+.agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 14px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  max-width: 160px;
+}
+.agent-pill:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+body.dark-mode .agent-pill:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.agent-pill-label {
+  font-size: 14px;
+  line-height: 1;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-pill-caret {
+  font-size: 12px !important;
+  opacity: 0.55;
+}
+.agent-pill-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 5px 2px;
+  background: rgba(127, 127, 127, 0.35);
+}
+body.dark-mode .agent-pill-divider {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* round send / stop button */
+.agent-send-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+  font-size: 15px !important;
+  flex-shrink: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, filter 0.15s ease;
+}
+.agent-send-button:hover {
+  background: #1d4ed8;
+}
+.agent-send-button:disabled {
+  filter: grayscale(1);
+  opacity: 0.45;
+  cursor: default;
+}
+.agent-send-button:disabled:hover {
+  background: #2563eb;
+}
+.agent-send-button.streaming {
+  background: #cf222e;
+}
+.agent-send-button.streaming:hover {
+  background: #e03b46;
+}
+body.dark-mode .agent-send-button {
+  background: #3b82f6;
+  color: #fff;
+}
+body.dark-mode .agent-send-button:hover {
+  background: #2563eb;
+}
+body.dark-mode .agent-send-button:disabled,
+body.dark-mode .agent-send-button:disabled:hover {
+  background: #3b82f6;
+}
+body.dark-mode .agent-send-button.streaming {
+  background: #cf222e;
+  color: #fff;
+}
+
+/* context-usage donut */
+.agent-donut {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  border-radius: 50%;
+}
+.agent-donut:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+body.dark-mode .agent-donut:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.agent-donut-busy {
+  pointer-events: none;
+}
+.agent-donut-busy .agent-donut-fill {
+  animation: agent-donut-pulse 1s ease-in-out infinite;
+}
+@keyframes agent-donut-pulse {
+  50% { opacity: 0.3; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-donut-busy .agent-donut-fill {
+    animation: none;
+    opacity: 0.55;
+  }
+}
+.agent-donut svg {
+  transform: rotate(-90deg);
+}
+.agent-donut-track {
+  fill: none;
+  stroke: rgba(127, 127, 127, 0.28);
+  stroke-width: 3;
+}
+.agent-donut-fill {
+  fill: none;
+  stroke: #3b82f6;
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s ease;
+}
+.agent-donut-warn .agent-donut-fill {
+  stroke: #e0a000;
+}
+.agent-donut-label {
+  position: absolute;
+  font-size: 8px;
+  font-weight: 600;
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+.agent-popover-context {
+  width: 228px;
+  padding: 10px;
+  gap: 8px;
+}
+.agent-context-pop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.agent-context-pop-title,
+.agent-context-pop-title * {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.72;
+}
+.agent-context-pop-stats,
+.agent-context-pop-stats * {
+  font-size: 11px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.agent-context-pop-bar {
+  height: 6px;
+  border-radius: 99px;
+  background: rgba(127, 127, 127, 0.18);
+  overflow: hidden;
+}
+.agent-context-pop-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: #3b82f6;
+}
+.agent-context-pop-bar-fill.warn {
+  background: #e0a000;
+}
+.agent-context-compact {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.28);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+}
+.agent-context-compact .codicon {
+  font-size: 14px !important;
+}
+.agent-context-compact:hover:not(:disabled) {
+  background: rgba(127, 127, 127, 0.12);
+}
+body.dark-mode .agent-context-compact {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+body.dark-mode .agent-context-compact:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+.agent-context-compact:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.agent-compact-line {
+  align-self: stretch;
+  margin: 6px 16px;
+  padding: 7px 0;
+  font-size: 12px;
+  text-align: center;
+  opacity: 0.5;
+  border-top: 1px dashed rgba(127, 127, 127, 0.3);
+  border-bottom: 1px dashed rgba(127, 127, 127, 0.3);
+}
+
+.agent-slash-menu {
+  display: none;
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% - 4px);
+  z-index: 8;
+  max-height: 240px;
+  overflow-y: auto;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+body.dark-mode .agent-slash-menu {
+  background: #1b1b1d;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.agent-slash-menu.open {
+  display: flex;
+}
+.agent-slash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.agent-slash-item,
+.agent-slash-item span {
+  font-size: 13px;
+}
+.agent-slash-item .codicon {
+  font-size: 15px !important;
+  opacity: 0.65;
+  width: 18px;
+  flex-shrink: 0;
+}
+.agent-slash-item.selected,
+.agent-slash-item:hover {
+  background: rgba(127, 127, 127, 0.14);
+}
+body.dark-mode .agent-slash-item.selected,
+body.dark-mode .agent-slash-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.agent-slash-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+.agent-slash-item-name {
+  font-weight: 600;
+}
+.agent-slash-item-hint {
+  font-size: 11px !important;
+  opacity: 0.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-slash-note {
+  align-self: stretch;
+  margin: 4px 16px;
+  padding: 8px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* popovers (model + thinking pickers) */
+.agent-popover {
+  z-index: 1000;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  padding: 6px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  --sb-width: 6px;
+  --sb-thumb: rgba(127, 127, 127, 0.38);
+  --sb-thumb-hover: rgba(127, 127, 127, 0.55);
+}
+.agent-popover-models {
+  width: 300px;
+  max-width: 320px;
+}
+body.dark-mode .agent-popover {
+  background: #1b1b1d;
+  border-color: rgba(255, 255, 255, 0.14);
+  --sb-thumb: rgba(255, 255, 255, 0.16);
+  --sb-thumb-hover: rgba(255, 255, 255, 0.28);
+}
+
+.agent-popover-search {
+  flex-shrink: 0;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+body.dark-mode .agent-popover-search {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: transparent;
+}
+
+.agent-popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-right: 2px;
+}
+.agent-popover-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.agent-popover-thinking .agent-popover-item,
+.agent-popover-thinking .agent-popover-item * {
+  font-size: 14px;
+}
+.agent-popover-item:hover {
+  background: rgba(127, 127, 127, 0.14);
+}
+.agent-popover-item.selected {
+  background: rgba(127, 127, 127, 0.18);
+}
+.agent-popover-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.agent-popover-item-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-popover-item-sub {
+  font-size: 11px;
+  opacity: 0.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-popover-check {
+  font-size: 13px !important;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.agent-popover-item.selected .agent-popover-check {
+  opacity: 1;
+}
+.agent-popover-empty {
+  padding: 8px;
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: center;
+}
+
+/* thin overlay scrollbar for every scrollable in the sidebar, workspace
+drawer, and agent popovers (which mount on document.body) */
+#sidebar,
+#sidebar *,
+#workspace-drawer,
+#workspace-drawer *,
+.agent-popover,
+.agent-popover * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-thumb, rgba(127, 127, 127, 0.38)) transparent;
+}
+#sidebar::-webkit-scrollbar,
+#sidebar *::-webkit-scrollbar,
+#workspace-drawer::-webkit-scrollbar,
+#workspace-drawer *::-webkit-scrollbar,
+.agent-popover::-webkit-scrollbar,
+.agent-popover *::-webkit-scrollbar {
+  width: var(--sb-width, 6px);
+  height: var(--sb-width, 6px);
+}
+#sidebar::-webkit-scrollbar-track,
+#sidebar *::-webkit-scrollbar-track,
+#workspace-drawer::-webkit-scrollbar-track,
+#workspace-drawer *::-webkit-scrollbar-track,
+.agent-popover::-webkit-scrollbar-track,
+.agent-popover *::-webkit-scrollbar-track {
+  background: transparent;
+}
+#sidebar::-webkit-scrollbar-thumb,
+#sidebar *::-webkit-scrollbar-thumb,
+#workspace-drawer::-webkit-scrollbar-thumb,
+#workspace-drawer *::-webkit-scrollbar-thumb,
+.agent-popover::-webkit-scrollbar-thumb,
+.agent-popover *::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb, rgba(127, 127, 127, 0.38));
+  border-radius: 8px;
+}
+#sidebar::-webkit-scrollbar-thumb:hover,
+#sidebar *::-webkit-scrollbar-thumb:hover,
+#workspace-drawer::-webkit-scrollbar-thumb:hover,
+#workspace-drawer *::-webkit-scrollbar-thumb:hover,
+.agent-popover::-webkit-scrollbar-thumb:hover,
+.agent-popover *::-webkit-scrollbar-thumb:hover {
+  background: var(--sb-thumb-hover, rgba(127, 127, 127, 0.55));
+}
+#sidebar::-webkit-scrollbar-corner,
+#sidebar *::-webkit-scrollbar-corner,
+#workspace-drawer::-webkit-scrollbar-corner,
+#workspace-drawer *::-webkit-scrollbar-corner,
+.agent-popover::-webkit-scrollbar-corner,
+.agent-popover *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Design panel */
+
+#sidebar-panel-design {
+  position: relative;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+#sidebar-panel-design.active {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.design-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 10px 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.design-header {
+  gap: 8px;
+}
+.design-header .file-tree-title {
+  flex: 0 0 auto;
+}
+.design-context {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid rgba(127, 127, 127, 0.18);
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.06);
+}
+.design-context-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+.design-context-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-size: 12px;
+}
+.design-context-label {
+  flex: 0 0 76px;
+  opacity: 0.55;
+}
+.design-context-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-context-row.empty .design-context-value {
+  opacity: 0.55;
+  font-style: italic;
+}
+.design-toolbar-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.design-toolbar-status {
+  cursor: default;
+}
+.design-toolbar-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.design-toolbar-label {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-toolbar-file {
+  font-size: 11px;
+  opacity: 0.55;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-connect-btn {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 8px;
+  margin-right: 2px;
+  border-radius: 4px;
+  border: 1px solid #0e639c;
+  background: #0e639c;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.design-connect-btn:hover {
+  background: #1177bb;
+  border-color: #1177bb;
+}
+.design-connect-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.design-header .git-icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.design-header .git-icon-button:disabled:hover {
+  opacity: 0.35;
+  background: transparent;
+}
+.design-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #888;
+}
+.design-dot.ok { background: #3fb950; }
+.design-dot.warn { background: #d29922; }
+.design-dot.busy {
+  background: #58a6ff;
+  animation: design-pulse 1s ease-in-out infinite;
+}
+@keyframes design-pulse {
+  50% { opacity: 0.35; }
+}
+.design-error {
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.08);
+}
+.design-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+  padding: 0 2px 4px;
+}
+.design-result-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+.design-result-tab {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.55;
+}
+.design-result-tab:hover { opacity: 0.85; }
+.design-result-tab.active {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.16);
+  font-weight: 600;
+}
+.design-output {
+  margin: 0;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+  background: rgba(127, 127, 127, 0.08);
+  border-radius: 4px;
+}
+
+/* Export modal — stays inside the sidebar so it never covers the webview. */
+.design-modal-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 48px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.design-modal {
+  width: min(92%, 320px);
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--color-bg, #1e1f22);
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.design-modal-title {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.design-modal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.design-modal-label {
+  flex: none;
+  width: 52px;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.design-modal-select {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: var(--color-bg, #1e1f22);
+  color: inherit;
+}
+
+.design-modal-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: var(--color-bg, #1e1f22);
+  color: inherit;
+}
+
+.design-modal-browse {
+  flex: none;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: rgba(127, 127, 127, 0.12);
+  color: inherit;
+  cursor: pointer;
+}
+
+.design-modal-browse:hover {
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.design-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.design-modal-btn {
+  font-size: 11px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: rgba(127, 127, 127, 0.12);
+  color: inherit;
+  cursor: pointer;
+}
+
+.design-modal-btn:hover {
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.design-modal-btn.primary {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.design-modal-btn.primary:hover {
+  background: #2f6fe0;
+}
+
+.design-modal-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#sidebar .sidebar-panel,
+.agent-popover {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+#sidebar .sidebar-panel-placeholder,
+#sidebar .file-tree-row,
+#sidebar .file-tree-edit-input,
+#sidebar .file-tree-search-input,
+#sidebar .git-branch-row,
+#sidebar .git-file-row,
+#sidebar .git-branch-item,
+#sidebar .git-branch-name,
+#sidebar .git-commit-input,
+#sidebar .playbook-name,
+#sidebar .playbook-detail,
+#sidebar .playbook-step,
+#sidebar .agent-history-search,
+#sidebar .agent-message,
+#sidebar .agent-message-user,
+#sidebar .agent-message-user *,
+#sidebar .agent-input,
+#sidebar .agent-popover-search,
+#sidebar .agent-popover-item,
+#sidebar .agent-popover-item-name,
+#sidebar .agent-slash-item,
+#sidebar .agent-slash-item span,
+#sidebar .agent-context-compact,
+#sidebar .design-context-row,
+#sidebar .design-toolbar-label {
+  font-size: 14px;
+}
+
+#sidebar .file-tree-title,
+#sidebar .git-title,
+#sidebar .git-section-header,
+#sidebar .design-section-label,
+#sidebar .design-result-tab,
+#sidebar .design-context-title,
+#sidebar .design-modal-title,
+#sidebar .sidebar-prompt-modal .modal-title {
+  font-size: 13px;
+}
+
+#sidebar .sidebar-prompt-modal .ws-modal-field input,
+#sidebar .file-tree-empty,
+#sidebar .file-tree-error,
+#sidebar #app-prompt-ok,
+#sidebar #app-prompt-cancel,
+#sidebar .git-commit-button,
+#sidebar .git-action-button,
+#sidebar .design-connect-btn,
+#sidebar .design-error,
+#sidebar .design-modal-select,
+#sidebar .design-modal-input,
+#sidebar .design-modal-browse,
+#sidebar .design-modal-btn,
+#sidebar .agent-history-empty,
+#sidebar .agent-work-row,
+#sidebar .agent-work-row span,
+#sidebar .agent-work-toggle,
+#sidebar .agent-work-toggle span,
+#sidebar .agent-thinking,
+#sidebar .agent-error-line,
+#sidebar .agent-slash-note,
+.agent-popover-empty {
+  font-size: 13px;
+}
+
+#sidebar .sidebar-prompt-modal .ws-modal-field label,
+#sidebar .git-sync-info,
+#sidebar .git-root-label,
+#sidebar .git-branch-meta,
+#sidebar .git-status-badge,
+#sidebar .git-graph,
+#sidebar .git-graph-hash,
+#sidebar .git-graph-refs,
+#sidebar .git-graph-author,
+#sidebar .git-graph-date,
+#sidebar .git-graph-detail-meta,
+#sidebar .git-graph-detail-refs,
+#sidebar .git-section-empty,
+#sidebar .git-graph-empty,
+#sidebar .git-graph-diff,
+#sidebar .playbook-meta,
+#sidebar .playbook-progress,
+#sidebar .design-toolbar-file,
+#sidebar .design-output,
+#sidebar .design-modal-label,
+#sidebar .git-graph-diff-loading,
+#sidebar .git-graph-diff-empty,
+#sidebar .git-graph-diff-hunk,
+#sidebar .git-graph-diff-line,
+#sidebar .agent-history-item-meta,
+#sidebar .agent-history-item-meta *,
+.agent-context-pop-stats,
+.agent-context-pop-stats *,
+.agent-popover-item-sub,
+#sidebar .agent-slash-item-hint {
+  font-size: 12px;
+}
+
+#sidebar .agent-history-item-title,
+#sidebar .agent-history-item-title *,
+#sidebar .agent-md,
+#sidebar .agent-md * {
+  font-size: 14px;
+}
+#sidebar .agent-md h1 { font-size: 18px; }
+#sidebar .agent-md h2 { font-size: 16px; }
+#sidebar .agent-md h3 { font-size: 15px; }
+#sidebar .agent-md h4,
+#sidebar .agent-md h5,
+#sidebar .agent-md h6 { font-size: 14px; }
+#sidebar .agent-md :not(pre) > code,
+#sidebar .agent-md pre,
+#sidebar .agent-md pre code,
+#sidebar .agent-md th,
+#sidebar .agent-md td { font-size: 13px !important; }
+#sidebar .agent-md-code-lang { font-size: 12px !important; }
+#sidebar .agent-pill,
+#sidebar .agent-pill-label,
+#sidebar .agent-context-pop-title,
+#sidebar .agent-context-pop-title * {
+  font-size: 14px;
+}
+#sidebar .agent-slash-item .codicon { font-size: 15px !important; }
+
+.agent-popover-search,
+.agent-popover-item,
+.agent-popover-item-name,
+.agent-context-compact,
+.agent-context-pop-title,
+.agent-context-pop-title * {
+  font-size: 14px;
+}
+.agent-popover-thinking .agent-popover-item,
+.agent-popover-thinking .agent-popover-item * {
+  font-size: 14px;
+}

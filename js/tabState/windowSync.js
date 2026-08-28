@@ -1,5 +1,6 @@
 const browserUI = require('browserUI.js')
-const taskOverlay = require('taskOverlay/taskOverlay.js')
+const workspaceDrawer = require('workspaceDrawer/workspaceDrawer.js')
+const webviews = require('webviews.js')
 
 const windowSync = {
 
@@ -15,6 +16,10 @@ const windowSync = {
       if (data[0] === 'state-sync-change') {
         return
       }
+      // multi-select is a window-local UI state, don't sync it to other windows
+      if (data[0] === 'tab-multi-selected' || data[0] === 'tab-multi-selection-cleared') {
+        return
+      }
       windowSync.pendingEvents.push(data)
       if (!windowSync.syncTimeout) {
         windowSync.syncTimeout = setTimeout(windowSync.sendEvents, 0)
@@ -22,14 +27,14 @@ const windowSync = {
     })
 
     ipc.on('tab-state-change-receive', function (e, data) {
-      const {sourceWindowId, events} = data
+      const { sourceWindowId, events } = data
       events.forEach(function (event) {
         const priorSelectedTask = tasks.getSelected().id
 
         // close window if its task is destroyed
         if (
-          (event[0] === 'task-destroyed' && event[1] === priorSelectedTask)
-          || (event[0] === 'tab-destroyed' && event[2] === priorSelectedTask && tasks.getSelected().tabs.count() === 1)
+          (event[0] === 'task-destroyed' && event[1] === priorSelectedTask) ||
+          (event[0] === 'tab-destroyed' && event[2] === priorSelectedTask && tasks.getSelected().tabs.count() === 1)
         ) {
           ipc.invoke('close')
           ipc.removeAllListeners('tab-state-change-receive')
@@ -58,6 +63,16 @@ const windowSync = {
             var obj = {}
             obj[event[2]] = event[3]
             tasks.update(event[1], obj, false)
+            // the profile (session partition) changed: destroy the task's views
+            // so they are recreated with the new partition
+            if (event[2] === 'profileId' || event[2] === 'archived') {
+              const task = tasks.get(event[1])
+              if (task) {
+                task.tabs.forEach(function (tab) {
+                  webviews.destroy(tab.id)
+                })
+              }
+            }
             break
           case 'tab-selected':
             tasks.get(event[2]).tabs.setSelected(event[1], false)
@@ -79,25 +94,38 @@ const windowSync = {
 
         if (event[0] === 'task-selected' && event[1] === priorSelectedTask) {
           // our task is being taken by another window
-          //switch to an empty task not open in any window, if possible
-          var newTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name)
-          .sort((a, b) => {
-            return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
-          })
+          // switch to an empty task not open in any window, if possible
+          var newTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name && !task.archived)
+            .sort((a, b) => {
+              return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
+            })
           if (newTaskCandidates.length > 0) {
             browserUI.switchToTask(newTaskCandidates[0].id)
           } else {
             browserUI.addTask()
           }
-          taskOverlay.show()
+          workspaceDrawer.show()
         }
-        //if a tab was added or removed from our task, force a rerender
+        if (event[0] === 'task-updated' && event[2] === 'archived' && event[3] === true && event[1] === priorSelectedTask) {
+          // our task was archived by another window; switch to an empty task
+          // not open in any window, if possible
+          var fallbackTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name && !task.archived)
+            .sort((a, b) => {
+              return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
+            })
+          if (fallbackTaskCandidates.length > 0) {
+            browserUI.switchToTask(fallbackTaskCandidates[0].id)
+          } else {
+            browserUI.addTask()
+          }
+        }
+        // if a tab was added or removed from our task, force a rerender
         if (
-          (event[0] === 'tab-splice' &&  event[1] === priorSelectedTask)
-          || (event[0] === 'tab-destroyed' && event[2] === priorSelectedTask)
-         ) {
-              browserUI.switchToTask(tasks.getSelected().id)
-              browserUI.switchToTab(tabs.getSelected())
+          (event[0] === 'tab-splice' && event[1] === priorSelectedTask) ||
+          (event[0] === 'tab-destroyed' && event[2] === priorSelectedTask)
+        ) {
+          browserUI.switchToTask(tasks.getSelected().id)
+          browserUI.switchToTab(tabs.getSelected())
         }
       })
 

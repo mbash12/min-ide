@@ -31,7 +31,7 @@ module.exports = {
           clearButton.addEventListener('click', function () {
             if (confirm(l('clearHistoryConfirmation'))) {
               places.deleteAllHistory()
-              ipc.invoke('clearStorageData')
+              ipc.invoke('clearStorageData', require('profiles.js').getProfiles().map(p => require('profiles.js').getPartition(p.id)).filter(Boolean))
 
               // hacky way to refresh the list
               // TODO make a better api for this

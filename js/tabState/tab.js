@@ -6,7 +6,7 @@ class TabList {
 
   //tab properties that shouldn't be saved to disk
 
-  static temporaryProperties = ['hasAudio', 'previewImage', 'loaded', 'hasWebContents']
+  static temporaryProperties = ['hasAudio', 'previewImage', 'loaded', 'hasWebContents', 'multiSelected', 'preview']
 
   add (tab = {}, options = {}, emit=true) {
     var tabId = String(tab.id || Math.round(Math.random() * 100000000000000000)) // you can pass an id that will be used, or a random one will be generated.
@@ -23,6 +23,7 @@ class TabList {
       backgroundColor: tab.backgroundColor,
       scrollPosition: tab.scrollPosition || 0,
       selected: tab.selected || false,
+      multiSelected: tab.multiSelected || false,
       muted: tab.muted || false,
       loaded: tab.loaded || false,
       hasAudio: false,
@@ -71,6 +72,11 @@ class TabList {
   destroy (id, emit=true) {
     const index = this.getIndex(id)
     if (index < 0) return false
+
+    // clear multi-selection if the destroyed tab was part of it
+    if (this.tabs[index].multiSelected) {
+      this.clearMultiSelected(false)
+    }
 
     const containingTask = this.parentTaskList.getTaskContainingTab(id).id
 
@@ -152,6 +158,45 @@ class TabList {
     if (emit) {
       this.parentTaskList.emit('tab-selected', id, this.parentTaskList.getTaskContainingTab(id).id)
     }
+  }
+
+  /* marks all tabs between fromId and toId (inclusive) as multi-selected */
+
+  setMultiSelectedRange (fromId, toId, emit=true) {
+    if (!this.has(fromId) || !this.has(toId)) {
+      throw new ReferenceError('Attempted to select a tab that does not exist.')
+    }
+    const fromIndex = this.getIndex(fromId)
+    const toIndex = this.getIndex(toId)
+    const [start, end] = fromIndex < toIndex ? [fromIndex, toIndex] : [toIndex, fromIndex]
+
+    for (var i = 0; i < this.tabs.length; i++) {
+      this.tabs[i].multiSelected = (i >= start && i <= end)
+    }
+    if (emit) {
+      this.parentTaskList.emit('tab-multi-selected', fromId, toId, this.parentTaskList.getTaskContainingTab(fromId).id)
+    }
+  }
+
+  clearMultiSelected (emit=true) {
+    var changed = false
+    for (var i = 0; i < this.tabs.length; i++) {
+      if (this.tabs[i].multiSelected) {
+        this.tabs[i].multiSelected = false
+        changed = true
+      }
+    }
+    if (changed && emit) {
+      this.parentTaskList.emit('tab-multi-selection-cleared', this.parentTaskList.getTaskContainingTab(this.getSelected() || this.tabs[0].id).id)
+    }
+  }
+
+  getMultiSelected () {
+    return this.tabs.filter(tab => tab.multiSelected).map(tab => tab.id)
+  }
+
+  getMultiSelectedCount () {
+    return this.tabs.filter(tab => tab.multiSelected).length
   }
 
   moveBy (id, offset) {

@@ -1,0 +1,46 @@
+body {
+  margin: 0;
+  /* must match the xterm theme background (set in terminal.js) so the
+  padding around the terminal is invisible */
+  background: #1e1e1e;
+  overflow: hidden;
+}
+
+#terminal-container {
+  position: absolute;
+  inset: 0;
+  padding: 8px 12px;
+}
+
+/* the display:flex declaration would override the hidden attribute, so
+explicitly keep the hidden state hidden */
+#terminal-exit-message[hidden] {
+  display: none;
+}
+
+#terminal-exit-message {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  color: #cccccc;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+}
+
+#terminal-restart-button {
+  padding: 6px 16px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: transparent;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+#terminal-restart-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}

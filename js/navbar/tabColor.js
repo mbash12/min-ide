@@ -181,7 +181,7 @@ function setColor (bg, fg, isLowContrast) {
 }
 
 const tabColor = {
-  useSiteTheme: true,
+  useSiteTheme: false, // default to the theme colors (keeps the tab bar readable); opt in via the siteTheme setting
   initialize: function () {
     webviews.bindEvent('page-favicon-updated', function (tabId, favicons) {
       tabColor.updateFromImage(favicons, tabId, function () {
@@ -202,9 +202,13 @@ const tabColor = {
     Reset the icon color when the page changes, so that if the new page has no icon it won't inherit the old one
     But don't actually render anything here because the new icon won't have been received yet
     and we want to go from old color > new color, rather than old color > default > new color
+
+    In-place (SPA/pushState) navigations keep the same document, so its
+    favicon and colors stay valid - only reset on cross-document navigations,
+    otherwise the favicon would disappear every time an SPA changes routes.
      */
-    webviews.bindEvent('did-start-navigation', function (tabId, url, isInPlace, isMainFrame, frameProcessId, frameRoutingId) {
-      if (isMainFrame) {
+    webviews.bindEvent('did-start-navigation', function (tabId, url, isInPlace, isMainFrame) {
+      if (isMainFrame && isInPlace === false) {
         tabs.update(tabId, {
           backgroundColor: null,
           favicon: null
@@ -254,12 +258,36 @@ const tabColor = {
   },
   updateFromImage: function (favicons, tabId, callback) {
     // private tabs always use a special color, we don't need to get the icon
-    if (tabs.get(tabId).private === true) {
+    if (tabs.get(tabId) && tabs.get(tabId).private === true) {
       return
     }
 
+    // some pages declare an intentionally-empty favicon ("data:,") - ignore it
+    var iconUrl = favicons && favicons[0]
+    if (typeof iconUrl !== 'string' || iconUrl.length === 0 || /^data:,?$/.test(iconUrl)) {
+      return
+    }
+
+    // store the favicon right away so it can be displayed even if the color
+    // extraction below fails (the image is loaded with crossOrigin=anonymous,
+    // which makes the load fail entirely on servers without CORS headers)
+    if (tabs.get(tabId)) {
+      tabs.update(tabId, {
+        favicon: {
+          url: iconUrl,
+          luminance: null
+        }
+      })
+    }
+
     requestIdleCallback(function () {
+      if (!tabs.get(tabId)) {
+        return
+      }
       colorExtractorImage.onload = function (e) {
+        if (!tabs.get(tabId)) {
+          return
+        }
         const backgroundColor = getColorFromImage(colorExtractorImage)
         const backgroundColorAdjusted = adjustColorForTheme(backgroundColor)
 
@@ -270,7 +298,7 @@ const tabColor = {
             isLowContrast: isLowContrast(backgroundColorAdjusted)
           },
           favicon: {
-            url: favicons[0],
+            url: iconUrl,
             luminance: getLuminance(backgroundColor)
           }
         })
@@ -304,8 +332,9 @@ const tabColor = {
       }
     }
 
-    // otherwise use the default colors
-    if (window.isDarkMode) {
+    // without site themes the tab bar always uses the dark colors, so the
+    // split group indicators stay visible in any theme
+    if (window.isDarkMode || !tabColor.useSiteTheme) {
       return setColor(defaultColors.darkMode[0], defaultColors.darkMode[1])
     }
     return setColor(defaultColors.lightMode[0], defaultColors.lightMode[1])

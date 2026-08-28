@@ -3,7 +3,7 @@ var webviews = require('webviews.js')
 var tabEditor = require('navbar/tabEditor.js')
 var tabState = require('tabState.js')
 var settings = require('util/settings/settings.js')
-var taskOverlay = require('taskOverlay/taskOverlay.js')
+var workspaceDrawer = require('workspaceDrawer/workspaceDrawer.js')
 const writeFileAtomic = require('write-file-atomic')
 const statistics = require('js/statistics.js')
 
@@ -41,6 +41,9 @@ const sessionRestore = {
     }
 
     if (forceSave === true || stateString !== sessionRestore.previousState) {
+      try {
+        localStorage.setItem('taskRestoreData', JSON.stringify(data))
+      } catch (e) {}
       if (sync === true) {
         writeFileAtomic.sync(sessionRestore.savePath, JSON.stringify(data), {})
       } else {
@@ -62,7 +65,8 @@ const sessionRestore = {
       console.warn('failed to read session restore data', e)
     }
 
-    var startupConfigOption = settings.get('startupTabOption') || 2
+    // default to reopening the last task so the last tabs are shown on startup
+    var startupConfigOption = settings.get('startupTabOption') || 1
     /*
     1 - reopen last task
     2 - open new task, keep old tabs in background
@@ -117,7 +121,7 @@ const sessionRestore = {
         }
       })
 
-      var mostRecentTasks = tasks.slice().sort((a, b) => {
+      var mostRecentTasks = tasks.getActive().sort((a, b) => {
         return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
       })
       if (mostRecentTasks.length > 0) {
@@ -207,7 +211,7 @@ const sessionRestore = {
 
     // reuse an existing task or create a new task in this window
     // same as windowSync.js
-    var newTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name)
+    var newTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name && !task.archived)
       .sort((a, b) => {
         return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
       })
@@ -225,7 +229,7 @@ const sessionRestore = {
       sessionRestore.syncWithWindow()
     }
     if (settings.get('newWindowOption') === 2 && !Object.hasOwn(window.globalArgs, 'launch-window') && !Object.hasOwn(window.globalArgs, 'initial-task')) {
-      taskOverlay.show()
+      workspaceDrawer.show()
     }
   },
   initialize: function () {

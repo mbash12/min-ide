@@ -1,5 +1,6 @@
 #searchbar {
-  z-index: 3;
+  /* above the sidebar (z-index 4) so the URL autocomplete overlays it */
+  z-index: 5;
   position: fixed;
   top: calc(var(--control-space-top) + 36px);
   left: 0;
@@ -9,7 +10,9 @@
   padding-left: var(--control-space-left);
   padding-right: calc(82px + var(--control-space-right));
   -webkit-user-select: none;
-  max-height: calc(100% - 125px);
+  /* extend to the bottom of the window (the 125px padding was hiding the
+  last results when the searchbar overlays the sidebar) */
+  bottom: 0;
   overflow-y: auto;
 }
 

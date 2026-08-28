@@ -70,34 +70,36 @@
   display: flex;
   flex-direction: column;
   position: fixed;
-  top: 0;
+  top: 36px;
+  bottom: 0;
   left: 0;
-  width: 100%;
-  height: 100%;
+  width: 360px;
+  max-width: 90vw;
+  overflow: hidden;
   background-color: #fff;
   white-space: nowrap;
-  overflow: auto;
   opacity: 1;
   transform: none;
   transition: 0.15s all;
-  z-index: 3;
+  z-index: 20;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+  border-right: 1px solid rgba(0, 0, 0, 0.1);
 }
-#task-area {
+#task-overlay #task-area {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
   padding-bottom: 1.5em;
 }
 #task-overlay[hidden] {
   display: block !important;
-  transform: scale(1.05);
+  transform: translateX(-8px);
   opacity: 0;
   pointer-events: none;
 }
 .task-container {
-  width: 90%;
-  margin: auto;
-  border-left: 5vw solid transparent;
-  border-right: 5vw solid transparent;
+  width: 100%;
+  padding: 0.4em 1em;
+  box-sizing: border-box;
   transition: 0.5s opacity;
 }
 .task-container.collapsed {
@@ -113,6 +115,12 @@
 
 .task-container.collapsed .task-tabs-container {
   display: none;
+}
+
+.task-tabs-container {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .task-tab-item .icon-image {
@@ -212,13 +220,15 @@ body:not(.touch)
   opacity: 0.8;
 }
 #add-task {
-  width: 80%;
-  margin-left: 10%;
-  padding: 1.25em;
+  width: calc(100% - 2em);
+  margin: 0.5em 1em;
+  padding: 0.9em;
   text-align: center;
   color: inherit;
   background-color: rgb(245, 245, 245);
   cursor: pointer;
+  border: 0;
+  border-radius: 4px;
 }
 /* hide tab element that is being dropped */
 #add-task .task-tab-item {
@@ -262,6 +272,206 @@ body:not(.touch)
   display: flex;
   align-items: center;
   padding-right: 1em;
+}
+
+/* settings button on each task row */
+
+.task-settings-button {
+  background: none;
+  border: 0;
+  padding: 0.3em;
+  border-radius: 4px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.7;
+  font-size: 1.15em;
+}
+.task-settings-button:hover,
+.task-settings-button:focus {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.125);
+}
+.dark-mode .task-settings-button:hover,
+.dark-mode .task-settings-button:focus {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* profile identity: a colored circle with the profile initial */
+
+.profile-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 0.75em;
+  font-weight: 600;
+  user-select: none;
+}
+.profile-initial-default {
+  background: rgba(127, 127, 127, 0.5);
+  font-size: 1em;
+}
+
+/* profile popup (assign to task / manage profiles) */
+
+#profile-popup {
+  position: fixed;
+  z-index: 30;
+  width: 260px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 0.6em;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  color: #000;
+}
+.dark-mode #profile-popup {
+  background: rgb(40, 44, 52);
+  color: lightgrey;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.profile-popup-title {
+  font-weight: 600;
+  padding: 0.3em 0.4em 0.4em;
+  opacity: 0.9;
+}
+.profile-popup-section-label {
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  padding: 0.6em 0.4em 0.25em;
+}
+.profile-popup-delete-task {
+  display: block;
+  width: 100%;
+  margin-top: 0.6em;
+  padding: 0.5em;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(211, 47, 47, 0.12);
+  color: #c62828;
+  cursor: pointer;
+  font-size: 0.95em;
+}
+.profile-popup-delete-task:hover {
+  background: rgba(211, 47, 47, 0.25);
+}
+.dark-mode .profile-popup-delete-task {
+  color: #ef9a9a;
+}
+.profile-popup-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.3em 0.4em;
+  border-radius: 4px;
+}
+.profile-popup-row:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+.profile-popup-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.profile-popup-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.95em;
+  color: inherit;
+  border: 1px solid rgba(127, 127, 127, 0.4);
+  border-radius: 4px;
+  background: transparent;
+  padding: 0.2em 0.4em;
+}
+.profile-popup-row button {
+  background: none;
+  border: 0;
+  color: inherit;
+  padding: 0.2em;
+  cursor: pointer;
+  opacity: 0.65;
+  font-size: 1.05em;
+}
+.profile-popup-row button:hover {
+  opacity: 1;
+}
+.profile-popup-row button.selected {
+  opacity: 1;
+  color: #2e7d32;
+}
+.dark-mode .profile-popup-row button.selected {
+  color: #81c784;
+}
+.profile-popup-manage {
+  display: block;
+  width: 100%;
+  margin-top: 0.4em;
+  padding: 0.45em;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.15);
+  color: inherit;
+  cursor: pointer;
+}
+.profile-popup-manage:hover {
+  background: rgba(127, 127, 127, 0.3);
+}
+.profile-popup-add-row {
+  display: flex;
+  gap: 0.4em;
+  margin-top: 0.4em;
+  padding: 0.4em;
+  border-top: 1px solid rgba(127, 127, 127, 0.25);
+}
+.profile-popup-add-row input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.95em;
+  color: inherit;
+  border: 1px solid rgba(127, 127, 127, 0.4);
+  border-radius: 4px;
+  background: transparent;
+  padding: 0.3em 0.5em;
+}
+.profile-popup-add-row button {
+  border: 0;
+  border-radius: 4px;
+  padding: 0.3em 0.7em;
+  cursor: pointer;
+  background: rgba(127, 127, 127, 0.2);
+  color: inherit;
+}
+.profile-popup-add-row button:hover {
+  background: rgba(127, 127, 127, 0.35);
+}
+.profiles-empty {
+  opacity: 0.7;
+  font-size: 0.9em;
+  padding: 0.4em;
+}
+
+/* manage profiles button in the drawer navbar */
+
+#manage-profiles-button {
+  background: none;
+  border: 0;
+  color: inherit;
+  opacity: 0.75;
+  padding: 0.5em;
+  margin-left: auto;
+  margin-right: 0.5em;
+  cursor: pointer;
+}
+#manage-profiles-button:hover,
+#manage-profiles-button:focus {
+  opacity: 1;
 }
 .task-info-container {
   padding: 0 0.6em;

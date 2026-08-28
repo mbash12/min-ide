@@ -1,3 +1,5 @@
+/* global minFigmaEngine */
+
 var viewMap = {} // id: view
 var viewStateMap = {} // id: view state
 
@@ -5,6 +7,64 @@ var temporaryPopupViews = {} // id: view
 
 // rate limit on "open in app" requests
 var globalLaunchRequests = 0
+var figmaEngineAuthCallbacks = Object.create(null)
+
+function isFigmaEngineAuthCallback (url) {
+  var value = String(url || '')
+  try {
+    var parsed = new URL(value)
+    var protocol = parsed.protocol.toLowerCase()
+    var pathname = parsed.pathname.replace(/\/+/g, '/')
+    var isFigmaProtocol = protocol === 'figma:' && (
+      (parsed.hostname.toLowerCase() === 'app_auth' && pathname === '/redeem') ||
+      pathname === '/app_auth/redeem'
+    )
+    var isFigmaWeb = /^(https?:)$/.test(protocol) &&
+      /(^|\.)figma\.com$/i.test(parsed.hostname) &&
+      pathname === '/app_auth/redeem'
+    return (isFigmaProtocol || isFigmaWeb) && !!parsed.searchParams.get('g_secret')
+  } catch (e) {
+    // Keep handling malformed-but-common custom URLs such as
+    // figma://app_auth/redeem?g_secret=... without sending them to xdg-open.
+    return /^(?:figma:\/\/\/?app_auth\/redeem|https?:\/\/(?:[\w.-]+\.)?figma\.com\/app_auth\/redeem)\?[^#]*\bg_secret=/i.test(value)
+  }
+}
+
+function consumeFigmaEngineAuthCallback (url) {
+  if (!isFigmaEngineAuthCallback(url)) return false
+  if (typeof minFigmaEngine === 'undefined' || !minFigmaEngine || !minFigmaEngine.redeemAuth) {
+    return false
+  }
+  var status = minFigmaEngine.status && minFigmaEngine.status()
+  if (!status || !status.running) return false
+
+  var key = String(url || '')
+  try {
+    var parsed = new URL(key)
+    key = parsed.searchParams.get('g_secret') || key
+  } catch (e) {}
+  if (figmaEngineAuthCallbacks[key]) return true
+  figmaEngineAuthCallbacks[key] = true
+
+  var redeem
+  try {
+    redeem = minFigmaEngine.redeemAuth(url)
+  } catch (e) {
+    delete figmaEngineAuthCallbacks[key]
+    return false
+  }
+  if (redeem && typeof redeem.then === 'function') {
+    redeem.then(function (result) {
+      if (!result || result.ok !== true) delete figmaEngineAuthCallbacks[key]
+    }).catch(function () {
+      delete figmaEngineAuthCallbacks[key]
+    })
+  }
+  setTimeout(function () {
+    delete figmaEngineAuthCallbacks[key]
+  }, 30000)
+  return true
+}
 
 function getDefaultViewWebPreferences () {
   return (
@@ -31,14 +91,15 @@ function getDefaultViewWebPreferences () {
 
 function createView (existingViewId, id, webPreferences, boundsString, events) {
   if (viewStateMap[id]) {
-    console.warn("Creating duplicate view")
+    console.warn('Creating duplicate view')
   }
 
   const viewPrefs = Object.assign({}, getDefaultViewWebPreferences(), webPreferences)
 
   viewStateMap[id] = {
     loadedInitialURL: false,
-    hasJS: viewPrefs.javascript // need this later to see if we should swap the view for a JS-enabled one
+    hasJS: viewPrefs.javascript, // need this later to see if we should swap the view for a JS-enabled one
+    partition: viewPrefs.partition || null // used to give popups the same session as their parent
   }
 
   let view
@@ -60,7 +121,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events) {
       const eventTarget = getWindowFromViewContents(view.webContents) || windows.getCurrent()
 
       if (!eventTarget) {
-        //this can happen during shutdown - windows can be destroyed before the corresponding views, and the view can emit an event during that time
+        // this can happen during shutdown - windows can be destroyed before the corresponding views, and the view can emit an event during that time
         return
       }
 
@@ -72,12 +133,24 @@ function createView (existingViewId, id, webPreferences, boundsString, events) {
     })
   })
 
+  view.webContents.on('will-navigate', function (event, url) {
+    if (consumeFigmaEngineAuthCallback(url)) {
+      event.preventDefault()
+    }
+  })
+
   view.webContents.on('select-bluetooth-device', function (event, deviceList, callback) {
     event.preventDefault()
     callback('')
   })
 
   view.webContents.setWindowOpenHandler(function (details) {
+    if (details.url && consumeFigmaEngineAuthCallback(details.url)) {
+      return {
+        action: 'deny'
+      }
+    }
+
     if (details.url && !filterPopups(details.url)) {
       return {
         action: 'deny'
@@ -107,7 +180,12 @@ function createView (existingViewId, id, webPreferences, boundsString, events) {
     return {
       action: 'allow',
       createWindow: function (options) {
-        const view = new WebContentsView({ webPreferences: getDefaultViewWebPreferences(), webContents: options.webContents })
+        // popups inherit the session partition of the view that opened them
+        const popupPrefs = getDefaultViewWebPreferences()
+        if (viewStateMap[id] && viewStateMap[id].partition) {
+          popupPrefs.partition = viewStateMap[id].partition
+        }
+        const view = new WebContentsView({ webPreferences: popupPrefs, webContents: options.webContents })
 
         var popupId = Math.random().toString()
         temporaryPopupViews[popupId] = view
@@ -138,7 +216,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events) {
     const eventTarget = getWindowFromViewContents(view.webContents) || windows.getCurrent()
 
     if (!eventTarget) {
-      //this can happen during shutdown - windows can be destroyed before the corresponding views, and the view can emit an event during that time
+      // this can happen during shutdown - windows can be destroyed before the corresponding views, and the view can emit an event during that time
       return
     }
 
@@ -175,6 +253,11 @@ function createView (existingViewId, id, webPreferences, boundsString, events) {
   // show an "open in app" prompt for external protocols
 
   function handleExternalProtocol (e, url, isInPlace, isMainFrame, frameProcessId, frameRoutingId) {
+    if (consumeFigmaEngineAuthCallback(url)) {
+      if (e && typeof e.preventDefault === 'function') e.preventDefault()
+      return
+    }
+
     var knownProtocols = ['http', 'https', 'file', 'min', 'about', 'data', 'javascript', 'chrome'] // TODO anything else?
     if (!knownProtocols.includes(url.split(':')[0])) {
       var externalApp = app.getApplicationNameForProtocol(url)
@@ -247,9 +330,14 @@ function destroyView (id) {
   }
 
   windows.getAll().forEach(function (window) {
-    if (windows.getState(window).selectedView === id) {
+    const state = windows.getState(window)
+    if (state.selectedView === id) {
       window.getContentView().removeChildView(viewMap[id])
-      windows.getState(window).selectedView = null
+      state.selectedView = null
+    }
+    if (state.splitPaneIds && state.splitPaneIds.includes(id)) {
+      window.getContentView().removeChildView(viewMap[id])
+      state.splitPaneIds = null
     }
   })
   viewMap[id].webContents.destroy()
@@ -266,18 +354,68 @@ function destroyAllViews () {
 
 function setView (id, senderContents) {
   const win = windows.windowFromContents(senderContents).win
+  const state = windows.getState(win)
 
   // changing views can cause flickering, so we only want to call it if the view is actually changing
   // see https://github.com/minbrowser/min/issues/1966
-  if (windows.getState(win).selectedView !== viewMap[id]) {
-    //remove all prior views
-    win.getContentView().children.slice(1).forEach(child => win.getContentView().removeChildView(child))
-    if (viewStateMap[id].loadedInitialURL) {
-      win.getContentView().addChildView(viewMap[id])
+  if (state.selectedView !== viewMap[id]) {
+    if (state.splitPaneIds) {
+      // split view: keep both panes attached, just switch which one is active
+      if (viewStateMap[id].loadedInitialURL && !win.getContentView().children.includes(viewMap[id])) {
+        win.getContentView().addChildView(viewMap[id])
+      }
+      state.selectedView = id
     } else {
-      win.getContentView().removeChildView(viewMap[id])
+      // remove all prior views
+      win.getContentView().children.slice(1).forEach(child => win.getContentView().removeChildView(child))
+      if (viewStateMap[id].loadedInitialURL) {
+        win.getContentView().addChildView(viewMap[id])
+      } else {
+        win.getContentView().removeChildView(viewMap[id])
+      }
+      state.selectedView = id
     }
-    windows.getState(win).selectedView = id
+  }
+}
+
+/* attaches two views side by side (split view) */
+
+function setSplitView (ids, bounds, activeId, senderContents) {
+  const win = windows.windowFromContents(senderContents).win
+  const state = windows.getState(win)
+
+  // remove all prior views
+  win.getContentView().children.slice(1).forEach(child => win.getContentView().removeChildView(child))
+
+  ids.forEach(function (id, i) {
+    if (viewMap[id] && viewStateMap[id].loadedInitialURL) {
+      win.getContentView().addChildView(viewMap[id])
+      viewMap[id].setBounds(bounds[i])
+    }
+  })
+
+  state.splitPaneIds = ids
+  state.selectedView = activeId
+}
+
+/* detaches the inactive pane and returns to a single full-window view */
+
+function unsplitView (activeId, bounds, senderContents) {
+  const win = windows.windowFromContents(senderContents).win
+  const state = windows.getState(win)
+
+  if (state.splitPaneIds) {
+    state.splitPaneIds.forEach(function (id) {
+      if (id !== activeId && viewMap[id]) {
+        win.getContentView().removeChildView(viewMap[id])
+      }
+    })
+  }
+
+  state.splitPaneIds = null
+  state.selectedView = activeId
+  if (viewMap[activeId]) {
+    viewMap[activeId].setBounds(bounds)
   }
 }
 
@@ -301,10 +439,13 @@ function focusView (id) {
 
 function hideCurrentView (senderContents) {
   const win = windows.windowFromContents(senderContents).win
-  const currentId = windows.getState(win).selectedView
+  const state = windows.getState(win)
+  const currentId = state.selectedView
   if (currentId) {
-    win.getContentView().removeChildView(viewMap[currentId])
-    windows.getState(win).selectedView = null
+    // hide all attached views (including both panes in split view)
+    win.getContentView().children.slice(1).forEach(child => win.getContentView().removeChildView(child))
+    state.selectedView = null
+    state.splitPaneIds = null
     if (win.isFocused()) {
       getWindowWebContents(win).focus()
     }
@@ -325,7 +466,10 @@ function getTabIDFromWebContents (contents) {
 
 function getWindowFromViewContents (webContents) {
   const viewId = Object.keys(viewMap).find(id => viewMap[id].webContents === webContents)
-  return windows.getAll().find(win => windows.getState(win).selectedView === viewId)
+  return windows.getAll().find(win => {
+    const state = windows.getState(win)
+    return state.selectedView === viewId || (state.splitPaneIds && state.splitPaneIds.includes(viewId))
+  })
 }
 
 ipc.on('createView', function (e, args) {
@@ -351,12 +495,36 @@ ipc.on('setView', function (e, args) {
   }
 })
 
+ipc.on('setSplitView', function (e, args) {
+  setSplitView(args.ids, args.bounds, args.activeId, e.sender)
+  if (args.activeId) {
+    focusView(args.activeId)
+  }
+})
+
+ipc.on('unsplitView', function (e, args) {
+  unsplitView(args.activeId, args.bounds, e.sender)
+  if (args.activeId) {
+    focusView(args.activeId)
+  }
+})
+
 ipc.on('setBounds', function (e, args) {
   setBounds(args.id, args.bounds)
 })
 
 ipc.on('focusView', function (e, id) {
   focusView(id)
+})
+
+/* relays mouse events from page views to their owning window's renderer,
+used by the split view divider to track drags over the panes */
+ipc.on('view-mouse-event', function (e, args) {
+  const eventWindow = getWindowFromViewContents(e.sender)
+  if (eventWindow) {
+    const viewId = Object.keys(viewMap).find(id => viewMap[id].webContents === e.sender)
+    getWindowWebContents(eventWindow).send('view-mouse-event', Object.assign({}, args, { viewId: viewId }))
+  }
 })
 
 ipc.on('hideCurrentView', function (e) {
@@ -367,11 +535,11 @@ function loadURLInView (id, url, win) {
   // wait until the first URL is loaded to set the background color so that new tabs can use a custom background
   if (!viewStateMap[id].loadedInitialURL) {
     // Give the site a chance to display something before setting the background, in case it has its own dark theme
-    viewMap[id].webContents.once('dom-ready', function() {
+    viewMap[id].webContents.once('dom-ready', function () {
       viewMap[id].setBackgroundColor('#fff')
     })
     // If the view has no URL, it won't be attached yet
-    if (win && id === windows.getState(win).selectedView) {
+    if (win && (id === windows.getState(win).selectedView || (windows.getState(win).splitPaneIds && windows.getState(win).splitPaneIds.includes(id)))) {
       win.getContentView().addChildView(viewMap[id])
     }
   }
@@ -435,23 +603,6 @@ ipc.handle('getNavigationHistory', function (e, id) {
     activeIndex,
     entries
   }
-})
-
-ipc.on('getCapture', function (e, data) {
-  var view = viewMap[data.id]
-  if (!view) {
-    // view could have been destroyed
-    return
-  }
-
-  view.webContents.capturePage().then(function (img) {
-    var size = img.getSize()
-    if (size.width === 0 && size.height === 0) {
-      return
-    }
-    img = img.resize({ width: data.width, height: data.height })
-    e.sender.send('captureData', { id: data.id, url: img.toDataURL() })
-  })
 })
 
 ipc.on('saveViewCapture', function (e, data) {

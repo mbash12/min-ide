@@ -33,6 +33,7 @@ if (process.argv.some(arg => arg === '-v' || arg === '--version')) {
 
 let isInstallerRunning = false
 const isDevelopmentMode = process.argv.some(arg => arg === '--development-mode')
+const isDevMode = process.argv.some(arg => arg === '--dev')
 const isDebuggingEnabled = process.argv.some(arg => arg === '--debug-browser')
 
 function clamp (n, min, max) {
@@ -211,6 +212,11 @@ function createWindowWithBounds (bounds, customArgs) {
     newWin.setMenuBarVisibility(false)
   }
 
+  // hide the window controls (traffic lights on mac)
+  if (process.platform === 'darwin' && newWin.setWindowButtonVisibility) {
+    newWin.setWindowButtonVisibility(false)
+  }
+
   const mainView = new WebContentsView({
     webPreferences: {
       nodeIntegration: true,
@@ -247,6 +253,9 @@ function createWindowWithBounds (bounds, customArgs) {
   mainView.webContents.once('did-finish-load', function () {
     const winBounds = newWin.getContentBounds()
     mainView.setBounds({x: 0, y: 0, width: winBounds.width, height: winBounds.height})
+    if (isDevMode) {
+      mainView.webContents.openDevTools({ mode: 'detach' })
+    }
   })
 
   mainView.webContents.ipc.on('set-window-title', function(e, title) {

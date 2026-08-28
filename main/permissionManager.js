@@ -7,8 +7,8 @@ All permission requests are given to the renderer on each change,
 it will figure out what updates to make
 */
 function sendPermissionsToRenderers () {
-  //send all requests to all windows - the tab bar in each will figure out what to display
-  windows.getAll().forEach(function(win) {
+  // send all requests to all windows - the tab bar in each will figure out what to display
+  windows.getAll().forEach(function (win) {
     sendIPCToWindow(win, 'updatePermissions', pendingPermissions.concat(grantedPermissions).map(p => {
       // remove properties that can't be serialized over IPC
       return {
@@ -31,11 +31,33 @@ function removePermissionsForContents (contents) {
 }
 
 /*
-Was permission already granted for this origin?
+Get the session ID for a webContents' session.
+The default (shared) session is "default"; each workspace profile partition
+gets its own session ID, so permissions are isolated between profiles.
 */
-function isPermissionGrantedForOrigin (requestOrigin, requestPermission, requestDetails) {
+function getSessionIDForContents (contents) {
+  try {
+    const ses = contents.session
+    if (!ses) {
+      return 'default'
+    }
+    if (ses === session.defaultSession) {
+      return 'default'
+    }
+    return ses.getStoragePath() || ses.name || 'default'
+  } catch (e) {
+    return 'default'
+  }
+}
+
+/*
+Was permission already granted for this origin in the same session?
+Permissions are scoped per session (workspace profile), so granting camera
+access in one profile does not grant it in another.
+*/
+function isPermissionGrantedForOrigin (requestSessionID, requestOrigin, requestPermission, requestDetails) {
   for (var i = 0; i < grantedPermissions.length; i++) {
-    if (requestOrigin === grantedPermissions[i].origin) {
+    if (requestOrigin === grantedPermissions[i].origin && requestSessionID === grantedPermissions[i].sessionID) {
       if (requestPermission === 'notifications' && grantedPermissions[i].permission === 'notifications') {
         return true
       }
@@ -57,8 +79,8 @@ function isPermissionGrantedForOrigin (requestOrigin, requestPermission, request
           return true
         }
 
-        //type 3: a general media permission with no specific type
-        //occurs immediately after granting a more specific permission type
+        // type 3: a general media permission with no specific type
+        // occurs immediately after granting a more specific permission type
         if (!requestDetails.mediaType && !requestDetails.mediaTypes && grantedPermissions[i].permission === 'media') {
           return true
         }
@@ -69,11 +91,12 @@ function isPermissionGrantedForOrigin (requestOrigin, requestPermission, request
 }
 
 /*
-Is there already a pending request of the given type for this origin?
+Is there already a pending request of the given type for this origin in the
+same session?
  */
-function hasPendingRequestForOrigin (requestOrigin, permission, details) {
+function hasPendingRequestForOrigin (requestSessionID, requestOrigin, permission, details) {
   for (var i = 0; i < pendingPermissions.length; i++) {
-    if (requestOrigin === pendingPermissions[i].origin && permission === pendingPermissions[i].permission) {
+    if (requestOrigin === pendingPermissions[i].origin && permission === pendingPermissions[i].permission && requestSessionID === pendingPermissions[i].sessionID) {
       return true
     }
   }
@@ -117,10 +140,12 @@ function pagePermissionRequestHandler (webContents, permission, callback, detail
   Other permissions aren't supported for now to simplify the UI
   */
   if (['media', 'notifications', 'pointerLock'].includes(permission)) {
+    const sessionID = getSessionIDForContents(webContents)
+
     /*
-    If permission was previously granted for this origin in a different tab, new requests should be allowed
+    If permission was previously granted for this origin in a different tab in the same session, new requests should be allowed
     */
-    if (isPermissionGrantedForOrigin(requestOrigin, permission, details)) {
+    if (isPermissionGrantedForOrigin(sessionID, requestOrigin, permission, details)) {
       callback(true)
 
       if (!grantedPermissions.some(grant => grant.contents === webContents && grant.permission === permission)) {
@@ -131,13 +156,14 @@ function pagePermissionRequestHandler (webContents, permission, callback, detail
           origin: requestOrigin,
           permission: permission,
           details: details,
-          granted: true
+          granted: true,
+          sessionID: sessionID
         })
 
         sendPermissionsToRenderers()
         nextPermissionId++
       }
-    } else if (permission === 'notifications' && hasPendingRequestForOrigin(requestOrigin, permission, details)) {
+    } else if (permission === 'notifications' && hasPendingRequestForOrigin(sessionID, requestOrigin, permission, details)) {
       /*
       Sites sometimes make a new request for each notification, which can generate multiple requests if the first one wasn't approved.
       TODO this isn't entirely correct (some requests will be rejected when they should be pending) - correct solution is to show a single button to approve all requests in the UI.
@@ -151,7 +177,8 @@ function pagePermissionRequestHandler (webContents, permission, callback, detail
         origin: requestOrigin,
         permission: permission,
         details: details,
-        callback: callback
+        callback: callback,
+        sessionID: sessionID
       })
 
       sendPermissionsToRenderers()
@@ -200,7 +227,7 @@ function pagePermissionCheckHandler (webContents, permission, requestingOrigin, 
     return false
   }
 
-  return isPermissionGrantedForOrigin(requestHostname, permission, details)
+  return isPermissionGrantedForOrigin(getSessionIDForContents(webContents), requestHostname, permission, details)
 }
 
 app.once('ready', function () {

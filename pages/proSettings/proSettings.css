@@ -1,0 +1,567 @@
+/* Pro Settings (min://proSettings) — minimal styling matching the
+sidebar's flat look: no gradients or shadows, hairline separators only. */
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--page-background, #f7f7f7);
+  color: var(--primary-text-color, #1a1a1a);
+  font-size: 14px;
+  line-height: 1.5;
+}
+body.dark-mode {
+  background: rgb(35, 38, 44);
+}
+
+/* ----- header + side tabs ----- */
+
+.pro-header {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 26px 20px 0;
+}
+
+.pro-header h1 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.pro-tagline {
+  margin: 3px 0 0;
+  font-size: 14px;
+  line-height: 1.45;
+  opacity: 0.6;
+}
+
+.pro-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 26px;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 18px 20px 48px;
+}
+
+/* vertical tab list, like the sidebar's activity bar */
+.pro-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 140px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 20px;
+}
+
+.pro-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 11px;
+  text-align: left;
+  font: inherit;
+  font-size: 14px;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+}
+.pro-tab:hover {
+  opacity: 0.85;
+  background: rgba(128, 128, 128, 0.1);
+}
+.pro-tab.active {
+  opacity: 1;
+  font-weight: 600;
+  background: rgba(128, 128, 128, 0.09);
+}
+
+/* ----- content column ----- */
+
+.pro-container {
+  flex: 1;
+  min-width: 0;
+  max-width: 640px;
+}
+
+.pro-panel {
+  display: none;
+}
+.pro-panel.active {
+  display: block;
+}
+
+/* sections separated by hairlines instead of cards */
+
+.pro-section {
+  padding: 18px 0 14px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+body.dark-mode .pro-section {
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+}
+.pro-panel > .pro-section:last-of-type {
+  border-bottom: none;
+}
+
+.pro-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.pro-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+}
+
+.pro-provider-badge {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  opacity: 0.8;
+}
+body.dark-mode .pro-provider-badge {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.pro-description {
+  margin: 2px 0 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  opacity: 0.65;
+}
+.pro-description a {
+  color: inherit;
+}
+
+/* status pill */
+
+.pro-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+.pro-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fbbf24;
+}
+.pro-status-pill.configured .pro-status-dot {
+  background: #34d399;
+}
+.pro-status-pill.error .pro-status-dot {
+  background: #f87171;
+}
+
+/* inputs — flat like the sidebar's search field */
+
+.pro-key-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+#input-openrouter-key {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  padding: 8px 11px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+body.dark-mode #input-openrouter-key {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+#input-openrouter-key:focus {
+  outline: none;
+  border-color: rgba(128, 128, 128, 0.55);
+}
+
+#toggle-key-visibility,
+#clear-model-button {
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  width: 38px;
+}
+body.dark-mode #toggle-key-visibility {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+#toggle-key-visibility:hover,
+#clear-model-button:hover {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.pro-actions-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.pro-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 13px;
+  cursor: pointer;
+}
+body.dark-mode .pro-button {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.pro-button:hover {
+  background: rgba(128, 128, 128, 0.1);
+}
+.pro-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pro-test-result {
+  font-size: 12px;
+}
+.pro-test-result.ok {
+  color: #059669;
+}
+.pro-test-result.fail {
+  color: #dc2626;
+}
+
+/* model picker */
+
+.pro-selected-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(45, 164, 78, 0.4);
+  color: #047857;
+  border-radius: 6px;
+  padding: 4px 6px 4px 10px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+body.dark-mode .pro-selected-model {
+  color: #6ee7b7;
+}
+.pro-selected-model button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  padding: 1px;
+  font-size: 13px;
+  opacity: 0.7;
+}
+.pro-selected-model button:hover {
+  opacity: 1;
+}
+
+#model-search {
+  width: 100%;
+  font-size: 14px;
+  padding: 8px 11px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+body.dark-mode #model-search {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+#model-search:focus {
+  outline: none;
+  border-color: rgba(128, 128, 128, 0.55);
+}
+
+.pro-model-list {
+  margin-top: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+}
+body.dark-mode .pro-model-list {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.pro-model-list:empty {
+  display: none;
+}
+
+.pro-model-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 12px;
+  border: none;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1.4;
+}
+body.dark-mode .pro-model-row {
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+.pro-model-row:last-child {
+  border-bottom: none;
+}
+.pro-model-row:hover {
+  background: rgba(128, 128, 128, 0.09);
+}
+
+.pro-model-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+}
+
+.pro-model-name {
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pro-model-meta {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 12px;
+  opacity: 0.5;
+  white-space: nowrap;
+}
+
+.pro-model-empty {
+  padding: 12px;
+  font-size: 13px;
+  opacity: 0.55;
+}
+
+.pro-footer {
+  padding-top: 14px;
+  font-size: 12px;
+  opacity: 0.5;
+  text-align: center;
+}
+
+/* ===== profiles tab (moved from pages/profiles) ===== */
+
+.profile-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.55em 0.75em;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  margin-bottom: 0.45em;
+}
+body.dark-mode .profile-row {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.profile-row .profile-initial {
+  width: 26px;
+  height: 26px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.profile-row-name {
+  flex: 1;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-row-usage {
+  font-size: 12px;
+  opacity: 0.55;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.15em 0.5em;
+  border-radius: 10px;
+}
+body.dark-mode .profile-row-usage {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.profile-row button {
+  background: none;
+  border: 0;
+  padding: 0.3em 0.45em;
+  border-radius: 6px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 14px;
+}
+.profile-row button:hover {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.12);
+}
+.profile-row .profile-delete {
+  color: #c62828;
+}
+body.dark-mode .profile-row .profile-delete {
+  color: #ef9a9a;
+}
+
+.profile-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+}
+.profile-initial-default {
+  background: rgba(127, 127, 127, 0.45);
+}
+
+.profiles-empty {
+  opacity: 0.55;
+  padding: 0.9em 0;
+  text-align: center;
+}
+
+.profiles-default-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.55em 0.75em;
+  border: 1px dashed rgba(0, 0, 0, 0.16);
+  border-radius: 6px;
+  margin-bottom: 0.6em;
+}
+body.dark-mode .profiles-default-row {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.pro-add-row {
+  display: flex;
+  gap: 0.5em;
+  align-items: center;
+  margin-top: 0.6em;
+}
+
+#profiles-add-input {
+  flex: 1;
+  max-width: 300px;
+  padding: 0.45em 0.65em;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  font-size: 14px;
+  background: transparent;
+  color: inherit;
+}
+body.dark-mode #profiles-add-input {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+#profiles-add-button {
+  padding: 0.45em 1em;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+}
+body.dark-mode #profiles-add-button {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+#profiles-add-button:hover {
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.pro-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+.pro-kv-row {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.pro-kv-k {
+  opacity: 0.55;
+}
+.pro-kv-v {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .pro-header {
+    padding: 20px 16px 0;
+  }
+
+  .pro-layout {
+    display: block;
+    padding: 16px 16px 36px;
+  }
+
+  .pro-tabs {
+    position: static;
+    flex-direction: row;
+    width: 100%;
+    overflow-x: auto;
+    margin-bottom: 12px;
+    padding-bottom: 2px;
+  }
+
+  .pro-tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .pro-container {
+    max-width: none;
+  }
+
+  .pro-section {
+    padding-top: 14px;
+  }
+}

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <!-- title is set in JS -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="script-src 'self'; style-src 'self' 'unsafe-inline'"
+    />
+    <link rel="stylesheet" href="monaco/vs/editor/editor.main.css" />
+    <link rel="stylesheet" href="editor.css" />
+  </head>
+  <body>
+    <div id="editor-loading">
+      <span data-string="editorLoading"></span>
+    </div>
+    <div id="editor-error" hidden>
+      <i class="i carbon:warning-alt editor-error-icon"></i>
+      <span id="editor-error-text"></span>
+    </div>
+    <div id="editor-container"></div>
+    <script src="../../dist/localization.build.js"></script>
+    <script src="monaco/vs/loader.js"></script>
+    <script src="monaco/vs/emmet-monaco.min.js"></script>
+    <script src="editor.js"></script>
+  </body>
+</html>

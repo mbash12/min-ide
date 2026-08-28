@@ -1,7 +1,6 @@
 const EventEmitter = require('events')
 
 const webviews = require('webviews.js')
-const focusMode = require('focusMode.js')
 const readerView = require('readerView.js')
 const tabAudio = require('tabAudio.js')
 const dragula = require('dragula')
@@ -11,8 +10,29 @@ const urlParser = require('util/urlParser.js')
 const tabEditor = require('navbar/tabEditor.js')
 const progressBar = require('navbar/progressBar.js')
 const permissionRequests = require('navbar/permissionRequests.js')
+const splitView = require('splitView.js')
+const editorView = require('editorView.js')
 
-var lastTabDeletion = 0 // TODO get rid of this
+/* per-page lead icons for built-in min:// pages (used instead of the
+globe fallback, since internal pages never emit a favicon event) */
+const internalPageIcons = {
+  settings: 'carbon:settings',
+  proSettings: 'carbon:machine-learning-model',
+  terminal: 'carbon:terminal',
+  editor: 'carbon:code'
+}
+
+function getInternalPageIcon (url) {
+  // normalize both short ('min://settings') and stored full forms
+  const parsed = urlParser.parse(url || '')
+  const prefix = 'min://app/pages/'
+  if (!parsed.startsWith(prefix)) {
+    return null
+  }
+  // e.g. 'settings/index.html' -> 'settings'
+  const page = parsed.slice(prefix.length).split('?')[0].split('#')[0].split('/')[0]
+  return internalPageIcons[page] || null
+}
 
 const tabBar = {
   navBar: document.getElementById('navbar'),
@@ -43,6 +63,23 @@ const tabBar = {
       el.scrollIntoView()
     })
   },
+  updateMultiSelected: function () {
+    const multiSelected = tabs.getMultiSelected()
+    tabs.get().forEach(function (tab) {
+      const el = tabBar.getTab(tab.id)
+      if (el) {
+        if (multiSelected.includes(tab.id) && tab.id !== tabs.getSelected()) {
+          el.classList.add('multi-selected')
+          el.setAttribute('aria-selected', 'true')
+        } else {
+          el.classList.remove('multi-selected')
+          if (tab.id !== tabs.getSelected()) {
+            el.removeAttribute('aria-selected')
+          }
+        }
+      }
+    })
+  },
   createTab: function (data) {
     var tabEl = document.createElement('div')
     tabEl.className = 'tab-item'
@@ -50,7 +87,6 @@ const tabBar = {
     tabEl.setAttribute('role', 'tab')
 
     tabEl.appendChild(readerView.getButton(data.id))
-    tabEl.appendChild(tabAudio.getButton(data.id))
     tabEl.appendChild(progressBar.create())
 
     // icons
@@ -77,6 +113,30 @@ const tabBar = {
 
     tabEl.appendChild(iconArea)
 
+    // lead icon: favicon / globe fallback / audio indicator share one slot
+
+    var faviconBox = document.createElement('span')
+    faviconBox.className = 'tab-favicon-box'
+
+    var faviconImg = document.createElement('img')
+    faviconImg.className = 'tab-favicon-img'
+    faviconImg.setAttribute('aria-hidden', 'true')
+    faviconImg.hidden = true
+
+    var faviconFallback = document.createElement('i')
+    faviconFallback.className = 'tab-favicon-fallback i carbon:globe'
+    faviconFallback.title = ''
+
+    faviconBox.appendChild(faviconImg)
+    faviconBox.appendChild(faviconFallback)
+    faviconBox.appendChild(tabAudio.getButton(data.id))
+
+    faviconBox.addEventListener('click', function (e) {
+      e.stopPropagation()
+    })
+
+    tabEl.appendChild(faviconBox)
+
     // title
 
     var titleContainer = document.createElement('div')
@@ -97,6 +157,32 @@ const tabBar = {
 
     // click to enter edit mode or switch to a tab
     tabEl.addEventListener('click', function (e) {
+      // split-pair selection mode: the next tab clicked becomes the split pair
+      if (splitView.isSelecting()) {
+        splitView.completeSelection(data.id)
+        return
+      }
+
+      if (e.shiftKey) {
+        // shift-click: select a range of tabs for multi-select
+        const activeId = tabs.getSelected()
+        if (activeId && activeId !== data.id) {
+          tabs.setMultiSelectedRange(activeId, data.id)
+          tabBar.updateMultiSelected()
+        } else if (activeId === data.id) {
+          // shift-clicking the active tab clears the selection
+          tabs.clearMultiSelected()
+          tabBar.updateMultiSelected()
+        }
+        return
+      }
+
+      // a plain click clears any multi-selection
+      if (tabs.getMultiSelectedCount() > 0) {
+        tabs.clearMultiSelected()
+        tabBar.updateMultiSelected()
+      }
+
       if (tabs.getSelected() !== data.id) { // else switch to tab if it isn't focused
         tabBar.events.emit('tab-selected', data.id)
       } else { // the tab is focused, edit tab instead
@@ -106,30 +192,23 @@ const tabBar = {
 
     tabEl.addEventListener('auxclick', function (e) {
       if (e.which === 2) { // if mouse middle click -> close tab
-        tabBar.events.emit('tab-closed', data.id)
+        const multiSelected = tabs.getMultiSelected()
+        if (multiSelected.length > 1 && multiSelected.includes(data.id)) {
+          // middle-clicking a multi-selected tab closes all selected tabs
+          multiSelected.forEach(id => tabBar.events.emit('tab-closed', id))
+        } else {
+          tabBar.events.emit('tab-closed', data.id)
+        }
       }
     })
 
-    tabEl.addEventListener('wheel', function (e) {
-      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) {
-        // https://github.com/minbrowser/min/issues/698
+    // double-clicking a preview tab pins it (like in VSCode)
+    tabEl.addEventListener('dblclick', function (e) {
+      if (!editorView.isEditorTab(data.id)) {
         return
       }
-      if (e.deltaY > 65 && e.deltaX < 10 && Date.now() - lastTabDeletion > 900) { // swipe up to delete tabs
-        lastTabDeletion = Date.now()
-
-        /* tab deletion is disabled in focus mode */
-        if (focusMode.enabled()) {
-          focusMode.warn()
-          return
-        }
-
-        this.style.transform = 'translateY(-100%)'
-
-        setTimeout(function () {
-          tabBar.events.emit('tab-closed', data.id)
-        }, 150) // wait until the animation has completed
-      }
+      editorView.pinTab(data.id)
+      e.preventDefault()
     })
 
     tabBar.updateTab(data.id, tabEl)
@@ -160,6 +239,11 @@ const tabBar = {
     if (tabData.private) {
       tabEl.title += ' (' + l('privateTab') + ')'
     }
+    // the title changed, so any cached split indicator base is stale
+    tabEl.removeAttribute('data-base-title')
+
+    // preview tabs (temporary editor tabs) are shown in italic
+    tabEl.classList.toggle('preview', !!tabData.preview)
 
     var tabUrl = urlParser.getDomain(tabData.url)
     if (tabUrl.startsWith('www.') && tabUrl.split('.').length > 2) {
@@ -174,9 +258,35 @@ const tabBar = {
       tabEl.classList.remove('has-url')
     }
 
-    // update tab audio icon
-    var audioButton = tabEl.querySelector('.tab-audio-button')
+    // update lead icon (audio indicator replaces the favicon while active)
+
+    var faviconBox = tabEl.querySelector('.tab-favicon-box')
+    var faviconImg = faviconBox.querySelector('.tab-favicon-img')
+    var faviconFallback = faviconBox.querySelector('.tab-favicon-fallback')
+    var audioButton = faviconBox.querySelector('.tab-audio-button')
+
     tabAudio.updateButton(tabId, audioButton)
+    var audioActive = !audioButton.hidden
+
+    if (!audioActive && !tabData.private && tabData.favicon && tabData.favicon.url) {
+      if (faviconImg.getAttribute('src') !== tabData.favicon.url) {
+        faviconImg.src = tabData.favicon.url
+      }
+      faviconImg.classList.toggle('is-dark', !!(tabData.favicon.luminance && tabData.favicon.luminance < 70))
+      faviconImg.hidden = false
+      faviconFallback.hidden = true
+    } else if (!audioActive) {
+      faviconImg.hidden = true
+      faviconImg.removeAttribute('src')
+      const internalIcon = getInternalPageIcon(tabData.url)
+      faviconFallback.className = 'tab-favicon-fallback i ' + (internalIcon || 'carbon:globe')
+      faviconFallback.hidden = false
+    } else {
+      // the audio button takes over the slot entirely
+      faviconImg.hidden = true
+      faviconImg.removeAttribute('src')
+      faviconFallback.hidden = true
+    }
 
     tabEl.querySelectorAll('.permission-request-icon').forEach(el => el.remove())
 
@@ -209,6 +319,8 @@ const tabBar = {
     if (tabs.getSelected()) {
       tabBar.setActiveTab(tabs.getSelected())
     }
+    tabBar.updateMultiSelected()
+    updateSplitGroupIndicators()
     tabBar.handleSizeChange()
   },
   addTab: function (tabId) {
@@ -260,6 +372,8 @@ const tabBar = {
       }
 
       tabs.splice(newIdx, 0, oldTab)
+      tabBar.updateMultiSelected()
+      require('splitView.js').handleTabReorder()
     })
   },
   handleSizeChange: function () {
@@ -290,15 +404,84 @@ webviews.bindEvent('did-stop-loading', function (tabId) {
 })
 
 tasks.on('tab-updated', function (id, key) {
-  var updateKeys = ['title', 'secure', 'url', 'muted', 'hasAudio']
+  var updateKeys = ['title', 'secure', 'url', 'muted', 'hasAudio', 'preview', 'favicon']
   if (updateKeys.includes(key)) {
     tabBar.updateTab(id)
+    updateSplitGroupIndicators()
   }
 })
 
 permissionRequests.onChange(function (tabId) {
   if (tabs.get(tabId)) {
     tabBar.updateTab(tabId)
+  }
+})
+
+/* split-pair selection mode UI */
+splitView.onSelectionChange = function (isSelecting, anchorTabId) {
+  tabBar.container.classList.toggle('is-selecting-split', isSelecting)
+  tabBar.containerInner.classList.toggle('is-selecting-split', isSelecting)
+
+  const anchorEl = tabBar.getTab(anchorTabId)
+  if (isSelecting) {
+    // highlight the anchor tab
+    if (anchorEl) {
+      anchorEl.classList.add('split-anchor')
+    }
+    tabBar.containerInner.title = l('splitViewSelectTab')
+  } else {
+    if (anchorEl) {
+      anchorEl.classList.remove('split-anchor')
+    }
+    tabBar.containerInner.title = ''
+  }
+}
+
+/* group indicators: mark tabs that are part of a split group with a colored
+bottom border that connects the two group members. Each group gets its own
+color so adjacent groups are distinguishable. */
+function updateSplitGroupIndicators () {
+  const groupColors = ['split-group-0', 'split-group-1', 'split-group-2', 'split-group-3']
+
+  tabs.get().forEach(function (tab) {
+    const el = tabBar.getTab(tab.id)
+    if (!el) {
+      return
+    }
+    // clear previous group classes
+    groupColors.forEach(function (c) {
+      el.classList.remove(c)
+    })
+
+    const groupIndex = splitView.groups.findIndex(function (group) {
+      return group.paneTabIds.includes(tab.id)
+    })
+
+    if (groupIndex >= 0) {
+      const group = splitView.groups[groupIndex]
+      el.classList.add(groupColors[groupIndex % groupColors.length])
+      const otherTabId = group.paneTabIds[1 - group.paneTabIds.indexOf(tab.id)]
+      const otherTab = tabs.get(otherTabId)
+      const otherTitle = (otherTab && otherTab.title) ? otherTab.title : l('newTabLabel')
+      // append the split partner to the tooltip (updateTab sets the base title)
+      const baseTitle = el.getAttribute('data-base-title') || el.title
+      el.setAttribute('data-base-title', baseTitle)
+      el.title = baseTitle + ' · ' + l('splitWithTab').replace('%t', otherTitle)
+    } else {
+      const baseTitle = el.getAttribute('data-base-title')
+      if (baseTitle) {
+        el.title = baseTitle
+        el.removeAttribute('data-base-title')
+      }
+    }
+  })
+}
+splitView.onGroupsChange = updateSplitGroupIndicators
+
+// cancel the selection mode with the escape key
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape' && splitView.isSelecting()) {
+    splitView.cancelSelection()
   }
 })
 

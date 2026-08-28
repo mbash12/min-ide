@@ -1,6 +1,6 @@
 var urlParser = require('util/urlParser.js')
 
-function autocomplete(input, completions) {
+function autocomplete (input, completions) {
   // if there is text after the selection, we can never autocomplete
   if (input.selectionEnd !== input.value.length) {
     return {
@@ -37,7 +37,7 @@ function autocomplete(input, completions) {
 
 // autocompletes based on a result item
 // returns: 1 - the exact URL was autocompleted, 0 - the domain was autocompleted, -1: nothing was autocompleted
-function autocompleteURL(input, url) {
+function autocompleteURL (input, url) {
   var urlObj = new URL(url)
   var hostname = urlObj.hostname
 

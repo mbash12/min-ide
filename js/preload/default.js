@@ -29,6 +29,22 @@ setTimeout(function () {
       ipc.send('scroll-position-change', Math.round(window.scrollY))
     }, 200)
   })
+
+  /* Used for the split view divider: relay mouse movement and releases so the
+  renderer can keep tracking the drag even when the cursor is over this page */
+  var lastMouseMove = 0
+
+  window.addEventListener('mousemove', function (e) {
+    var now = Date.now()
+    if (now - lastMouseMove > 50) { // throttle
+      lastMouseMove = now
+      ipc.send('view-mouse-event', { type: 'mousemove', x: e.clientX, y: e.clientY })
+    }
+  })
+
+  window.addEventListener('mouseup', function (e) {
+    ipc.send('view-mouse-event', { type: 'mouseup', x: e.clientX, y: e.clientY })
+  })
 }, 0)
 
 /* Used for picture in picture item in context menu */

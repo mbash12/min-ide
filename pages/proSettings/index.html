@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Pro Settings</title>
+    <link rel="stylesheet" href="../../css/base.css" />
+    <link rel="stylesheet" href="../../ext/icons/iconfont.css" />
+    <link rel="stylesheet" href="proSettings.css" />
+  </head>
+  <body>
+    <header class="pro-header">
+      <h1 data-string="proSettingsTitle"></h1>
+      <p class="pro-tagline" data-string="proSettingsTagline"></p>
+    </header>
+
+    <div class="pro-layout">
+      <nav class="pro-tabs">
+        <button class="pro-tab active" data-tab="provider" data-string="proSettingsTabProvider"></button>
+        <button class="pro-tab" data-tab="profiles" data-string="proSettingsTabProfiles"></button>
+        <button class="pro-tab" data-tab="design" data-string="proSettingsTabDesign"></button>
+      </nav>
+
+      <main class="pro-container">
+        <!-- ===== provider tab ===== -->
+        <section class="pro-panel active" id="panel-provider">
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsProviderHeading"></span>
+            <span class="pro-provider-badge">OpenRouter</span>
+          </div>
+          <p class="pro-description" data-string="proSettingsProviderDescription"></p>
+        </section>
+
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsKeyHeading"></span>
+            <span class="pro-status-pill" id="status-pill">
+              <span class="pro-status-dot"></span>
+              <span id="status-text"></span>
+            </span>
+          </div>
+          <p class="pro-description">
+            <span data-string="proSettingsKeyDescription"></span>
+            <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>
+          </p>
+          <div class="pro-key-row">
+            <input
+              type="password"
+              id="input-openrouter-key"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="sk-or-…"
+            />
+            <button id="toggle-key-visibility" title="Show key">
+              <i class="i carbon:view"></i>
+            </button>
+          </div>
+          <div class="pro-actions-row">
+            <button id="test-key-button" class="pro-button">
+              <i class="i carbon:checkmark-outline"></i>
+              <span data-string="proSettingsTestKey"></span>
+            </button>
+            <span id="test-result" class="pro-test-result" hidden></span>
+          </div>
+        </section>
+
+        <footer class="pro-footer" data-string="proSettingsFooterNote"></footer>
+      </section>
+
+      <!-- ===== profiles tab ===== -->
+      <section class="pro-panel" id="panel-profiles">
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="profilesListHeading"></span>
+          </div>
+          <p class="pro-description" data-string="profilesSubheading"></p>
+          <div id="profiles-list"></div>
+          <div class="pro-add-row" id="profiles-add-section">
+            <input type="text" id="profiles-add-input" spellcheck="false" />
+            <button id="profiles-add-button" data-string="taskProfileAdd"></button>
+          </div>
+        </section>
+      </section>
+
+      <!-- ===== design tab ===== -->
+      <section class="pro-panel" id="panel-design">
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsDesignHeading"></span>
+            <span class="pro-status-pill" id="figma-engine-pill">
+              <span class="pro-status-dot"></span>
+              <span id="figma-engine-status-text"></span>
+            </span>
+          </div>
+          <p class="pro-description" data-string="proSettingsDesignDescription"></p>
+          <div class="pro-kv" id="figma-engine-meta"></div>
+          <div class="pro-actions-row">
+            <button id="figma-power-button" class="pro-button">
+              <span id="figma-power-button-label" data-string="designStartEngine"></span>
+            </button>
+            <button id="figma-window-button" class="pro-button" disabled>
+              <span id="figma-window-button-label" data-string="designShowEngine"></span>
+            </button>
+          </div>
+          <span id="figma-engine-error" class="pro-test-result fail" hidden></span>
+        </section>
+      </section>
+      </main>
+    </div>
+
+    <script src="../../js/util/settings/settingsContent.js"></script>
+    <script src="../../js/util/theme.js"></script>
+    <script src="../../dist/localization.build.js"></script>
+    <script src="proSettings.js"></script>
+  </body>
+</html>

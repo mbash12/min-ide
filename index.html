@@ -8,6 +8,7 @@
 
     <link rel="stylesheet" href="dist/bundle.css" />
     <link rel="stylesheet" href="ext/icons/iconfont.css" />
+    <link rel="stylesheet" href="ext/icons/codicon.css" />
   </head>
 
   <body>
@@ -115,11 +116,20 @@
     >
     <div id="mac-window-drag-area"></div>
       <button
-        id="menu-button"
-        class="navbar-action-button i carbon:overflow-menu-vertical"
-        data-label="openMenu"
+        id="sidebar-toggle-button"
+        class="windowDragHandle navbar-action-button codicon codicon-layout-sidebar-left"
+        data-label="sidebarToggle"
         tabindex="-1"
       ></button>
+      <button
+        id="workspace-indicator"
+        class="windowDragHandle"
+        data-label="viewTasks"
+        tabindex="-1"
+      >
+        <span class="workspace-indicator-icon i carbon:user-multiple"></span>
+        <span class="workspace-indicator-name"></span>
+      </button>
       <div id="toolbar-navigation-buttons" hidden>
           <button
           id="back-button"
@@ -142,49 +152,25 @@
       </div>
       <div class="navbar-right-actions">
         <button
+          id="split-view-button"
+          class="navbar-action-button i carbon:split-screen"
+          data-label="splitViewAction"
+          tabindex="-1"
+        ></button>
+        <button
           id="add-tab-button"
           class="navbar-action-button i carbon:add"
           data-label="newTabAction"
           tabindex="-1"
         ></button>
+        <button
+          id="menu-button"
+          class="navbar-action-button i carbon:overflow-menu-vertical"
+          data-label="openMenu"
+          tabindex="-1"
+        ></button>
       </div>
     </div>
-
-    <button
-      id="switch-task-button"
-      class="navbar-action-button theme-text-color windowDragHandle i"
-      data-label="viewTasks"
-      tabindex="-1"
-    >
-      <svg
-        version="1.1"
-        viewBox="0.0 0.0 26.0 26.0"
-        fill="none"
-        stroke="none"
-        stroke-linecap="square"
-        stroke-miterlimit="10"
-        xmlns:xlink="http://www.w3.org/1999/xlink"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <g clip-path="url(#p.0)">
-          <path
-            fill="currentColor"
-            d="m0 0l32 0l0 4l-32 0z"
-            fill-rule="evenodd"
-          />
-          <path
-            fill="currentColor"
-            d="m0 11l32 0l0 4l-32 0z"
-            fill-rule="evenodd"
-          />
-          <path
-            fill="currentColor"
-            d="m0 22l32 0l0 4l-32 0z"
-            fill-rule="evenodd"
-          />
-        </g>
-      </svg>
-    </button>
 
     <div id="searchbar" class="theme-background-color theme-text-color">
       <div class="top-answer-area"></div>
@@ -199,7 +185,6 @@
       <div id="rightArrowContainer" class="arrow-indicator">
         <i id="rightArrow" class="i carbon:chevron-right"></i>
       </div>
-      <img id="webview-placeholder" hidden aria-hidden="true" />
       <div id="ntp-content">
           <img id="ntp-background" hidden>
           <div id="ntp-background-controls">
@@ -207,6 +192,91 @@
             <button id="ntp-image-picker"><i class="i carbon:camera"></i></button>
           </div>
       </div>
+    </div>
+
+    <!-- VSCode-style sidebar: activity bar + panel. Shifts the webviews. -->
+
+    <div id="sidebar" hidden>
+      <div id="activity-bar" role="tablist">
+        <button
+          id="sidebar-tab-ai"
+          class="activity-bar-tab codicon codicon-sparkle"
+          data-label="sidebarAi"
+          data-sidebar-tab="ai"
+          tabindex="-1"
+        ></button>
+        <button
+          id="sidebar-tab-files"
+          class="activity-bar-tab codicon codicon-files"
+          data-label="sidebarFileTree"
+          data-sidebar-tab="files"
+          tabindex="-1"
+        ></button>
+        <button
+          id="sidebar-tab-git"
+          class="activity-bar-tab codicon codicon-source-control"
+          data-label="sidebarGit"
+          data-sidebar-tab="git"
+          tabindex="-1"
+        ></button>
+        <button
+          id="sidebar-tab-playbook"
+          class="activity-bar-tab codicon codicon-checklist"
+          data-label="sidebarPlaybook"
+          data-sidebar-tab="playbook"
+          tabindex="-1"
+        ></button>
+        <button
+          id="sidebar-tab-design"
+          class="activity-bar-tab codicon codicon-symbol-color"
+          data-label="sidebarDesign"
+          data-sidebar-tab="design"
+          tabindex="-1"
+        ></button>
+        <button
+          id="sidebar-tab-httptester"
+          class="activity-bar-tab codicon codicon-globe"
+          data-label="sidebarHttpTester"
+          data-sidebar-tab="httptester"
+          tabindex="-1"
+        ></button>
+        <div class="activity-bar-bottom">
+          <button
+            id="sidebar-settings-button"
+            class="activity-bar-tab codicon codicon-settings-gear"
+            data-label="viewSettings"
+            data-sidebar-settings="true"
+            tabindex="-1"
+          ></button>
+        </div>
+      </div>
+      <div id="sidebar-panels">
+        <div class="sidebar-panel" id="sidebar-panel-ai" data-sidebar-panel="ai"></div>
+        <div class="sidebar-panel" id="sidebar-panel-files" data-sidebar-panel="files"></div>
+        <div class="sidebar-panel" id="sidebar-panel-git" data-sidebar-panel="git"></div>
+        <div class="sidebar-panel" id="sidebar-panel-playbook" data-sidebar-panel="playbook"></div>
+        <div class="sidebar-panel" id="sidebar-panel-design" data-sidebar-panel="design"></div>
+        <div class="sidebar-panel" id="sidebar-panel-httptester" data-sidebar-panel="httptester">
+          <div class="sidebar-panel-placeholder">HTTP Tester</div>
+        </div>
+        <div id="sidebar-prompt-backdrop" hidden></div>
+        <div id="app-prompt-modal" class="sidebar-prompt-modal" hidden>
+          <button class="modal-close-button i carbon:close" id="app-prompt-close"></button>
+          <h3 class="modal-title" id="app-prompt-title"></h3>
+          <p id="app-prompt-message" hidden></p>
+          <div class="ws-modal-field" id="app-prompt-field">
+            <label for="app-prompt-input" id="app-prompt-label"></label>
+            <input type="text" id="app-prompt-input" spellcheck="false" />
+          </div>
+          <div class="ws-modal-actions">
+            <div class="ws-modal-actions-right">
+              <button id="app-prompt-cancel" type="button"></button>
+              <button id="app-prompt-ok" type="button"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="sidebar-resizer" title=""></div>
     </div>
 
     <!-- findinpage ui -->
@@ -231,21 +301,49 @@
       </button>
     </div>
 
-    <div id="task-overlay" class="" hidden tabindex="-1">
-      <div
-        class="simulated-navbar windowDragHandle"
-        id="task-overlay-navbar"
-      >
-      <div class="task-search-input-container">
-        <i class="i carbon:search"></i>
-        <input type="search" id="task-search-input"/>
+    <div id="workspace-backdrop" hidden></div>
+
+    <div id="workspace-drawer" hidden tabindex="-1">
+      <div class="simulated-navbar windowDragHandle" id="workspace-drawer-navbar">
+        <span class="ws-navbar-title" data-string="workspacesHeading"></span>
+        <button id="add-workspace" data-label="newTask"><i class="i carbon:add"></i></button>
+        <button id="manage-profiles-button" title=""><i class="i carbon:user-multiple"></i></button>
       </div>
+      <div id="workspace-list"></div>
     </div>
-      <div id="task-area"></div>
-      <button id="add-task">
-        <i class="i carbon:new-tab"></i>
-        <span></span>
-      </button>
+
+    <div id="workspace-modal" class="modal" hidden>
+      <button class="modal-close-button i carbon:close"></button>
+      <h3 class="modal-title" id="workspace-modal-title"></h3>
+      <div class="ws-modal-field">
+        <label for="workspace-modal-name" data-string="workspaceNameLabel"></label>
+        <input type="text" id="workspace-modal-name" spellcheck="false" />
+      </div>
+      <div class="ws-modal-field">
+        <label for="workspace-modal-profile" data-string="taskProfileLabel"></label>
+        <select id="workspace-modal-profile"></select>
+      </div>
+      <div class="ws-modal-field">
+        <label for="workspace-modal-path" data-string="workspacePathLabel"></label>
+        <input type="text" id="workspace-modal-path" spellcheck="false" />
+        <button
+          id="workspace-modal-browse"
+          class="i carbon:folder-open"
+          data-label="workspacePathBrowse"
+        ></button>
+        <button
+          id="workspace-modal-clear-path"
+          class="i carbon:close"
+          data-label="workspacePathClear"
+        ></button>
+      </div>
+      <div class="ws-modal-actions">
+        <button id="workspace-modal-delete" class="ws-modal-delete" data-string="taskDelete"></button>
+        <div class="ws-modal-actions-right">
+          <button id="workspace-modal-cancel" data-string="dialogSkipButton"></button>
+          <button id="workspace-modal-save"></button>
+        </div>
+      </div>
     </div>
 
     <div id="download-bar" hidden>

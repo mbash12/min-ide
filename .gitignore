@@ -1,9 +1,11 @@
 /node_modules
 /.vscode
 /.idea
+.pi
 .npm
 dist
 main.build.js
 .DS_Store
 package-lock.json
 yarn.lock
+/vendor/figma-linux-next

@@ -25,16 +25,20 @@ function registerCustomBang (data) {
   })
 }
 
+// bangs hidden from the autocomplete list. The registration stays intact,
+// so a hidden bang can be re-enabled later by removing its phrase here.
+const hiddenCustomBangs = ['!task', '!newtask', '!closetask', '!nametask', '!movetotask']
+
 function searchCustomBangs (text) {
   return customBangs.filter(function (item) {
-    return item.phrase.indexOf(text) === 0
+    return item.phrase.indexOf(text) === 0 && hiddenCustomBangs.indexOf(item.phrase) === -1
   })
 }
 
 function getCustomBang (text) {
   var bang = text.split(' ')[0]
   return customBangs.filter(function (item) {
-    return item.phrase === bang
+    return item.phrase === bang && hiddenCustomBangs.indexOf(item.phrase) === -1
   })[0]
 }
 
@@ -135,26 +139,15 @@ function getBangSearchResults (text, input, inputFlags) {
     }
   }
 
-  // otherwise search for bangs
+  // only show bangs that are defined in this app (customBangs.js) or
+  // added by the user in settings; don't fetch DuckDuckGo's bang list
 
-  var resultsPromise
-
-  // get results from DuckDuckGo if it is a search engine, and the current tab is not a private tab
-  if (searchEngine.getCurrent().name === 'DuckDuckGo' && !tabs.get(tabs.getSelected()).private) {
-    resultsPromise = fetch('https://ac.duckduckgo.com/ac/?t=min&q=' + encodeURIComponent(text), {
-      cache: 'force-cache'
-    })
-      .then(function (response) {
-        return response.json()
-      })
-  } else {
-    resultsPromise = new Promise(function (resolve, reject) {
-      // autocomplete doesn't work if we attempt to autocomplete at the same time as the key is being pressed, so add a small delay (TODO fix this)
-      setTimeout(function () {
-        resolve([])
-      }, 0)
-    })
-  }
+  var resultsPromise = new Promise(function (resolve, reject) {
+    // autocomplete doesn't work if we attempt to autocomplete at the same time as the key is being pressed, so add a small delay (TODO fix this)
+    setTimeout(function () {
+      resolve([])
+    }, 0)
+  })
 
   resultsPromise.then(function (results) {
     if (text === '!') {

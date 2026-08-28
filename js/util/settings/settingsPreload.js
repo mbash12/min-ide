@@ -1,3 +1,4 @@
+/* global ipc */
 window.addEventListener('message', function (e) {
   if (!e.origin.startsWith('min://')) {
     return
@@ -9,6 +10,62 @@ window.addEventListener('message', function (e) {
 
   if (e.data && e.data.message && e.data.message === 'setSetting') {
     ipc.send('setSetting', { key: e.data.key, value: e.data.value })
+  }
+
+  /* AI provider tab of the Pro Settings page (min://proSettings): pages run
+  with context
+  isolation, so they can't call ipc directly — relay these requests and send
+  the results back as postMessage events */
+  if (e.data && e.data.message === 'agentTestKey') {
+    ipc.invoke('agent-test-key', e.data.key).then(function (result) {
+      window.postMessage({ message: 'agentTestKeyResult', result: result }, window.location.toString())
+    })
+  }
+
+  if (e.data && e.data.message === 'agentFetchModels') {
+    ipc.invoke('agent-fetch-models').then(function (models) {
+      window.postMessage({ message: 'agentFetchModelsResult', models: models }, window.location.toString())
+    })
+  }
+
+  if (e.data && e.data.message === 'figmaEngine') {
+    var allowed = ['status', 'start', 'stop', 'setVisible', 'revealLogin', 'hide']
+    if (allowed.indexOf(e.data.action) === -1) return
+    ipc.invoke('figmaEngine:' + e.data.action, e.data.payload).then(function (result) {
+      window.postMessage({
+        message: 'figmaEngineResult',
+        action: e.data.action,
+        callId: e.data.callId,
+        result: result
+      }, window.location.toString())
+    }).catch(function (err) {
+      window.postMessage({
+        message: 'figmaEngineResult',
+        action: e.data.action,
+        callId: e.data.callId,
+        result: { ok: false, error: err ? err.message : 'Engine error' }
+      }, window.location.toString())
+    })
+  }
+
+  /* Universal database IPC relay for webviews. Only db:* handlers are allowed. */
+  if (e.data && e.data.message === 'dbInvoke' && e.data.action) {
+    const allowedDbActions = [
+      'db:getPreference', 'db:setPreference',
+      'db:getProfiles', 'db:saveProfile', 'db:deleteProfile',
+      'db:getSnapshots', 'db:saveSnapshot', 'db:deleteSnapshot',
+      'db:getDesigns', 'db:saveDesign', 'db:deleteDesign',
+      'db:logTabActivity', 'db:getTabActivities'
+    ]
+    if (allowedDbActions.indexOf(e.data.action) === -1) {
+      return
+    }
+    const callId = e.data.callId
+    ipc.invoke(e.data.action, e.data.payload).then(function (result) {
+      window.postMessage({ message: 'dbInvokeResult', callId: callId, result: result }, window.location.toString())
+    }).catch(function (err) {
+      window.postMessage({ message: 'dbInvokeResult', callId: callId, error: err ? err.message : 'DB Error' }, window.location.toString())
+    })
   }
 })
 

@@ -50,6 +50,11 @@ body.mac:not(.fullscreen):not(.separate-titlebar) {
   --control-space-left: 75px;
 }
 
+/* the window controls are hidden, so the tab bar can use their space */
+body.mac:not(.fullscreen):not(.separate-titlebar) {
+  --control-space-left: 0.3em;
+}
+
 body.rtl.mac:not(.fullscreen):not(.separate-titlebar) {
   --control-space-left: 0px;
   --control-space-right: 75px;
@@ -131,6 +136,18 @@ body.linux:not(.separate-titlebar) #linux-control-buttons {
   right: 9px;
   z-index: 9;
   width: 76px;
+}
+
+/* window controls (traffic lights / caption buttons) are hidden: the tab bar
+uses the space they would occupy */
+
+body.linux:not(.separate-titlebar) {
+  --control-space-right: 0.3em;
+}
+
+#linux-control-buttons,
+.windows-caption-buttons {
+  display: none !important;
 }
 
 body.task-overlay-is-shown #linux-control-buttons {

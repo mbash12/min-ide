@@ -1,0 +1,162 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      body {
+        font:
+          11px/1.5 -apple-system,
+          'Inter',
+          'Segoe UI',
+          sans-serif;
+        background: var(--figma-color-bg, #1e1e1e);
+        color: var(--figma-color-text, #e5e5e5);
+        padding: 10px 12px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #f59e0b;
+        flex: none;
+      }
+      .dot.connected {
+        background: #14b8a6;
+      }
+      .dot.connecting {
+        animation: pulse 1s ease-in-out infinite;
+      }
+      .dot.reconnecting {
+        background: #f43f5e;
+        animation: pulse 1s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.3;
+        }
+      }
+      #state {
+        font-weight: 600;
+      }
+      #detail {
+        margin-top: 4px;
+        font-size: 10px;
+        color: var(--figma-color-text-secondary, #999);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <span id="dot" class="dot connecting"></span>
+      <span id="state">Connecting…</span>
+    </div>
+    <div id="detail">Min Figma Bridge</div>
+
+    <script>
+      const BRIDGE_WS = 'ws://localhost:44178/ws?token=min-figma-bridge-local'
+      const dot = document.getElementById('dot')
+      const stateEl = document.getElementById('state')
+      const detailEl = document.getElementById('detail')
+      const LABELS = {
+        connecting: 'Connecting…',
+        connected: 'Connected to Min',
+        reconnecting: 'Reconnecting…',
+      }
+      let socket = null
+      let fileKey = null
+      let reconnectTimer = null
+
+      function sendToPlugin(message) {
+        parent.postMessage({ pluginMessage: message }, '*')
+      }
+
+      function connectSocket() {
+        if (socket || !fileKey) return
+        try {
+          socket = new WebSocket(`${BRIDGE_WS}&fileKey=${encodeURIComponent(fileKey)}`)
+        } catch (error) {
+          socket = null
+          sendToPlugin({ type: 'ws-state', state: 'closed' })
+          scheduleReconnect()
+          return
+        }
+        socket.onopen = () => {
+          sendToPlugin({ type: 'ws-state', state: 'open' })
+        }
+        socket.onmessage = (event) => {
+          let command
+          try {
+            command = JSON.parse(event.data)
+          } catch (error) {
+            return
+          }
+          if (command && command.type === 'command') {
+            sendToPlugin({ type: 'ws-command', command })
+          }
+        }
+        socket.onclose = () => {
+          socket = null
+          sendToPlugin({ type: 'ws-state', state: 'closed' })
+          scheduleReconnect()
+        }
+        socket.onerror = () => {
+          try { socket && socket.close() } catch (error) { /* already closed */ }
+        }
+      }
+
+      function scheduleReconnect() {
+        if (reconnectTimer) return
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null
+          connectSocket()
+        }, 3000)
+      }
+
+      window.onmessage = (event) => {
+        const msg = event.data && event.data.pluginMessage
+        if (!msg) return
+        if (msg.type === 'ws-query') {
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            sendToPlugin({ type: 'ws-state', state: 'open' })
+          }
+          return
+        }
+        if (msg.type === 'ws-identify' && typeof msg.fileKey === 'string' && msg.fileKey) {
+          fileKey = msg.fileKey
+          connectSocket()
+          return
+        }
+        if (msg.type === 'ws-send') {
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify(msg.payload))
+          }
+          return
+        }
+        if (msg.type === 'status') {
+          dot.className = `dot ${msg.state}`
+          stateEl.textContent = LABELS[msg.state] || msg.state
+          if (msg.detail) detailEl.textContent = msg.detail
+        }
+      }
+
+      // The Plugin API owns the Figma file key. Ask it to identify this
+      // iframe before opening a socket, so UIX can route each file separately.
+      sendToPlugin({ type: 'ws-identify-query' })
+    </script>
+  </body>
+</html>

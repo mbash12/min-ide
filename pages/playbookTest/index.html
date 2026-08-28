@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Min playbook visual test</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f4f6f8;
+      color: #1b1f24;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 18px;
+      background: #0e639c;
+      color: #fff;
+    }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    #score {
+      font-size: 14px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.18);
+    }
+    #score.pass-all { background: #2ea043; }
+    main { padding: 16px 18px 48px; max-width: 760px; }
+    .row {
+      display: grid;
+      grid-template-columns: 26px 1fr;
+      gap: 10px;
+      align-items: start;
+      background: #fff;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 0 0 10px;
+    }
+    .row.pass { border-color: #2ea043; background: #f0fff4; }
+    .dot {
+      width: 18px; height: 18px; border-radius: 50%;
+      background: #d0d7de; margin-top: 2px;
+    }
+    .row.pass .dot { background: #2ea043; }
+    h2 { font-size: 14px; margin: 0 0 8px; }
+    p { margin: 0 0 8px; opacity: 0.72; font-size: 13px; }
+    button, select, input[type="text"], input[type="file"], a.btn {
+      font: inherit;
+      font-size: 14px;
+    }
+    button, a.btn {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid #0969da;
+      background: #0969da;
+      color: #fff;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    #btn-hover { background: #6e40c9; border-color: #6e40c9; }
+    #btn-hover:hover, #btn-hover.hovered { background: #8a63d2; }
+    #scroll-panel {
+      height: 72px;
+      overflow: auto;
+      border: 1px dashed #8b949e;
+      padding: 8px;
+      border-radius: 6px;
+    }
+    #scroll-panel .pad { height: 160px; }
+    #drag-src, #drop-zone {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 120px;
+      height: 48px;
+      margin-right: 8px;
+      border-radius: 8px;
+      border: 2px dashed #8b949e;
+    }
+    #drag-src { background: #fff8c5; cursor: grab; border-style: solid; }
+    #drop-zone.ready { background: #ddf4ff; }
+    #drop-zone.pass, #row-drag.pass #drop-zone { background: #c8f7d4; border-color: #2ea043; }
+    iframe {
+      width: 100%;
+      height: 64px;
+      border: 1px solid #d8dee4;
+      border-radius: 6px;
+      background: #fff;
+    }
+    #banner {
+      height: 36px;
+      border-radius: 6px;
+      background: linear-gradient(90deg, #0e639c, #2ea043);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Min playbook visual test</h1>
+    <div id="score">0 / 15</div>
+  </header>
+  <main>
+    <div id="banner" aria-hidden="true"></div>
+    <p style="margin: 12px 0;">Each row turns green when the matching browser action succeeds.</p>
+
+    <div class="row" id="row-click"><span class="dot"></span><div>
+      <h2>Click</h2>
+      <button type="button" id="btn-click">Click me</button>
+    </div></div>
+
+    <div class="row" id="row-dblclick"><span class="dot"></span><div>
+      <h2>Double-click</h2>
+      <button type="button" id="btn-dblclick">Double-click me</button>
+    </div></div>
+
+    <div class="row" id="row-rightclick"><span class="dot"></span><div>
+      <h2>Right-click</h2>
+      <button type="button" id="btn-rightclick">Right-click me</button>
+    </div></div>
+
+    <div class="row" id="row-hover"><span class="dot"></span><div>
+      <h2>Hover</h2>
+      <button type="button" id="btn-hover">Hover me</button>
+    </div></div>
+
+    <div class="row" id="row-type"><span class="dot"></span><div>
+      <h2>Type</h2>
+      <input id="input-type" type="text" placeholder="Type here">
+    </div></div>
+
+    <div class="row" id="row-press"><span class="dot"></span><div>
+      <h2>Press Enter</h2>
+      <p>Press Enter in the type field after typing.</p>
+    </div></div>
+
+    <div class="row" id="row-select"><span class="dot"></span><div>
+      <h2>Select</h2>
+      <select id="select-color">
+        <option value="red">Red</option>
+        <option value="green">Green</option>
+        <option value="blue">Blue</option>
+      </select>
+    </div></div>
+
+    <div class="row" id="row-check"><span class="dot"></span><div>
+      <h2>Checkbox</h2>
+      <label><input id="check-box" type="checkbox"> Check this</label>
+    </div></div>
+
+    <div class="row" id="row-scroll"><span class="dot"></span><div>
+      <h2>Scroll container</h2>
+      <div id="scroll-panel">
+        <div class="pad">Scroll this panel to the bottom.</div>
+        <div id="scroll-end">Bottom marker</div>
+      </div>
+    </div></div>
+
+    <div class="row" id="row-drag"><span class="dot"></span><div>
+      <h2>Drag and drop</h2>
+      <div id="drag-src" draggable="true">Drag me</div>
+      <div id="drop-zone">Drop here</div>
+    </div></div>
+
+    <div class="row" id="row-upload"><span class="dot"></span><div>
+      <h2>File upload</h2>
+      <input id="file-input" type="file">
+    </div></div>
+
+    <div class="row" id="row-download"><span class="dot"></span><div>
+      <h2>Download</h2>
+      <a class="btn" id="download-link" download="playbook-test.txt" href="data:text/plain,hello-from-min-playbook">Download sample</a>
+    </div></div>
+
+    <div class="row" id="row-shadow"><span class="dot"></span><div>
+      <h2>Shadow DOM</h2>
+      <div id="shadow-host"></div>
+    </div></div>
+
+    <div class="row" id="row-iframe"><span class="dot"></span><div>
+      <h2>Same-origin iframe</h2>
+      <iframe id="frame" title="iframe test" srcdoc="<!doctype html><button id='iframe-btn' style='font:14px sans-serif;margin:12px'>Iframe click</button>"></iframe>
+    </div></div>
+
+    <div class="row" id="row-dialog"><span class="dot"></span><div>
+      <h2>Alert dialog</h2>
+      <button type="button" id="btn-alert">Show alert</button>
+    </div></div>
+  </main>
+  <script>
+    const rows = ['click', 'dblclick', 'rightclick', 'hover', 'type', 'press', 'select', 'check', 'scroll', 'drag', 'upload', 'download', 'shadow', 'iframe', 'dialog']
+    function pass (id) {
+      const row = document.getElementById('row-' + id)
+      if (!row || row.classList.contains('pass')) return
+      row.classList.add('pass')
+      const done = document.querySelectorAll('.row.pass').length
+      const score = document.getElementById('score')
+      score.textContent = done + ' / ' + rows.length
+      if (done === rows.length) score.classList.add('pass-all')
+    }
+
+    document.getElementById('btn-click').addEventListener('click', function () { pass('click') })
+    document.getElementById('btn-dblclick').addEventListener('dblclick', function () { pass('dblclick') })
+    document.getElementById('btn-rightclick').addEventListener('contextmenu', function (e) {
+      e.preventDefault()
+      pass('rightclick')
+    })
+    document.getElementById('btn-hover').addEventListener('mouseover', function () {
+      this.classList.add('hovered')
+      pass('hover')
+    })
+    document.getElementById('input-type').addEventListener('input', function () {
+      if (this.value.indexOf('min-playbook') !== -1) pass('type')
+    })
+    document.getElementById('input-type').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') pass('press')
+    })
+    document.getElementById('select-color').addEventListener('change', function () {
+      if (this.value === 'green') pass('select')
+    })
+    document.getElementById('check-box').addEventListener('change', function () {
+      if (this.checked) pass('check')
+    })
+    document.getElementById('scroll-panel').addEventListener('scroll', function () {
+      if (this.scrollTop + this.clientHeight >= this.scrollHeight - 8) pass('scroll')
+    })
+
+    const src = document.getElementById('drag-src')
+    const zone = document.getElementById('drop-zone')
+    src.addEventListener('dragstart', function (e) {
+      try { e.dataTransfer.setData('text/plain', 'min-drag') } catch (err) {}
+    })
+    zone.addEventListener('dragover', function (e) {
+      e.preventDefault()
+      zone.classList.add('ready')
+    })
+    zone.addEventListener('drop', function (e) {
+      e.preventDefault()
+      pass('drag')
+    })
+    src.addEventListener('mousedown', function () { src.dataset.drag = '1' })
+    window.addEventListener('mouseup', function (e) {
+      if (src.dataset.drag === '1' && (e.target === zone || zone.contains(e.target))) pass('drag')
+      src.dataset.drag = ''
+    })
+
+    document.getElementById('file-input').addEventListener('change', function () {
+      if (this.files && this.files.length) pass('upload')
+    })
+    document.getElementById('download-link').addEventListener('click', function () { pass('download') })
+
+    const host = document.getElementById('shadow-host')
+    const shadow = host.attachShadow({ mode: 'open' })
+    shadow.innerHTML = '<button type="button" id="shadow-btn">Shadow click</button>'
+    shadow.getElementById('shadow-btn').addEventListener('click', function () { pass('shadow') })
+
+    document.getElementById('frame').addEventListener('load', bindIframe)
+    bindIframe()
+    function bindIframe () {
+      try {
+        const frame = document.getElementById('frame')
+        const btn = frame.contentDocument && frame.contentDocument.getElementById('iframe-btn')
+        if (btn && !btn.dataset.bound) {
+          btn.dataset.bound = '1'
+          btn.addEventListener('click', function () { pass('iframe') })
+        }
+      } catch (e) {}
+    }
+
+    document.getElementById('btn-alert').addEventListener('click', function () {
+      pass('dialog')
+      window.alert('playbook-alert')
+    })
+  </script>
+</body>
+</html>

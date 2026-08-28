@@ -11,11 +11,13 @@ const browserUI = require('browserUI.js')
 const focusMode = require('focusMode.js')
 const places = require('places/places.js')
 const contentBlockingToggle = require('navbar/contentBlockingToggle.js')
-const taskOverlay = require('taskOverlay/taskOverlay.js')
+const workspaceDrawer = require('workspaceDrawer/workspaceDrawer.js')
 const bookmarkConverter = require('bookmarkConverter.js')
+const uiStateDB = require('util/uiStateDB.js')
 const searchbarPlugins = require('searchbar/searchbarPlugins.js')
 const tabEditor = require('navbar/tabEditor.js')
 const formatRelativeDate = require('util/relativeDate.js')
+const fileIcons = require('sidebar/fileIcons.js')
 
 function moveToTaskCommand (taskId) {
   // remove the tab from the current task
@@ -35,10 +37,10 @@ function moveToTaskCommand (taskId) {
   browserUI.switchToTask(newTask.id)
   browserUI.switchToTab(currentTab.id)
 
-  taskOverlay.show()
+  workspaceDrawer.show()
 
   setTimeout(function () {
-    taskOverlay.hide()
+    workspaceDrawer.hide()
   }, 600)
 }
 
@@ -51,7 +53,7 @@ function switchToTaskCommand (taskId) {
 
   // no task was specified, show all of the tasks
   if (!taskId) {
-    taskOverlay.show()
+    workspaceDrawer.show()
     return
   }
 
@@ -106,6 +108,19 @@ function initialize () {
   })
 
   bangsPlugin.registerCustomBang({
+    phrase: '!term',
+    snippet: l('openTerminal'),
+    icon: 'carbon:terminal',
+    isAction: true,
+    fn: function (text) {
+      const ws = tasks.getSelected()
+      const cwd = (ws && ws.path) || '~'
+      const terminalURL = 'min://terminal?cwd=' + encodeURIComponent(cwd)
+      browserUI.addTab(tabs.add({ url: terminalURL }), { enterEditMode: false })
+    }
+  })
+
+  bangsPlugin.registerCustomBang({
     phrase: '!back',
     snippet: l('goBack'),
     isAction: true,
@@ -143,7 +158,8 @@ function initialize () {
     fn: function (text) {
       if (confirm(l('clearHistoryConfirmation'))) {
         places.deleteAllHistory()
-        ipc.invoke('clearStorageData')
+        const profiles = require('profiles.js')
+        ipc.invoke('clearStorageData', profiles.getProfiles().map(p => profiles.getPartition(p.id)).filter(Boolean))
       }
     }
   })
@@ -258,7 +274,7 @@ function initialize () {
       // switch to the first search result
         switchToTaskCommand(searchAndSortTasks(text)[0].task.id)
       } else {
-        taskOverlay.show()
+        workspaceDrawer.show()
       }
     }
   })
@@ -275,12 +291,12 @@ function initialize () {
         return
       }
 
-      taskOverlay.show()
+      workspaceDrawer.show()
 
       setTimeout(function () {
         browserUI.addTask()
         if (text) {
-          tasks.update(tasks.getSelected().id, {name: text})
+          tasks.update(tasks.getSelected().id, { name: text })
         }
       }, 600)
     }
@@ -304,9 +320,9 @@ function initialize () {
       if (taskToClose) {
         browserUI.closeTask(taskToClose.id)
         if (currentTask.id === taskToClose.id) {
-          taskOverlay.show()
+          workspaceDrawer.show()
           setTimeout(function () {
-            taskOverlay.hide()
+            workspaceDrawer.hide()
           }, 600)
         }
       }
@@ -318,7 +334,7 @@ function initialize () {
     snippet: l('nameTask'),
     isAction: false,
     fn: function (text) {
-      tasks.update(tasks.getSelected().id, {name: text})
+      tasks.update(tasks.getSelected().id, { name: text })
     }
   })
 
@@ -357,6 +373,104 @@ function initialize () {
       // save the result
       const savePath = await ipc.invoke('showSaveDialog', { defaultPath: 'bookmarks.html' })
       require('fs').writeFileSync(savePath, data)
+    }
+  })
+
+  bangsPlugin.registerCustomBang({
+    phrase: '!file',
+    snippet: l('fileTreeSearchFiles'),
+    icon: 'carbon:document',
+    isAction: false,
+    showSuggestions: async function (text, input, inputFlags) {
+      searchbarPlugins.reset('bangs')
+
+      const ws = tasks.getSelected()
+      const wsPath = ws && ws.path
+      if (!wsPath) {
+        return
+      }
+
+      // empty text: show recent searches
+      if (!text.trim()) {
+        const recentPaths = await uiStateDB.getRecentFileSearches()
+        if (searchbarPlugins.getTopAnswer('bangs')) return
+        if (recentPaths.length === 0) return
+
+        // add section header
+        searchbarPlugins.addResult('bangs', {
+          title: l('recentFiles') || 'Recent files',
+          secondaryText: '',
+          icon: 'carbon:time',
+          fakeFocus: true,
+          click: function () { tabEditor.hide() }
+        })
+
+        recentPaths.forEach(function (filePath, idx) {
+          const name = filePath.split(/[\\/]/).pop()
+          const relPath = filePath.slice(wsPath.length).replace(/^[\\/]+/, '')
+          searchbarPlugins.addResult('bangs', {
+            title: name,
+            secondaryText: relPath,
+            iconImage: fileIcons.pathPrefix + fileIcons.getIcon(name),
+            fakeFocus: idx === 0,
+            click: function () {
+              tabEditor.hide()
+              uiStateDB.addRecentFileSearch(filePath)
+              require('editorView.js').openFile(filePath)
+            }
+          })
+        })
+        return
+      }
+
+      // with text: search files, sort by recency
+      const recentPaths = await uiStateDB.getRecentFileSearches()
+      const recentSet = new Set(recentPaths)
+
+      ipc.invoke('fileTreeSearch', wsPath, text).then(function (results) {
+        if (searchbarPlugins.getTopAnswer('bangs')) return
+
+        // sort: recently searched files first
+        results.sort(function (a, b) {
+          const aIdx = recentPaths.indexOf(a.path)
+          const bIdx = recentPaths.indexOf(b.path)
+          const aHas = aIdx !== -1 ? aIdx : Infinity
+          const bHas = bIdx !== -1 ? bIdx : Infinity
+          return aHas - bHas
+        })
+
+        results.slice(0, 20).forEach(function (result, idx) {
+          const name = result.path.split(/[\\/]/).pop()
+          const relPath = result.path.slice(wsPath.length).replace(/^[\\/]+/, '')
+          const isRecent = recentSet.has(result.path)
+
+          searchbarPlugins.addResult('bangs', {
+            title: name,
+            secondaryText: (isRecent ? '● ' : '') + relPath,
+            iconImage: fileIcons.pathPrefix + fileIcons.getIcon(name),
+            fakeFocus: idx === 0,
+            click: function () {
+              tabEditor.hide()
+              uiStateDB.addRecentFileSearch(result.path)
+              require('editorView.js').openFile(result.path)
+            }
+          })
+        })
+      })
+    },
+    fn: function (text) {
+      const ws = tasks.getSelected()
+      const wsPath = ws && ws.path
+      if (!wsPath || !text.trim()) {
+        return
+      }
+      ipc.invoke('fileTreeSearch', wsPath, text).then(function (results) {
+        const file = results.find(function (r) { return !r.isDirectory }) || results[0]
+        if (file && !file.isDirectory) {
+          uiStateDB.addRecentFileSearch(file.path)
+          require('editorView.js').openFile(file.path)
+        }
+      })
     }
   })
 

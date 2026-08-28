@@ -1,4 +1,45 @@
 const currrentDownloadItems = {}
+var minDownloadWaiters = []
+var minDownloadAutoDir = null
+
+function minDownloadNotify (info) {
+  minDownloadWaiters.slice().forEach(function (fn) {
+    try { fn(info) } catch (e) {}
+  })
+}
+
+function minDownloadBeginCapture (dir, timeoutMs) {
+  minDownloadAutoDir = dir
+  return new Promise(function (resolve) {
+    const timer = setTimeout(function () {
+      cleanup()
+      minDownloadAutoDir = null
+      resolve({ ok: false, error: 'Download timed out' })
+    }, timeoutMs || 25000)
+    function onInfo (info) {
+      if (!info || (info.status !== 'completed' && info.status !== 'cancelled' && info.status !== 'interrupted')) return
+      cleanup()
+      minDownloadAutoDir = null
+      resolve({
+        ok: info.status === 'completed',
+        path: info.path,
+        name: info.name,
+        status: info.status,
+        error: info.status === 'completed' ? undefined : 'Download ' + info.status
+      })
+    }
+    function cleanup () {
+      clearTimeout(timer)
+      const idx = minDownloadWaiters.indexOf(onInfo)
+      if (idx !== -1) minDownloadWaiters.splice(idx, 1)
+    }
+    minDownloadWaiters.push(onInfo)
+  })
+}
+
+function minDownloadCancelCapture () {
+  minDownloadAutoDir = null
+}
 
 ipc.on('cancelDownload', function (e, path) {
   if (currrentDownloadItems[path]) {
@@ -14,6 +55,14 @@ function downloadHandler (event, item, webContents) {
   let sourceWindow = windows.windowFromContents(webContents)?.win
   if (!sourceWindow) {
     sourceWindow = windows.getCurrent()
+  }
+
+  if (minDownloadAutoDir) {
+    try {
+      fs.mkdirSync(minDownloadAutoDir, { recursive: true })
+      var autoName = item.getFilename() || ('download-' + Date.now())
+      item.setSavePath(path.join(minDownloadAutoDir, autoName))
+    } catch (e) {}
   }
 
   var savePathFilename
@@ -45,12 +94,14 @@ function downloadHandler (event, item, webContents) {
 
   item.once('done', function (e, state) {
     delete currrentDownloadItems[item.getSavePath()]
-    sendIPCToWindow(sourceWindow, 'download-info', {
+    const doneInfo = {
       path: item.getSavePath(),
-      name: savePathFilename,
+      name: savePathFilename || item.getFilename(),
       status: state,
       size: { received: item.getTotalBytes(), total: item.getTotalBytes() }
-    })
+    }
+    sendIPCToWindow(sourceWindow, 'download-info', doneInfo)
+    minDownloadNotify(doneInfo)
   })
   return true
 }

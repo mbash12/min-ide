@@ -4,7 +4,7 @@ var urlParser = require('util/urlParser.js')
 var searchEngine = require('util/searchEngine.js')
 
 function showSearchSuggestions (text, input, inputFlags) {
-    const suggestionsURL = searchEngine.getCurrent().suggestionsURL
+  const suggestionsURL = searchEngine.getCurrent().suggestionsURL
 
   if (!suggestionsURL) {
     searchbarPlugins.reset('searchSuggestions')

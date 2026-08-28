@@ -1,0 +1,44 @@
+body {
+  margin: 0;
+  overflow: hidden;
+  height: 100vh;
+  background-color: #1e1e1e;
+}
+
+#editor-container {
+  position: absolute;
+  inset: 0;
+}
+
+#editor-image-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  margin: auto;
+  object-fit: contain;
+}
+
+#editor-loading,
+#editor-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--secondary-text-color, #cccccc);
+  background-color: #1e1e1e;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+}
+
+#editor-error {
+  color: #f48771;
+}
+
+.editor-error-icon {
+  width: 32px;
+  height: 32px;
+}

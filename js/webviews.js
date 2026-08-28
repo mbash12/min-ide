@@ -3,29 +3,9 @@ var settings = require('util/settings/settings.js')
 
 /* implements selecting webviews, switching between them, and creating new ones. */
 
-var placeholderImg = document.getElementById('webview-placeholder')
-
 var hasSeparateTitlebar = settings.get('useSeparateTitlebar')
 var windowIsMaximized = false // affects navbar height on Windows
 var windowIsFullscreen = false
-
-function captureCurrentTab (options) {
-  if (tabs.get(tabs.getSelected()).private) {
-    // don't capture placeholders for private tabs
-    return
-  }
-
-  if (webviews.placeholderRequests.length > 0 && !(options && options.forceCapture === true)) {
-    // capturePage doesn't work while the view is hidden
-    return
-  }
-
-  ipc.send('getCapture', {
-    id: webviews.selectedId,
-    width: Math.round(window.innerWidth / 10),
-    height: Math.round(window.innerHeight / 10)
-  })
-}
 
 // called whenever a new page starts loading, or an in-page navigation occurs
 function onPageURLChange (tab, url) {
@@ -53,13 +33,8 @@ function onNavigate (tabId, url, isInPlace, isMainFrame, frameProcessId, frameRo
 
 // called whenever the page finishes loading
 function onPageLoad (tabId) {
-  // capture a preview image if a new page has been loaded
-  if (tabId === tabs.getSelected()) {
-    setTimeout(function () {
-      // sometimes the page isn't visible until a short time after the did-finish-load event occurs
-      captureCurrentTab()
-    }, 250)
-  }
+  // page preview capture is disabled: the stale screenshot placeholder looked
+  // like a broken blur overlay when the drawer was open
 }
 
 function scrollOnLoad (tabId, scrollPosition) {
@@ -103,6 +78,7 @@ const webviews = {
   selectedId: null,
   placeholderRequests: [],
   asyncCallbacks: {},
+  splitProvider: null, // set by splitView.initialize() - provides split view state
   internalPages: {
     error: 'min://app/pages/error/index.html'
   },
@@ -149,8 +125,17 @@ const webviews = {
     }
     webviews.resize()
   },
-  getViewBounds: function () {
-    if (webviews.viewFullscreenMap[webviews.selectedId]) {
+  getViewBounds: function (tabId = webviews.selectedId, skipSplit = false) {
+    // in split view, each pane gets half of the window
+    // (skipSplit is used internally when computing the full-window base rect)
+    if (!skipSplit && webviews.splitProvider && webviews.splitProvider.isSplit()) {
+      const paneBounds = webviews.splitProvider.getBoundsForTab(tabId)
+      if (paneBounds) {
+        return paneBounds
+      }
+    }
+
+    if (webviews.viewFullscreenMap[tabId]) {
       return {
         x: 0,
         y: 0,
@@ -190,17 +175,35 @@ const webviews = {
 
     // if the tab is private, we want to partition it. See http://electron.atom.io/docs/v0.34.0/api/web-view-tag/#partition
     // since tab IDs are unique, we can use them as partition names
+    var partition
     if (tabData.private === true) {
-      var partition = tabId.toString() // options.tabId is a number, which remote.session.fromPartition won't accept. It must be converted to a string first
+      partition = tabId.toString() // options.tabId is a number, which remote.session.fromPartition won't accept. It must be converted to a string first
+    } else if (tabData.url && (function (url) {
+      const source = urlParser.getSourceURL(url)
+      return source === 'min://profiles' || source.startsWith('min://profiles?') ||
+             source === 'min://proSettings' || source.startsWith('min://proSettings?') ||
+             url === 'min://profiles' || url.startsWith('min://profiles?') ||
+             url === 'min://proSettings' || url.startsWith('min://proSettings?') ||
+             url.startsWith('min://app/pages/profiles/') ||
+             url.startsWith('min://app/pages/proSettings/')
+    })(tabData.url)) {
+      // internal UI pages must share the default session with the main window,
+      // otherwise their localStorage (workspace profiles) would be isolated
+      partition = null
+    } else {
+      // if the containing task uses a workspace profile, its tabs get an
+      // isolated session partition (cookies / storage only)
+      const task = tasks.getTaskContainingTab(tabId)
+      partition = require('profiles.js').getPartition(task ? task.profileId : null) || 'persist:webcontent'
     }
 
     ipc.send('createView', {
       existingViewId,
       id: tabId,
       webPreferences: {
-        partition: partition || 'persist:webcontent'
+        partition: partition
       },
-      boundsString: JSON.stringify(webviews.getViewBounds()),
+      boundsString: JSON.stringify(webviews.getViewBounds(tabId)),
       events: webviews.events.map(e => e.event).filter((i, idx, arr) => arr.indexOf(i) === idx)
     })
 
@@ -217,6 +220,17 @@ const webviews = {
       hasWebContents: true
     })
   },
+  /* true when the user is typing in chrome (sidebar, address bar, etc.) so
+  a page view must not steal keyboard focus */
+  isChromeFocused: function () {
+    const el = document.activeElement
+    if (!el || el === document.body || el === document.documentElement) return false
+    const tag = el.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+    if (el.isContentEditable) return true
+    const sidebar = document.getElementById('sidebar')
+    return !!(sidebar && sidebar.contains(el))
+  },
   setSelected: function (id, options) { // options.focus - whether to focus the view. Defaults to true.
     webviews.emitEvent('view-hidden', webviews.selectedId)
 
@@ -228,14 +242,19 @@ const webviews = {
     }
 
     if (webviews.placeholderRequests.length > 0) {
-      // update the placeholder instead of showing the actual view
+      // another overlay is showing; keep the current view detached
       webviews.requestPlaceholder()
       return
     }
 
+    if (webviews.splitProvider && webviews.splitProvider.isSplit()) {
+      // in split view, keep both views attached; just switch which one is active
+      webviews.splitProvider.setActiveTab(id)
+    }
+
     ipc.send('setView', {
       id: id,
-      bounds: webviews.getViewBounds(),
+      bounds: webviews.getViewBounds(id),
       focus: !options || options.focus !== false
     })
     webviews.emitEvent('view-shown', id)
@@ -244,6 +263,12 @@ const webviews = {
     ipc.send('loadURLInView', { id: id, url: urlParser.parse(url) })
   },
   destroy: function (id) {
+    // if the destroyed tab is part of a split view, exit split mode first
+    // (this also determines which tab remains visible)
+    if (webviews.splitProvider && webviews.splitProvider.isSplit() && webviews.splitProvider.getPaneIds().includes(id)) {
+      webviews.splitProvider.handleTabDestroyed(id)
+    }
+
     webviews.emitEvent('view-hidden', id)
 
     if (webviews.hasViewForTab(id)) {
@@ -263,23 +288,9 @@ const webviews = {
     if (reason && !webviews.placeholderRequests.includes(reason)) {
       webviews.placeholderRequests.push(reason)
     }
-    if (webviews.placeholderRequests.length >= 1) {
-      // create a new placeholder
-
-      var associatedTab = tasks.getTaskContainingTab(webviews.selectedId).tabs.get(webviews.selectedId)
-      var img = associatedTab.previewImage
-      if (img) {
-        placeholderImg.src = img
-        placeholderImg.hidden = false
-      } else if (associatedTab && associatedTab.url) {
-        captureCurrentTab({ forceCapture: true })
-      } else {
-        placeholderImg.hidden = true
-      }
-    }
+    // no screenshot placeholder — the view is simply detached and the
+    // calling overlay (drawer / modal / dialog) covers the gap instead
     setTimeout(function () {
-      // wait to make sure the image is visible before the view is hidden
-      // make sure the placeholder was not removed between when the timeout was created and when it occurs
       if (webviews.placeholderRequests.length > 0) {
         ipc.send('hideCurrentView')
         webviews.emitEvent('view-hidden', webviews.selectedId)
@@ -294,19 +305,22 @@ const webviews = {
     if (webviews.placeholderRequests.length === 0) {
       // multiple things can request a placeholder at the same time, but we should only show the view again if nothing requires a placeholder anymore
       if (webviews.hasViewForTab(webviews.selectedId)) {
-        ipc.send('setView', {
-          id: webviews.selectedId,
-          bounds: webviews.getViewBounds(),
-          focus: true
-        })
+        if (webviews.splitProvider && webviews.splitProvider.isSplit()) {
+          // re-attach both panes
+          ipc.send('setSplitView', {
+            ids: webviews.splitProvider.getPaneIds(),
+            bounds: webviews.splitProvider.getBounds(),
+            activeId: webviews.selectedId
+          })
+        } else {
+          ipc.send('setView', {
+            id: webviews.selectedId,
+            bounds: webviews.getViewBounds(),
+            focus: true
+          })
+        }
         webviews.emitEvent('view-shown', webviews.selectedId)
       }
-      // wait for the view to be visible before removing the placeholder
-      setTimeout(function () {
-        if (webviews.placeholderRequests.length === 0) { // make sure the placeholder hasn't been re-enabled
-          placeholderImg.hidden = true
-        }
-      }, 400)
     }
   },
   releaseFocus: function () {
@@ -318,7 +332,18 @@ const webviews = {
     }
   },
   resize: function () {
-    ipc.send('setBounds', { id: webviews.selectedId, bounds: webviews.getViewBounds() })
+    if (webviews.splitProvider && webviews.splitProvider.isSplit()) {
+      // resize both panes
+      webviews.splitProvider.getPaneIds().forEach(function (id) {
+        ipc.send('setBounds', { id: id, bounds: webviews.getViewBounds(id) })
+      })
+      // keep the divider in sync with the new layout
+      if (webviews.splitProvider.onLayoutChange) {
+        webviews.splitProvider.onLayoutChange()
+      }
+    } else {
+      ipc.send('setBounds', { id: webviews.selectedId, bounds: webviews.getViewBounds() })
+    }
   },
   goBackIgnoringRedirects: async function (id) {
     const navHistory = await webviews.getNavigationHistory(id)
@@ -385,6 +410,10 @@ ipc.on('leave-full-screen', function () {
 })
 
 webviews.bindEvent('enter-html-full-screen', function (tabId) {
+  // HTML fullscreen needs the whole window, so exit split view
+  if (webviews.splitProvider && webviews.splitProvider.isSplit()) {
+    webviews.splitProvider.handleHtmlFullscreen()
+  }
   webviews.viewFullscreenMap[tabId] = true
   webviews.resize()
 })
@@ -510,22 +539,10 @@ ipc.on('view-ipc', function (e, args) {
   })
 })
 
-setInterval(function () {
-  captureCurrentTab()
-}, 15000)
-
-ipc.on('captureData', function (e, data) {
-  tabs.update(data.id, { previewImage: data.url })
-  if (data.id === webviews.selectedId && webviews.placeholderRequests.length > 0) {
-    placeholderImg.src = data.url
-    placeholderImg.hidden = false
-  }
-})
-
 /* focus the view when the window is focused */
 
 ipc.on('windowFocus', function () {
-  if (webviews.placeholderRequests.length === 0 && document.activeElement.tagName !== 'INPUT') {
+  if (webviews.placeholderRequests.length === 0 && !webviews.isChromeFocused()) {
     webviews.focus()
   }
 })

@@ -59,7 +59,45 @@ body.is-edit-mode #toolbar-navigation-buttons {
   opacity: 0.2;
 }
 
-/* Remove default space from being inline-block */
+/* workspace indicator (left side of the navbar, opens the task drawer) */
+
+#workspace-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  height: 36px;
+  padding: 0 0.75em;
+  margin-right: 0.25em;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.9em;
+  opacity: 0.85;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+#workspace-indicator:hover,
+#workspace-indicator.active {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.075);
+}
+body.dark-theme #workspace-indicator:hover,
+body.dark-theme #workspace-indicator.active {
+  background: rgba(255, 255, 255, 0.1);
+}
+.workspace-indicator-icon {
+  font-size: 1.3em;
+}
+.workspace-indicator-name {
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* the task drawer (opens from the workspace indicator) is styled in taskOverlay.css */
+
+/* remove default space from being inline-block */
 #forward-button {
   margin-left: -0.25rem;
 }
@@ -177,6 +215,42 @@ body.linux #menu-button {
   gap: 0.5rem;
   order: 1;
 }
+
+/* favicon (left of the title, like other browsers) */
+
+.tab-item .tab-favicon-box {
+  order: -1;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  flex-shrink: 0;
+}
+.tab-item .tab-favicon-img {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+.tab-item .tab-favicon-img.is-dark {
+  background: #fff;
+  box-shadow: 0 0 0 2px #fff;
+  border-radius: 50%;
+}
+.tab-item .tab-favicon-fallback {
+  font-size: 15px;
+  opacity: 0.55;
+}
+.tab-item .tab-favicon-box [hidden] {
+  display: none !important;
+}
+/* the audio indicator lives in the favicon slot (replaces the favicon) */
+.tab-item .tab-favicon-box .tab-audio-button {
+  padding: 0;
+  font-size: 16px;
+}
 body:not(.touch)
   .tab-item:not(:hover)
   .tab-icon-area:has(.tab-close-button:only-child) {
@@ -216,11 +290,66 @@ body:not(.touch)
 .dark-theme.theme-background-low-contrast .tab-item.active:not(:only-child) {
   background: rgba(255, 255, 255, 0.25);
 }
+.tab-item.multi-selected {
+  background: rgba(0, 0, 0, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.dark-theme .tab-item.multi-selected {
+  background: rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+
+/* split-pair selection mode: click a tab to choose its split pair */
+
+#tabs-inner.is-selecting-split .tab-item {
+  opacity: 0.5;
+}
+#tabs-inner.is-selecting-split .tab-item:hover,
+#tabs-inner.is-selecting-split .tab-item.split-anchor {
+  opacity: 1;
+}
+#tabs-inner.is-selecting-split .tab-item.split-anchor {
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+.dark-theme #tabs-inner.is-selecting-split .tab-item.split-anchor {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+#tabs-inner.is-selecting-split .tab-item {
+  cursor: copy;
+}
+
+/* split group indicator: a colored bottom border connecting the two group
+members. Each group gets its own color, so adjacent groups are clearly
+separated (the border does not connect across groups). */
+
+.tab-item.split-group-0,
+.tab-item.split-group-1,
+.tab-item.split-group-2,
+.tab-item.split-group-3 {
+  border-bottom: 2px solid transparent;
+  box-sizing: border-box;
+}
+.tab-item.split-group-0 {
+  border-bottom-color: cornflowerblue;
+}
+.tab-item.split-group-1 {
+  border-bottom-color: #66bb6a;
+}
+.tab-item.split-group-2 {
+  border-bottom-color: #ffa726;
+}
+.tab-item.split-group-3 {
+  border-bottom-color: #ab47bc;
+}
 .tab-item.fade {
   opacity: 0.55;
 }
 .tab-item.fade:hover {
   opacity: 1;
+}
+/* temporary (preview) editor tabs are shown in italic, like in VSCode */
+.tab-item.preview .title {
+  font-style: italic;
 }
 
 .is-edit-mode #navbar #tabs-inner::-webkit-scrollbar {
@@ -302,7 +431,7 @@ body.windows.dark-theme .navbar-action-button:not(:disabled):hover {
   padding-left: 0.5em;
 }
 .navbar-right-actions {
-  margin-right: 2.3em;
+  margin-right: 0.4em;
 }
 
 .navbar-right-actions #add-tab-button {
@@ -310,8 +439,19 @@ body.windows.dark-theme .navbar-action-button:not(:disabled):hover {
   width: 36px;
   font-size: 1.6em !important;
 }
+/* the menu button is the last element in the toolbar — no extra trailing space */
+.navbar-right-actions #menu-button {
+  padding: 0;
+  width: 36px;
+}
 
-/* audio button */
+/* the split view button is hidden from the toolbar; split view is still
+available via the mod+shift+s shortcut and the tab context menu */
+#split-view-button {
+  display: none;
+}
+
+/* audio button (rendered inside the favicon slot) */
 .tab-item .tab-audio-button {
   vertical-align: text-bottom;
   padding: 0;

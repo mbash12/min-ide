@@ -9,7 +9,7 @@ var findinpage = require('findinpage.js')
 var PDFViewer = require('pdfViewer.js')
 var tabEditor = require('navbar/tabEditor.js')
 var readerView = require('readerView.js')
-var taskOverlay = require('taskOverlay/taskOverlay.js')
+var workspaceDrawer = require('workspaceDrawer/workspaceDrawer.js')
 
 module.exports = {
   initialize: function () {
@@ -91,6 +91,12 @@ module.exports = {
         return
       }
 
+      // if the current tab is an editor tab, save the file being edited
+      if (require('editorView.js').isEditorTab(tabs.getSelected())) {
+        webviews.callAsync(tabs.getSelected(), 'executeJavaScript', 'window.editorSave && window.editorSave()')
+        return
+      }
+
       // if the current tab is a PDF, let the PDF viewer handle saving the document
       if (PDFViewer.isPDFViewer(tabs.getSelected())) {
         PDFViewer.savePDF(tabs.getSelected())
@@ -132,7 +138,7 @@ module.exports = {
     })
 
     ipc.on('toggleTaskOverlay', function () {
-      taskOverlay.toggle()
+      workspaceDrawer.toggle()
     })
 
     ipc.on('goBack', function () {

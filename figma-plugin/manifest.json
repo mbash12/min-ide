@@ -1,0 +1,14 @@
+{
+  "name": "Min Figma Bridge",
+  "id": "min-figma-bridge",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["none"],
+    "devAllowedDomains": ["http://localhost:44178", "ws://localhost:44178"],
+    "reasoning": "Connects to Min on localhost so the sidebar and agent can export nodes, extract text, and read styles without the rate-limited Figma REST API."
+  }
+}

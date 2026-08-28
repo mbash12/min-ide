@@ -11,7 +11,7 @@ ipc.handle('startFileDrag', function (e, path) {
   })
 })
 
-function showFocusModeDialog1() {
+function showFocusModeDialog1 () {
   dialog.showMessageBox({
     type: 'info',
     buttons: [l('closeDialog')],
@@ -20,7 +20,7 @@ function showFocusModeDialog1() {
   })
 }
 
-function showFocusModeDialog2() {
+function showFocusModeDialog2 () {
   dialog.showMessageBox({
     type: 'info',
     buttons: [l('closeDialog')],
@@ -45,7 +45,8 @@ ipc.handle('addWordToSpellCheckerDictionary', function (e, word) {
   session.fromPartition('persist:webcontent').addWordToSpellCheckerDictionary(word)
 })
 
-ipc.handle('clearStorageData', function () {
+ipc.handle('clearStorageData', function (e, partitions = []) {
+  // clear the shared session first
   return session.fromPartition('persist:webcontent').clearStorageData()
   /* It's important not to delete data from file:// from the default partition, since that would also remove internal browser data (such as bookmarks). However, HTTP data does need to be cleared, as there can be leftover data from loading external resources in the browser UI */
     .then(function () {
@@ -71,6 +72,15 @@ ipc.handle('clearStorageData', function () {
     })
     .then(function () {
       return session.defaultSession.clearAuthCache()
+    })
+    // also clear any workspace profile sessions
+    .then(function () {
+      return Promise.all(partitions.map(function (partition) {
+        if (partition === 'persist:webcontent') {
+          return Promise.resolve()
+        }
+        return session.fromPartition(partition).clearStorageData()
+      }))
     })
 })
 
@@ -102,7 +112,7 @@ ipc.handle('setFullScreen', function (e, fullScreen) {
   windows.windowFromContents(e.sender).win.setFullScreen(e, fullScreen)
 })
 
-//workaround for https://github.com/electron/electron/issues/38540
+// workaround for https://github.com/electron/electron/issues/38540
 ipc.handle('showItemInFolder', function (e, path) {
   shell.showItemInFolder(path)
 })
