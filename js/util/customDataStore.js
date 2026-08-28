@@ -1,3 +1,4 @@
+/* global ipc */
 /* Custom Data Store Client Helper
 Provides a clean promise-based API to interact with the Centralized Database Service (dbService.js)
 from any UI window or webview page.
@@ -65,6 +66,13 @@ const customDataStore = {
   getDesigns: (workspaceId) => invokeDB('db:getDesigns', workspaceId),
   saveDesign: (design) => invokeDB('db:saveDesign', design),
   deleteDesign: (designId) => invokeDB('db:deleteDesign', designId),
+
+  // Workspace Documents
+  listDocuments: (workspaceId) => invokeDB('db:listDocuments', workspaceId),
+  getDocument: (workspaceId, id) => invokeDB('db:getDocument', { workspaceId, id }),
+  createDocument: (workspaceId, title) => invokeDB('db:createDocument', { workspaceId, title }),
+  updateDocument: (workspaceId, id, changes) => invokeDB('db:updateDocument', Object.assign({ workspaceId, id }, changes || {})),
+  deleteDocument: (workspaceId, id) => invokeDB('db:deleteDocument', { workspaceId, id }),
 
   // Tab Activity Logs
   logTabActivity: (activity) => invokeDB('db:logTabActivity', activity),

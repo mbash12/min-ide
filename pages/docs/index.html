@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:"
+    />
+    <link rel="stylesheet" href="../../node_modules/@toast-ui/editor/dist/toastui-editor.css" />
+    <link rel="stylesheet" href="../../node_modules/@toast-ui/editor/dist/theme/toastui-editor-dark.css" />
+    <link rel="stylesheet" href="docs.css" />
+  </head>
+  <body>
+    <main id="docs-shell">
+      <header id="docs-header">
+        <input id="docs-title" type="text" maxlength="200" aria-label="Document title" />
+        <div id="docs-header-actions">
+          <label id="docs-private-label" title="Private documents are unavailable to AI">
+            <input id="docs-private" type="checkbox" />
+            <span>Private</span>
+          </label>
+          <span id="docs-save-status" aria-live="polite"></span>
+        </div>
+      </header>
+
+      <section id="docs-state" aria-live="polite">Loading…</section>
+      <section id="docs-editor" hidden></section>
+    </main>
+
+    <script src="../../dist/docs-editor.js"></script>
+    <script src="docs.js"></script>
+  </body>
+</html>

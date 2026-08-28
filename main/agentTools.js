@@ -3,7 +3,7 @@ createMinCustomTools() is called from agent.js after the ESM SDK loads.
 
 Browser control is one tool with an `action` subcommand so the catalog stays
 small as more gestures are added. Playbooks use the same action names. */
-/* global minBrowser, listPlaybooks, getPlaybook, savePlaybook, runPlaybook, deletePlaybook, minFigmaEngine, minFigmaBridge */
+/* global minBrowser, listPlaybooks, getPlaybook, savePlaybook, runPlaybook, deletePlaybook, minFigmaEngine, minFigmaBridge, minDocumentStore */
 
 function minToolTextResult (text, isError) {
   const value = String(text)
@@ -47,6 +47,7 @@ var BROWSER_ACTIONS = [
   'wait', 'hover', 'drag', 'assert', 'upload', 'download', 'dialog'
 ]
 var FIGMA_ACTIONS = ['status', 'node-data', 'extract-text', 'find-text', 'export']
+var DOCS_OPERATIONS = ['list', 'search', 'get', 'create', 'update']
 
 function createMinCustomTools (defineTool, Type, cwd, workspaceId) {
   const optStr = function (description) {
@@ -273,6 +274,69 @@ function createMinCustomTools (defineTool, Type, cwd, workspaceId) {
     }
   })
 
+  const docsTool = defineTool({
+    name: 'docs',
+    label: 'Docs',
+    description: 'On-demand access to this workspace\'s non-private Markdown documents. Docs are never injected into chat context; use an operation when the user asks you to inspect or persist documentation.',
+    promptSnippet: 'docs: list / search / get / create / update on request',
+    promptGuidelines: [
+      'Docs are scoped to this workspace. The workspace is fixed by the session; never ask for or invent a workspaceId parameter.',
+      'Use list or search before get unless the user names a specific document. Call get only when its full Markdown is relevant.',
+      'Create or update a document only when the user explicitly asks for a persistent documentation change.',
+      'Private or not-found documents are unavailable. Never infer, expose, or bypass a private document.'
+    ],
+    parameters: Type.Object({
+      operation: minEnum(Type, DOCS_OPERATIONS, 'Docs operation'),
+      id: optStr('Document id. Required for get and update.'),
+      query: optStr('Search text. Required for search.'),
+      title: optStr('Document title. Used by create or update.'),
+      markdown: optStr('Markdown content. Used by create or update.'),
+      limit: optNum('Maximum list/search results. The service caps this value.')
+    }),
+    execute: async function (_id, params) {
+      params = params || {}
+      if (!workspaceId || workspaceId === 'default') {
+        return minToolTextResult('Docs tools need an open workspace', true)
+      }
+      if (typeof minDocumentStore === 'undefined' || !minDocumentStore) {
+        return minToolTextResult('Docs tools are unavailable', true)
+      }
+      const operation = params.operation
+      if (operation === 'list') {
+        return minToolJsonResult(minDocumentStore.listForAI(workspaceId, { limit: params.limit }))
+      }
+      if (operation === 'search') {
+        const result = minDocumentStore.searchForAI(workspaceId, params.query, { limit: params.limit })
+        return minToolJsonResult(result, result && result.ok === false)
+      }
+      if (operation === 'get') {
+        if (params.id == null || !String(params.id).trim()) return minToolTextResult('id is required', true)
+        const result = minDocumentStore.getForAI(workspaceId, params.id)
+        return minToolJsonResult(result, result && result.ok === false)
+      }
+      if (operation === 'create') {
+        const input = {}
+        if (Object.prototype.hasOwnProperty.call(params, 'title')) input.title = params.title
+        if (Object.prototype.hasOwnProperty.call(params, 'markdown')) input.markdown = params.markdown
+        /* Keep an unexpected privacy field visible to the main-only helper so
+         * malformed callers fail closed instead of silently changing policy. */
+        if (Object.prototype.hasOwnProperty.call(params, 'private')) input.private = params.private
+        const result = minDocumentStore.createForAI(workspaceId, input)
+        return minToolJsonResult(result, result && result.ok === false)
+      }
+      if (operation === 'update') {
+        if (params.id == null || !String(params.id).trim()) return minToolTextResult('id is required', true)
+        const changes = {}
+        if (Object.prototype.hasOwnProperty.call(params, 'title')) changes.title = params.title
+        if (Object.prototype.hasOwnProperty.call(params, 'markdown')) changes.markdown = params.markdown
+        if (Object.prototype.hasOwnProperty.call(params, 'private')) changes.private = params.private
+        const result = minDocumentStore.updateForAI(workspaceId, params.id, changes)
+        return minToolJsonResult(result, result && result.ok === false)
+      }
+      return minToolTextResult('Unknown docs operation', true)
+    }
+  })
+
   const figmaTool = defineTool({
     name: 'figma',
     label: 'Figma',
@@ -353,7 +417,7 @@ function createMinCustomTools (defineTool, Type, cwd, workspaceId) {
     }
   })
 
-  return [browserTool, playbookTool, figmaTool]
+  return [browserTool, playbookTool, docsTool, figmaTool]
 }
 
 function minCustomToolNames (tools) {

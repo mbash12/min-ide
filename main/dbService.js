@@ -1,10 +1,23 @@
-/* global fs, path, ipc, userDataPath, writeFileAtomic */
+/* global fs, path, ipc, userDataPath, writeFileAtomic, windows, getWindowWebContents */
 /* Centralized Database Service for Custom Features
 Manages single-source-of-truth storage for preferences, workspace profiles,
-workspace snapshots, design documents, and tab activity logs.
+workspace snapshots, design documents, workspace documents, and tab activity
+logs.
 */
 
 const dbFilePath = path.join(userDataPath, 'custom_app_data.db')
+
+/* Documents deliberately stay small and local. These limits protect the
+ * renderer and the AI tool from accidentally turning one note into an
+ * unbounded context or database write. */
+const DOCUMENT_WORKSPACE_ID_MAX_LENGTH = 200
+const DOCUMENT_ID_MAX_LENGTH = 200
+const DOCUMENT_TITLE_MAX_LENGTH = 200
+const DOCUMENT_MARKDOWN_MAX_LENGTH = 1024 * 1024
+const DOCUMENT_AI_MAX_RESULTS = 50
+const DOCUMENT_AI_DEFAULT_RESULTS = 20
+const DOCUMENT_AI_QUERY_MAX_LENGTH = 200
+const DOCUMENT_AI_SNIPPET_MAX_LENGTH = 240
 
 /* In-memory store backed by atomic file persistence */
 let dbState = {
@@ -13,7 +26,90 @@ let dbState = {
   workspace_profiles: [],
   workspace_snapshots: [],
   design_documents: [],
+  documents: [],
   tab_activities: []
+}
+
+function documentError (message) {
+  return { ok: false, error: message }
+}
+
+function validateDocumentWorkspaceId (value) {
+  if (value === null || value === undefined || (typeof value !== 'string' && typeof value !== 'number')) {
+    return documentError('workspaceId is required')
+  }
+  const workspaceId = String(value).trim()
+  if (!workspaceId) return documentError('workspaceId is required')
+  if (workspaceId.length > DOCUMENT_WORKSPACE_ID_MAX_LENGTH) {
+    return documentError('workspaceId is too long')
+  }
+  return { ok: true, value: workspaceId }
+}
+
+function validateDocumentId (value) {
+  if (value === null || value === undefined || (typeof value !== 'string' && typeof value !== 'number')) {
+    return documentError('document id is required')
+  }
+  const id = String(value).trim()
+  if (!id) return documentError('document id is required')
+  if (id.length > DOCUMENT_ID_MAX_LENGTH) return documentError('document id is too long')
+  return { ok: true, value: id }
+}
+
+function validateDocumentTitle (value, allowDefault) {
+  if (value === null || value === undefined) {
+    if (allowDefault) return { ok: true, value: 'Untitled' }
+    return documentError('title is required')
+  }
+  if (typeof value !== 'string') return documentError('title must be a string')
+  const title = value.trim()
+  if (!title) return documentError('title is required')
+  if (title.length > DOCUMENT_TITLE_MAX_LENGTH) return documentError('title is too long')
+  return { ok: true, value: title }
+}
+
+function validateDocumentMarkdown (value) {
+  if (value === null || value === undefined) return documentError('markdown must be a string')
+  if (typeof value !== 'string') return documentError('markdown must be a string')
+  if (value.length > DOCUMENT_MARKDOWN_MAX_LENGTH) return documentError('markdown is too long')
+  return { ok: true, value: value }
+}
+
+function normalizeStoredDocument (value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const workspace = validateDocumentWorkspaceId(value.workspace_id)
+  const id = validateDocumentId(value.id)
+  if (!workspace.ok || !id.ok) return null
+
+  const title = typeof value.title === 'string' && value.title.trim()
+    ? value.title.trim().slice(0, DOCUMENT_TITLE_MAX_LENGTH)
+    : 'Untitled'
+  const markdown = typeof value.markdown === 'string'
+    ? value.markdown.slice(0, DOCUMENT_MARKDOWN_MAX_LENGTH)
+    : ''
+  const createdAt = typeof value.created_at === 'number' && isFinite(value.created_at)
+    ? value.created_at
+    : 0
+  const updatedAt = typeof value.updated_at === 'number' && isFinite(value.updated_at)
+    ? value.updated_at
+    : createdAt
+
+  return {
+    id: id.value,
+    workspace_id: workspace.value,
+    title: title,
+    markdown: markdown,
+    private: value.private === true,
+    created_at: createdAt,
+    updated_at: updatedAt
+  }
+}
+
+function normalizeDocumentState () {
+  const stored = Array.isArray(dbState.documents) ? dbState.documents : []
+  dbState.documents = stored.map(normalizeStoredDocument).filter(function (document) {
+    return !!document
+  })
 }
 
 function loadDatabase () {
@@ -23,6 +119,7 @@ function loadDatabase () {
       if (raw && raw.trim()) {
         const parsed = JSON.parse(raw)
         dbState = Object.assign({}, dbState, parsed)
+        normalizeDocumentState()
       }
     } else {
       // Legacy auto-migration from sessionRestore.json if exists
@@ -42,17 +139,21 @@ function loadDatabase () {
           }
         } catch (e2) {}
       }
+      normalizeDocumentState()
     }
   } catch (e) {
     console.warn('dbService: failed to load database file, starting clean', e)
+    normalizeDocumentState()
   }
 }
 
 function saveDatabase () {
   try {
     writeFileAtomic.sync(dbFilePath, JSON.stringify(dbState, null, 2), {})
+    return true
   } catch (e) {
     console.error('dbService: failed to save database file', e)
+    return false
   }
 }
 
@@ -175,6 +276,312 @@ function deleteDesign (designId) {
   return true
 }
 
+/* --- Workspace Documents --- */
+
+function documentMetadata (document) {
+  return {
+    id: document.id,
+    workspace_id: document.workspace_id,
+    title: document.title,
+    private: document.private === true,
+    created_at: document.created_at,
+    updated_at: document.updated_at
+  }
+}
+
+function cloneDocument (document) {
+  return Object.assign({}, document, { private: document.private === true })
+}
+
+function findDocumentIndex (workspaceId, id) {
+  return dbState.documents.findIndex(function (document) {
+    return document.workspace_id === workspaceId && document.id === id
+  })
+}
+
+function newDocumentId () {
+  let id
+  do {
+    id = 'doc-' + Date.now() + '-' + Math.floor(Math.random() * 1000000000).toString(36)
+  } while (dbState.documents.some(function (document) { return document.id === id }))
+  return id
+}
+
+/* The event contains only an identity. In particular, do not add title,
+ * markdown, snippets, or counts here: Docs are available to AI only after an
+ * explicit tool call, and this event is solely for UI refreshes. */
+function broadcastDocsChanged (workspaceId, documentId) {
+  try {
+    if (typeof windows === 'undefined' || !windows || typeof windows.getAll !== 'function') return
+    const payload = {
+      workspaceId: workspaceId,
+      documentId: documentId || null
+    }
+    const allWindows = windows.getAll()
+    if (!Array.isArray(allWindows)) return
+    allWindows.forEach(function (win) {
+      try {
+        const contents = typeof getWindowWebContents === 'function'
+          ? getWindowWebContents(win)
+          : (win && win.webContents)
+        if (contents && typeof contents.send === 'function') {
+          contents.send('docs-changed', payload)
+        }
+      } catch (e) {}
+    })
+  } catch (e) {}
+}
+
+function documentWorkspaceAndId (workspaceId, id) {
+  if (workspaceId && typeof workspaceId === 'object' && !Array.isArray(workspaceId)) {
+    return {
+      workspaceId: workspaceId.workspaceId,
+      id: workspaceId.id
+    }
+  }
+  return { workspaceId: workspaceId, id: id }
+}
+
+function listDocuments (workspaceId) {
+  const workspace = validateDocumentWorkspaceId(workspaceId)
+  if (!workspace.ok) return workspace
+  const documents = dbState.documents
+    .filter(function (document) { return document.workspace_id === workspace.value })
+    .map(documentMetadata)
+  documents.sort(function (a, b) {
+    return (b.updated_at - a.updated_at) || (b.created_at - a.created_at) || a.title.localeCompare(b.title)
+  })
+  return { ok: true, documents: documents }
+}
+
+function getDocument (workspaceId, id) {
+  const identity = documentWorkspaceAndId(workspaceId, id)
+  const workspace = validateDocumentWorkspaceId(identity.workspaceId)
+  if (!workspace.ok) return workspace
+  const documentId = validateDocumentId(identity.id)
+  if (!documentId.ok) return documentId
+  const index = findDocumentIndex(workspace.value, documentId.value)
+  if (index < 0) return documentError('Document not found')
+  return { ok: true, document: cloneDocument(dbState.documents[index]) }
+}
+
+function createDocument (workspaceId, title, markdown, options) {
+  if (workspaceId && typeof workspaceId === 'object' && !Array.isArray(workspaceId)) {
+    const payload = workspaceId
+    workspaceId = payload.workspaceId
+    title = payload.title
+    markdown = payload.markdown
+    options = payload.options || options
+  }
+  const workspace = validateDocumentWorkspaceId(workspaceId)
+  if (!workspace.ok) return workspace
+  const validatedTitle = validateDocumentTitle(title, true)
+  if (!validatedTitle.ok) return validatedTitle
+  const validatedMarkdown = markdown === undefined
+    ? { ok: true, value: '' }
+    : validateDocumentMarkdown(markdown)
+  if (!validatedMarkdown.ok) return validatedMarkdown
+
+  const now = Date.now()
+  const document = {
+    id: newDocumentId(),
+    workspace_id: workspace.value,
+    title: validatedTitle.value,
+    markdown: validatedMarkdown.value,
+    private: false,
+    created_at: now,
+    updated_at: now
+  }
+  dbState.documents.push(document)
+  if (!saveDatabase()) {
+    dbState.documents.pop()
+    return documentError('Could not save document')
+  }
+  if (!options || options.broadcast !== false) broadcastDocsChanged(workspace.value, document.id)
+  return { ok: true, document: cloneDocument(document) }
+}
+
+function updateDocument (workspaceId, id, changes, options) {
+  if (workspaceId && typeof workspaceId === 'object' && !Array.isArray(workspaceId)) {
+    const payload = workspaceId
+    workspaceId = payload.workspaceId
+    id = payload.id
+    changes = payload
+    options = options || payload.options
+  }
+  const workspace = validateDocumentWorkspaceId(workspaceId)
+  if (!workspace.ok) return workspace
+  const documentId = validateDocumentId(id)
+  if (!documentId.ok) return documentId
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+    return documentError('document changes must be an object')
+  }
+
+  const hasTitle = Object.prototype.hasOwnProperty.call(changes, 'title')
+  const hasMarkdown = Object.prototype.hasOwnProperty.call(changes, 'markdown')
+  const hasPrivate = Object.prototype.hasOwnProperty.call(changes, 'private')
+  if (!hasTitle && !hasMarkdown && !hasPrivate) {
+    return documentError('At least one document field is required')
+  }
+  const validatedTitle = hasTitle ? validateDocumentTitle(changes.title, false) : null
+  if (validatedTitle && !validatedTitle.ok) return validatedTitle
+  const validatedMarkdown = hasMarkdown ? validateDocumentMarkdown(changes.markdown) : null
+  if (validatedMarkdown && !validatedMarkdown.ok) return validatedMarkdown
+  if (hasPrivate && typeof changes.private !== 'boolean') {
+    return documentError('private must be a boolean')
+  }
+
+  const index = findDocumentIndex(workspace.value, documentId.value)
+  if (index < 0) return documentError('Document not found')
+  const document = dbState.documents[index]
+  const previous = Object.assign({}, document)
+  if (validatedTitle) document.title = validatedTitle.value
+  if (validatedMarkdown) document.markdown = validatedMarkdown.value
+  if (hasPrivate) document.private = changes.private
+  document.updated_at = Date.now()
+
+  if (!saveDatabase()) {
+    dbState.documents[index] = previous
+    return documentError('Could not save document')
+  }
+  if (!options || options.broadcast !== false) broadcastDocsChanged(workspace.value, document.id)
+  return { ok: true, document: cloneDocument(document) }
+}
+
+function deleteDocument (workspaceId, id) {
+  const identity = documentWorkspaceAndId(workspaceId, id)
+  const workspace = validateDocumentWorkspaceId(identity.workspaceId)
+  if (!workspace.ok) return workspace
+  const documentId = validateDocumentId(identity.id)
+  if (!documentId.ok) return documentId
+  const index = findDocumentIndex(workspace.value, documentId.value)
+  if (index < 0) return documentError('Document not found')
+  const removed = dbState.documents.splice(index, 1)[0]
+  if (!saveDatabase()) {
+    dbState.documents.splice(index, 0, removed)
+    return documentError('Could not save document')
+  }
+  broadcastDocsChanged(workspace.value, removed.id)
+  return { ok: true }
+}
+
+function documentAiLimit (value) {
+  const numeric = Number(value)
+  if (!isFinite(numeric) || numeric <= 0) return DOCUMENT_AI_DEFAULT_RESULTS
+  return Math.max(1, Math.min(DOCUMENT_AI_MAX_RESULTS, Math.floor(numeric)))
+}
+
+function documentSnippet (markdown, query) {
+  const text = String(markdown || '').replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  const needle = String(query || '').toLowerCase()
+  const index = needle ? text.toLowerCase().indexOf(needle) : 0
+  const center = index < 0 ? 0 : index
+  const context = Math.floor(DOCUMENT_AI_SNIPPET_MAX_LENGTH / 2)
+  let start = Math.max(0, center - context)
+  const end = Math.min(text.length, start + DOCUMENT_AI_SNIPPET_MAX_LENGTH)
+  if (end - start < DOCUMENT_AI_SNIPPET_MAX_LENGTH) start = Math.max(0, end - DOCUMENT_AI_SNIPPET_MAX_LENGTH)
+  let snippet = text.slice(start, end)
+  if (start > 0) snippet = '…' + snippet
+  if (end < text.length) snippet += '…'
+  return snippet.slice(0, DOCUMENT_AI_SNIPPET_MAX_LENGTH)
+}
+
+function aiDocumentUnavailable () {
+  /* Do not distinguish a private record from a missing/cross-workspace one. */
+  return documentError('Document not found or unavailable')
+}
+
+function listDocumentsForAI (workspaceId, options) {
+  const listed = listDocuments(workspaceId)
+  if (!listed.ok) return listed
+  const limit = documentAiLimit(options && options.limit)
+  return {
+    ok: true,
+    documents: listed.documents
+      .filter(function (document) { return document.private !== true })
+      .slice(0, limit)
+  }
+}
+
+function searchDocumentsForAI (workspaceId, query, options) {
+  if (workspaceId && typeof workspaceId === 'object' && !Array.isArray(workspaceId)) {
+    const payload = workspaceId
+    workspaceId = payload.workspaceId
+    query = payload.query
+    options = payload
+  }
+  const workspace = validateDocumentWorkspaceId(workspaceId)
+  if (!workspace.ok) return workspace
+  if (typeof query !== 'string' || !query.trim()) return documentError('query is required')
+  query = query.trim()
+  if (query.length > DOCUMENT_AI_QUERY_MAX_LENGTH) return documentError('query is too long')
+  const lowerQuery = query.toLowerCase()
+  const limit = documentAiLimit(options && options.limit)
+  const documents = dbState.documents
+    .filter(function (document) {
+      if (document.workspace_id !== workspace.value || document.private === true) return false
+      const title = document.title.toLowerCase()
+      const markdown = document.markdown.toLowerCase()
+      return title.indexOf(lowerQuery) !== -1 || markdown.indexOf(lowerQuery) !== -1
+    })
+    .sort(function (a, b) {
+      return (b.updated_at - a.updated_at) || (b.created_at - a.created_at)
+    })
+    .map(function (document) {
+      return {
+        id: document.id,
+        workspace_id: document.workspace_id,
+        title: document.title,
+        snippet: documentSnippet(document.markdown, query),
+        created_at: document.created_at,
+        updated_at: document.updated_at
+      }
+    })
+  return { ok: true, documents: documents.slice(0, limit) }
+}
+
+function getDocumentForAI (workspaceId, id) {
+  const got = getDocument(workspaceId, id)
+  if (!got.ok || !got.document || got.document.private === true) return aiDocumentUnavailable()
+  return got
+}
+
+function createDocumentForAI (workspaceId, input) {
+  if (workspaceId && typeof workspaceId === 'object' && !Array.isArray(workspaceId)) {
+    input = workspaceId
+    workspaceId = input.workspaceId
+  }
+  input = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  if (Object.prototype.hasOwnProperty.call(input, 'private')) {
+    return documentError('AI cannot change document privacy')
+  }
+  const created = createDocument(workspaceId, input.title, input.markdown)
+  if (!created.ok) return created
+  return { ok: true, document: documentMetadata(created.document) }
+}
+
+function updateDocumentForAI (workspaceId, id, changes) {
+  if (workspaceId && typeof workspaceId === 'object' && !Array.isArray(workspaceId)) {
+    const payload = workspaceId
+    workspaceId = payload.workspaceId
+    id = payload.id
+    changes = payload
+  }
+  changes = changes && typeof changes === 'object' && !Array.isArray(changes) ? changes : {}
+  if (Object.prototype.hasOwnProperty.call(changes, 'private')) {
+    return documentError('AI cannot change document privacy')
+  }
+  const got = getDocumentForAI(workspaceId, id)
+  if (!got.ok) return got
+  const patch = {}
+  if (Object.prototype.hasOwnProperty.call(changes, 'title')) patch.title = changes.title
+  if (Object.prototype.hasOwnProperty.call(changes, 'markdown')) patch.markdown = changes.markdown
+  const updated = updateDocument(workspaceId, id, patch)
+  if (!updated.ok) return updated
+  return { ok: true, document: documentMetadata(updated.document) }
+}
+
 /* --- Tab Activity Logs --- */
 function logTabActivity (activity) {
   if (!activity || !activity.url) return null
@@ -223,5 +630,44 @@ ipc.handle('db:getDesigns', async (event, workspaceId) => getDesigns(workspaceId
 ipc.handle('db:saveDesign', async (event, design) => saveDesign(design))
 ipc.handle('db:deleteDesign', async (event, designId) => deleteDesign(designId))
 
+/* Workspace Docs are always addressed by both workspaceId and document id.
+ * The renderer-facing handlers intentionally expose only the UI CRUD API;
+ * AI privacy checks live in the main-only helpers below and cannot be
+ * bypassed by an IPC flag. */
+ipc.handle('db:listDocuments', async (event, workspaceId) => listDocuments(workspaceId))
+ipc.handle('db:getDocument', async (event, data) => getDocument(data))
+ipc.handle('db:createDocument', async (event, data) => {
+  return createDocument(data && data.workspaceId, data && data.title)
+})
+ipc.handle('db:updateDocument', async (event, data) => {
+  return updateDocument(data && data.workspaceId, data && data.id, data)
+})
+ipc.handle('db:deleteDocument', async (event, data) => deleteDocument(data))
+
 ipc.handle('db:logTabActivity', async (event, activity) => logTabActivity(activity))
 ipc.handle('db:getTabActivities', async (event, data) => getTabActivities(data && data.workspaceId, data && data.limit))
+
+/* Used by main/agentTools.js in the concatenated main bundle. Keeping these
+ * accessors out of IPC makes it impossible for a renderer caller to request
+ * an AI privacy bypass. */
+var minDocumentStore = {
+  list: listDocuments,
+  get: getDocument,
+  create: createDocument,
+  update: updateDocument,
+  delete: deleteDocument,
+  listForAI: listDocumentsForAI,
+  searchForAI: searchDocumentsForAI,
+  getForAI: getDocumentForAI,
+  createForAI: createDocumentForAI,
+  updateForAI: updateDocumentForAI
+}
+
+if (typeof global !== 'undefined') {
+  global.minDocumentStore = minDocumentStore
+  global.listDocumentsForAI = listDocumentsForAI
+  global.searchDocumentsForAI = searchDocumentsForAI
+  global.getDocumentForAI = getDocumentForAI
+  global.createDocumentForAI = createDocumentForAI
+  global.updateDocumentForAI = updateDocumentForAI
+}

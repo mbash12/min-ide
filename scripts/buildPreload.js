@@ -13,9 +13,10 @@ const modules = [
   'js/preload/translate.js',
   'js/preload/terminal.js',
   'js/preload/editor.js',
+  'js/preload/docs.js'
 ]
 
-function buildPreload() {
+function buildPreload () {
   /* concatenate modules */
   let output = ''
   modules.forEach(function (script) {

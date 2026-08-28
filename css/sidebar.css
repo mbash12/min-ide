@@ -271,6 +271,162 @@ body.dark-mode #app-prompt-ok:hover {
   overflow: hidden;
 }
 
+/* Docs panel: unlike the Files panel this is keyed by workspace id and stays
+   available for folderless workspaces. */
+#sidebar-panel-docs {
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+#sidebar-panel-docs.active {
+  display: flex;
+  overflow: hidden;
+}
+.docs-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.docs-empty-state,
+.docs-no-workspace {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  min-height: 120px;
+  padding: 20px 14px;
+  box-sizing: border-box;
+  text-align: center;
+}
+.docs-empty-message {
+  font-size: 12px;
+  opacity: 0.62;
+}
+.docs-loading {
+  padding: 18px 12px;
+  font-size: 12px;
+  opacity: 0.62;
+  text-align: center;
+}
+.docs-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px;
+  padding: 7px 8px;
+  border-radius: 5px;
+  background: rgba(190, 50, 50, 0.1);
+  color: #a52a2a;
+  font-size: 11px;
+}
+body.dark-mode .docs-error {
+  color: #f29b9b;
+  background: rgba(255, 100, 100, 0.12);
+}
+.docs-retry-button,
+.docs-action-button {
+  padding: 5px 10px;
+  border: 1px solid rgba(127, 127, 127, 0.32);
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.1);
+  color: inherit;
+  cursor: pointer;
+  font-size: 11px;
+}
+.docs-retry-button:hover,
+.docs-action-button:hover {
+  background: rgba(127, 127, 127, 0.2);
+}
+.docs-action-button.primary {
+  border-color: #3b82f6;
+  background: #3b82f6;
+  color: #fff;
+}
+.docs-action-button.primary:hover {
+  background: #2f6fe0;
+}
+.docs-action-button:disabled,
+.docs-retry-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.docs-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 5px 8px 5px 10px;
+  box-sizing: border-box;
+  cursor: pointer;
+  outline: none;
+}
+.docs-row:hover,
+.docs-row:focus-visible {
+  background: rgba(0, 0, 0, 0.06);
+}
+body.dark-mode .docs-row:hover,
+body.dark-mode .docs-row:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+}
+.docs-row-icon {
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  opacity: 0.7;
+}
+.docs-row-content {
+  flex: 1;
+  min-width: 0;
+}
+.docs-row-title {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.docs-row-meta {
+  margin-top: 1px;
+  overflow: hidden;
+  font-size: 10px;
+  opacity: 0.58;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.docs-row-privacy {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  opacity: 0.72;
+}
+.docs-lock-icon {
+  font-size: 13px !important;
+}
+.docs-private-toggle {
+  margin: 0;
+  cursor: pointer;
+}
+.docs-row-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 1px;
+  opacity: 0;
+}
+.docs-row:hover .docs-row-actions,
+.docs-row:focus-within .docs-row-actions {
+  opacity: 1;
+}
+.docs-row-actions .git-icon-button {
+  width: 22px;
+  height: 22px;
+  font-size: 15px !important;
+}
+
 /* header with title + action buttons, and the scrollable body (like git) */
 
 .file-tree-header {
