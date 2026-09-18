@@ -25,7 +25,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | --- | --- | --- |
 | 2 | Core hierarchy | DIFFERENT — task-scoped preferences |
 | 3 | Favicon | — bersih |
-| 4 | Workspace model | DIFFERENT — `sidebarState`, prefill nama |
+| 4 | Workspace model | DIFFERENT — `sidebarState` |
 | 5 | Workspace switching | — bersih |
 | 6 | Workspace persistence | MISSING — notes; DIFFERENT — AI reference |
 | 7 | Archive Workspace | MISSING — auto-unpin |
@@ -47,11 +47,11 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 23 | Download preference | MISSING — tidak Task-scoped |
 | 24 | AI coding agent | DIFFERENT — hanya OpenRouter |
 | 25 | AI session model | DIFFERENT — history per Task, bukan per Workspace; MISSING — ownership |
-| 26 | Browser control | MISSING — baca teks halaman |
+| 26 | Browser control | — bersih |
 | 27 | Extra settings page | MISSING — 4 seksi |
 | 28 | Startup behavior | — bersih |
 | 29 | Task deletion | MISSING — pinned task, download preference |
-| 30 | Workspace deletion | MISSING — pinned task; DIFFERENT — AI history |
+| 30 | Workspace deletion | MISSING — pinned task |
 | 31 | Architecture guidelines | DIFFERENT — duplikasi store, global swap, tanpa `ide/` |
 | 32 | Upstream compatibility | DIFFERENT — footprint core besar (remote sudah benar) |
 | 33 | Implementation order | Sebagian fase belum lengkap |
@@ -74,8 +74,6 @@ Hierarki `Workspace → Task → Tab` itu sendiri **sudah nyata** (bukan lagi al
 ## §4 Workspace
 
 - **DIFFERENT** — `sidebarState` dan `activityBarVisible` bukan field workspace seperti di blueprint, melainkan disimpan terpisah di IndexedDB dengan key `workspace:<id>` (`js/util/uiStateDB.js:13-16,44-60`; ditulis dari `js/sidebar.js:204-221`). Fungsional tetap persisten per workspace, tapi bukan bagian dari data model workspace.
-- **DIFFERENT** — Modal create tidak mengisi nama default; input dikosongkan (`js/workspaceDrawer/workspaceDrawer.js:67`). Blueprint minta nama default sudah terisi dan langsung editable saat modal dibuka. (Pola namanya sendiri sudah benar: `defaultWorkspaceName` = `Workspace %n`.)
-
 Kepemilikan nama default sudah dipisah dengan benar: task memakai `defaultTaskName`, workspace memakai `defaultWorkspaceName` (`js/workspaceDrawer/workspaceDrawer.js:161,220,466`).
 
 ---
@@ -236,9 +234,7 @@ Model picker memang provider-aware lewat katalog SDK, tetapi tidak ada jalur kre
 
 ## §26 Browser control for AI
 
-- **MISSING** — Kemampuan **membaca teks/konten halaman**. Tidak ada action yang mengembalikan teks halaman: `snapshot` hanya mengeluarkan heading dan elemen interaktif (`main/browserControl.js:573-624`), dan `BROWSER_ACTIONS` tidak punya action baca teks (`main/agentTools.js:44-48`).
-
-Pembatasan "web tabs only" sudah ditegakkan: tab membawa `kind`, dan tab non-web tidak pernah masuk daftar maupun diterima sebagai target (`js/browserControlRenderer.js` `isWebTab`). Pembatasan URL settings/profile tetap ada karena tab itu tetap `kind: 'web'`.
+Seluruh requirement sudah sesuai. Pembatasan "web tabs only" ditegakkan lewat `kind` (`js/browserControlRenderer.js` `isWebTab`); URL settings/profile tetap dicek karena tab itu tetap `kind: 'web'`. Membaca teks halaman tersedia lewat `action=read` (`main/browserControl.js` op `read`), yang mengembalikan `innerText` yang sudah dirapikan dengan batas karakter dan penanda truncation — melengkapi `snapshot` yang hanya mengeluarkan heading dan elemen interaktif.
 
 Kemampuan lain sudah ada: tab list/create/close/select, navigate/back/forward/reload, snapshot/inspect, click/type/select/scroll, upload/download, form, press/drag/hover.
 
@@ -273,9 +269,8 @@ Item lain sudah berjalan: `closeTask` menghentikan agent session dan menghancurk
 ## §30 Workspace deletion
 
 - **MISSING** — **"remove pinned Tasks"** — tidak ada fitur pinned (lihat §22).
-- **DIFFERENT** — **"remove workspace AI history/state as appropriate"** tidak dilakukan. Penghapusan hanya menghentikan session hidup lalu menghapus row document/design/snapshot/activity di DB; file history AI di disk tidak pernah dihapus. `js/browserUI.js:230-244` memanggil `agent-destroy-workspace-sessions`, yang handler-nya hanya memanggil `destroySession` (`main/agent.js:808-815`). Karena session sekarang per-task directory, file-nya menjadi orphan.
 
-Document/design/snapshot/activity sudah tersapu benar lewat `db:deleteWorkspaceData` (`main/dbService.js:650-667`), dan Profile memang tidak dihapus sesuai blueprint.
+Document/design/snapshot/activity sudah tersapu benar lewat `db:deleteWorkspaceData` (`main/dbService.js:650-667`), berkas transkrip AI tiap task ikut dihapus (`main/agent.js` `deleteTaskSessionFiles`), dan Profile memang tidak dihapus sesuai blueprint.
 
 ---
 
@@ -385,6 +380,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 3. **Tile sampai 3 panel** (§21, §36). Group memegang 2–3 pane (`maxPanesPerGroup`), lebar tiap pane disimpan sebagai `fractions` yang selalu berjumlah 1, dan setiap gutter punya divider sendiri (`js/splitViewDivider.js`). Satu pane bisa dikeluarkan tanpa membubarkan group lewat "Remove from Split View" (`js/navbar/tabContextMenu.js`), dan menutup satu pane dari `A+B+C` menyisakan `A+C` tiled; group baru hilang saat tinggal satu pane.
 4. **Metadata tab + URL internal generik** (§13, §26, §31). Tab membawa `kind` dan `resource`; URL editor dan terminal menjadi generik sehingga tidak ada path workspace di address bar maupun di session, dan resource sampai ke halaman lewat preload bridge. Browser control juga dibatasi ke tab `kind: 'web'` saja.
 5. **Batch kecil**: autosave Monaco (§14), diff working tree di panel Git (§20), dan `createdAt`/`updatedAt` pada workspace (§4).
+6. **Batch cepat lanjutan**: `action=read` untuk membaca teks halaman (§26), penghapusan berkas transkrip AI saat workspace dihapus (§30), dan prefill nama default di modal workspace (§4).
 
 ## Catatan
 

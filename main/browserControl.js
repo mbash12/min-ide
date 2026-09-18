@@ -623,6 +623,23 @@ function browserControlPageDom (opts) {
     }
   }
 
+  if (opts.op === 'read') {
+    const limit = Math.min(Math.max(opts.limit || 12000, 200), 60000)
+    const body = document.body
+    // innerText is what the page actually renders, so hidden menus and
+    // display:none blocks stay out of the result
+    const text = body ? String(body.innerText || body.textContent || '') : ''
+    const cleaned = text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+    return {
+      ok: true,
+      url: location.href,
+      title: document.title || '',
+      text: cleaned.length > limit ? cleaned.slice(0, limit) : cleaned,
+      truncated: cleaned.length > limit,
+      length: cleaned.length
+    }
+  }
+
   if (opts.op === 'locate' || opts.op === 'markEl') {
     const timeout = typeof opts.timeout === 'number' ? opts.timeout : 4000
     const spec = { ref: opts.ref, selector: opts.selector, text: opts.text, role: opts.role, nth: opts.nth }
@@ -942,6 +959,24 @@ async function browserControlSnapshot (tabId, taskId, workspaceId) {
   result.taskId = taskId || target.taskId
   result.workspaceId = workspaceId || target.workspaceId
   result.selected = true
+  return result
+}
+
+/* the readable text of the page, for summarising or checking content that the
+snapshot does not cover (prose, tables, error messages) */
+async function browserControlReadPage (params) {
+  params = params || {}
+  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
+  if (target.error) return { ok: false, error: target.error }
+  const result = await browserControlRunInView(target.view, {
+    op: 'read',
+    limit: params.limit
+  })
+  browserControlRestoreChromeFocus(target.keepChromeFocus)
+  if (!result || result.ok === false) return result || { ok: false, error: 'Could not read the page' }
+  result.tabId = target.id
+  result.taskId = params.taskId || target.taskId
+  result.workspaceId = params.workspaceId || target.workspaceId
   return result
 }
 
@@ -1335,6 +1370,7 @@ async function browserControlRunStep (step) {
   if (action === 'forward') return browserControlHistory('forward', step.tabId, step.taskId, step.workspaceId)
   if (action === 'reload') return browserControlHistory('reload', step.tabId, step.taskId, step.workspaceId)
   if (action === 'snapshot') return browserControlSnapshot(step.tabId, step.taskId, step.workspaceId)
+  if (action === 'read') return browserControlReadPage(step)
   if (action === 'click') return browserControlPointer('click', step)
   if (action === 'dblclick') return browserControlPointer('dblclick', step)
   if (action === 'rightclick') return browserControlPointer('rightclick', step)
@@ -1372,6 +1408,7 @@ var minBrowser = {
   navigate: browserControlNavigate,
   history: browserControlHistory,
   snapshot: browserControlSnapshot,
+  readPage: browserControlReadPage,
   act: browserControlAct,
   wait: browserControlWait,
   runStep: browserControlRunStep

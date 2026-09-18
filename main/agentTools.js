@@ -42,7 +42,7 @@ function minEnum (Type, values, description) {
 }
 
 var BROWSER_ACTIONS = [
-  'snapshot', 'screenshot', 'navigate', 'back', 'forward', 'reload', 'tabs',
+  'snapshot', 'read', 'screenshot', 'navigate', 'back', 'forward', 'reload', 'tabs',
   'click', 'dblclick', 'rightclick', 'type', 'select', 'press', 'scroll',
   'wait', 'hover', 'drag', 'assert', 'upload', 'download', 'dialog'
 ]
@@ -83,6 +83,7 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       'All actions apply only to this workspace\'s tabs, even if another workspace is selected in the window.',
       'Use action=tabs with operation=list|new|close|select to open, close, or switch tabs in this workspace.',
       'Call browser with action=snapshot before click/type/drag unless you already have a current ref from this turn.',
+      'Use action=read to get the page text when you need prose, table data, or an error message rather than elements.',
       'Refs are re-resolved after React/Vue rerenders using stored role+name and selector. If a click fails, snapshot again.',
       'Prefer selector (data-testid, aria-label, name) or role+text in playbooks — not refs.',
       'Click variants: dblclick, rightclick, or click with button/clickCount/holdMs/modifiers. Hover then snapshot to reveal menus.',
@@ -121,7 +122,8 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       files: optStr('For upload: extra comma-separated paths'),
       acceptDialog: optBool('For click: accept the next alert/confirm/prompt'),
       accept: optBool('For dialog: true to accept, false to dismiss. Default true.'),
-      promptText: optStr('For dialog / acceptDialog: text to type into prompt()')
+      promptText: optStr('For dialog / acceptDialog: text to type into prompt()'),
+      limit: optNum('For read: maximum characters of page text. Default 12000.')
     }, locatorFields)),
     execute: async function (_id, params) {
       if (!taskId || taskId === 'default') {
@@ -161,6 +163,14 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
         if (!result || result.ok === false) return minToolJsonResult(result, true)
         const header = (result.title || '') + '\n' + (result.url || '') + '\n'
         return minToolTextResult(header + (result.snapshot || ''))
+      }
+      if (action === 'read') {
+        // the page's readable text: what the snapshot does not cover
+        const result = await minBrowser.readPage({ tabId: params.tabId, taskId: taskId, workspaceId: workspaceId, limit: params.limit })
+        if (!result || result.ok === false) return minToolJsonResult(result, true)
+        const header = (result.title || '') + '\n' + (result.url || '') + '\n'
+        const suffix = result.truncated ? '\n\n[truncated at ' + String(result.text.length) + ' of ' + String(result.length) + ' characters]' : ''
+        return minToolTextResult(header + (result.text || '') + suffix)
       }
       const result = await minBrowser.runStep(withTask(params))
       return minToolJsonResult(result, result && result.ok === false)

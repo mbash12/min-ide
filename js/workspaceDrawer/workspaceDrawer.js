@@ -64,7 +64,8 @@ function openWorkspaceModal (workspaceId) {
 
   if (isCreate) {
     workspaceModalTitle.textContent = l('workspaceCreateTitle')
-    workspaceModalNameInput.value = ''
+    // prefill the default name, matching what an unnamed workspace row shows
+    workspaceModalNameInput.value = l('defaultWorkspaceName').replace('%n', workspaces.getLength() + 1)
     populateProfileSelect('')
     workspaceModalPathInput.value = ''
     workspaceModalDelete.hidden = true

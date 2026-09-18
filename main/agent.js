@@ -803,6 +803,28 @@ ipc.on('agent-destroy-task-session', function (e, data) {
   } catch (err) {}
 })
 
+/* Deletes a task's transcripts from disk. Used when a workspace is removed:
+ * the sessions can never be listed again once their tasks are gone, so leaving
+ * the files behind would only orphan them. Strictly confined to the sessions
+ * root, like every other path this module writes to. */
+function deleteTaskSessionFiles (taskId) {
+  const dir = getTaskSessionDir(taskId, null)
+  const sessionsRoot = getSessionsRoot()
+  if (!dir || !sessionsRoot) return
+
+  const pathMod = require('path')
+  const resolved = pathMod.resolve(dir)
+  const root = pathMod.resolve(sessionsRoot)
+  const prefix = root.endsWith(pathMod.sep) ? root : root + pathMod.sep
+  if (!resolved.startsWith(prefix)) return
+
+  try {
+    fs.rmSync(resolved, { recursive: true, force: true })
+  } catch (err) {
+    console.warn('failed to delete agent sessions for task', taskId, err)
+  }
+}
+
 /* Safety net for workspace close: stops sessions for the given task ids in
 windows whose session keys may differ (different cwd fallback). */
 ipc.on('agent-destroy-workspace-sessions', function (e, data) {
@@ -810,6 +832,7 @@ ipc.on('agent-destroy-workspace-sessions', function (e, data) {
     const taskIds = (data && data.taskIds) || []
     taskIds.forEach(function (taskId) {
       destroySession(getSessionKey(taskId, null))
+      deleteTaskSessionFiles(taskId)
     })
   } catch (err) {}
 })
