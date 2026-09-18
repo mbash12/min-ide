@@ -528,10 +528,13 @@ function switchToWorkspace (id, options) {
     return
   }
 
+  // setSelected re-points window.tasks to this workspace's list; it must run
+  // before splitView.clearAll, which reads window.tabs (undefined until the
+  // first task is selected).
+  workspaces.setSelected(id)
+
   // switching workspaces destroys the visible and all paused split groups
   splitView.clearAll()
-
-  workspaces.setSelected(id)
 
   tabBar.updateAll()
 
@@ -684,6 +687,9 @@ webviews.bindIPC('profileDeleteRequested', function (tabId, args) {
 })
 
 ipc.on('set-file-view', function (e, data) {
+  if (!window.tabs) {
+    return
+  }
   tabs.get().forEach(function (tab) {
     if (tab.url === data.url) {
       tabs.update(tab.id, { isFileView: data.isFileView })

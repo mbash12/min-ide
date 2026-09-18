@@ -315,7 +315,13 @@ const tabColor = {
     })
   },
   updateColors: function () {
+    if (!window.tabs) {
+      return
+    }
     const tab = tabs.get(tabs.getSelected())
+    if (!tab) {
+      return
+    }
 
     // private tabs have their own color scheme
     if (tab.private) {

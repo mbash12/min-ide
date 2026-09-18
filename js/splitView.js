@@ -399,7 +399,11 @@ const splitView = {
   clearAll: function (preferredActiveId) {
     const activeGroup = splitView.getActiveGroup()
     const hadActiveGroup = activeGroup !== null
-    const activeId = preferredActiveId || (activeGroup && activeGroup.paneTabIds[activeGroup.activePane]) || tabs.getSelected()
+    // window.tabs is undefined until the first task is selected (startup);
+    // guard so workspace switches on a fresh state don't crash.
+    const currentTabs = (typeof window !== 'undefined' && window.tabs) || (typeof tabs !== 'undefined' ? tabs : null)
+    const selectedTab = currentTabs ? currentTabs.getSelected() : null
+    const activeId = preferredActiveId || (activeGroup && activeGroup.paneTabIds[activeGroup.activePane]) || selectedTab
 
     splitView.activeGroupIndex = null
     splitView.groups = []

@@ -5,6 +5,9 @@ var tabBar = require('navbar/tabBar.js')
 var tabActivity = {
   minFadeAge: 330000,
   refresh: function () {
+    if (!window.tabs) {
+      return
+    }
     requestAnimationFrame(function () {
       var tabSet = tabs.get()
       var selected = tabs.getSelected()
