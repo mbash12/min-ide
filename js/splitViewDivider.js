@@ -92,6 +92,12 @@ ipc.on('view-mouse-event', function (e, args) {
     return
   }
   if (args.type === 'mousemove') {
+    if (typeof args.windowX === 'number') {
+      // window-relative cursor position, independent of the pane bounds that
+      // the drag itself is moving
+      applyRatio(args.windowX)
+      return
+    }
     // the event coordinates are relative to the pane that sent them,
     // so convert them to window coordinates using the pane bounds
     const paneIndex = splitView.getPaneIds().indexOf(args.viewId)

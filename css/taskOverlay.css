@@ -94,7 +94,13 @@ body.dark-theme #switch-task-button.active {
   opacity: 1;
   transform: none;
   transition: 0.15s all;
-  z-index: 3;
+  /* FORK: above #sidebar (z-index 4) so the overlay covers the whole window
+  like the new tab page. Upstream has no sidebar and used z-index 3 here. */
+  z-index: 5;
+}
+.dark-mode #task-overlay,
+body.dark-theme #task-overlay {
+  background-color: rgb(37, 41, 48);
 }
 #task-area {
   flex: 1;

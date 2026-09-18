@@ -310,9 +310,14 @@ const sidebar = {
       ipc.on('view-mouse-event', function (e, args) {
         if (!sidebarDragState) return
         if (args.type === 'mousemove') {
-          // the event coordinates are relative to the view that sent them;
-          // the view starts right at the sidebar's edge
-          applyPanelWidth(sidebar.currentShift + args.x)
+          // prefer the window-relative cursor position: the page-relative x
+          // shifts as the sidebar resizes the views, so converting it back to
+          // window coordinates would double-count the movement
+          if (typeof args.windowX === 'number') {
+            applyPanelWidth(args.windowX)
+          } else {
+            applyPanelWidth(sidebar.currentShift + args.x)
+          }
         } else if (args.type === 'mouseup') {
           document.dispatchEvent(new MouseEvent('mouseup'))
         }

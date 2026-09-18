@@ -518,12 +518,27 @@ ipc.on('focusView', function (e, id) {
 })
 
 /* relays mouse events from page views to their owning window's renderer,
-used by the split view divider to track drags over the panes */
+used by the split view divider and the sidebar resizer to track drags over
+the panes. */
 ipc.on('view-mouse-event', function (e, args) {
   const eventWindow = getWindowFromViewContents(e.sender)
   if (eventWindow) {
     const viewId = Object.keys(viewMap).find(id => viewMap[id].webContents === e.sender)
-    getWindowWebContents(eventWindow).send('view-mouse-event', Object.assign({}, args, { viewId: viewId }))
+    /* The page-relative coordinates in args shift while a drag resizes the
+    views, so a listener that converts them back to window coordinates
+    double-counts the movement. Report the cursor position inside the window
+    instead; it is independent of the views' current bounds. */
+    let windowX = null
+    let windowY = null
+    try {
+      // required lazily: main modules share one concatenated scope, so this
+      // must not depend on main.js having run its own require first
+      const point = require('electron').screen.getCursorScreenPoint()
+      const bounds = eventWindow.getContentBounds()
+      windowX = point.x - bounds.x
+      windowY = point.y - bounds.y
+    } catch (err) {}
+    getWindowWebContents(eventWindow).send('view-mouse-event', Object.assign({}, args, { viewId, windowX, windowY }))
   }
 })
 
