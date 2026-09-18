@@ -8,6 +8,7 @@ const TaskList = require('tabState/task.js')
 // events come from the inner TaskList/TabList unchanged.
 
 function makeWorkspace (workspace = {}) {
+  const now = Date.now()
   return {
     id: workspace.id || String(TaskList.getRandomId()),
     name: workspace.name || null,
@@ -17,6 +18,8 @@ function makeWorkspace (workspace = {}) {
     activeTaskId: workspace.activeTaskId || null,
     collapsed: workspace.collapsed,
     selectedInWindow: workspace.selectedInWindow || null,
+    createdAt: workspace.createdAt || now,
+    updatedAt: workspace.updatedAt || workspace.createdAt || now,
     tasks: null // assigned below: TaskList instance
   }
 }
@@ -87,6 +90,9 @@ class WorkspaceStore {
       }
       if (key === 'tasks') continue
       ws[key] = data[key]
+      if (key !== 'updatedAt') {
+        ws.updatedAt = Date.now()
+      }
       if (emit) {
         this.emit('workspace-updated', id, key, data[key])
       }
@@ -272,6 +278,8 @@ function stringifyWorkspace (ws) {
     archived: ws.archived,
     activeTaskId: ws.activeTaskId,
     collapsed: ws.collapsed,
+    createdAt: ws.createdAt,
+    updatedAt: ws.updatedAt,
     tasks: stringified
   }
   if (result.collapsed === undefined) delete result.collapsed

@@ -25,7 +25,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | --- | --- | --- |
 | 2 | Core hierarchy | DIFFERENT — task-scoped preferences |
 | 3 | Favicon | — bersih |
-| 4 | Workspace model | MISSING — `createdAt`/`updatedAt`; DIFFERENT — `sidebarState`, prefill nama |
+| 4 | Workspace model | DIFFERENT — `sidebarState`, prefill nama |
 | 5 | Workspace switching | — bersih |
 | 6 | Workspace persistence | MISSING — notes; DIFFERENT — AI reference |
 | 7 | Archive Workspace | MISSING — auto-unpin |
@@ -35,13 +35,13 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 11 | Clear Profile Data | MISSING — seluruh fitur |
 | 12 | Central database | MISSING — sebagian besar tabel; DIFFERENT — JSON, bukan DB |
 | 13 | Tabs | — bersih |
-| 14 | Monaco editor | MISSING — autosave |
+| 14 | Monaco editor | — bersih |
 | 15 | Terminal | DIFFERENT — cwd/scrollback tidak dipersist |
 | 16 | Documents | MISSING — source mode, Mermaid; DIFFERENT — bentuk tool AI |
 | 17 | Notes | MISSING — seluruh fitur |
 | 18 | Sidebar | MISSING — aktivitas Notes |
 | 19 | File Tree | — bersih |
-| 20 | Git | DIFFERENT — diff working tree tidak terjangkau dari UI |
+| 20 | Git | — bersih |
 | 21 | Tile / Split View | — bersih |
 | 22 | Pinned Tasks | MISSING — seluruh fitur |
 | 23 | Download preference | MISSING — tidak Task-scoped |
@@ -73,7 +73,6 @@ Hierarki `Workspace → Task → Tab` itu sendiri **sudah nyata** (bukan lagi al
 
 ## §4 Workspace
 
-- **MISSING** — Field `createdAt` dan `updatedAt` tidak ada di record workspace. `makeWorkspace` hanya membuat `id, name, profileId, path, archived, activeTaskId, collapsed, selectedInWindow, tasks` (`js/tabState/workspace.js:10-22`).
 - **DIFFERENT** — `sidebarState` dan `activityBarVisible` bukan field workspace seperti di blueprint, melainkan disimpan terpisah di IndexedDB dengan key `workspace:<id>` (`js/util/uiStateDB.js:13-16,44-60`; ditulis dari `js/sidebar.js:204-221`). Fungsional tetap persisten per workspace, tapi bukan bagian dari data model workspace.
 - **DIFFERENT** — Modal create tidak mengisi nama default; input dikosongkan (`js/workspaceDrawer/workspaceDrawer.js:67`). Blueprint minta nama default sudah terisi dan langsung editable saat modal dibuka. (Pola namanya sendiri sudah benar: `defaultWorkspaceName` = `Workspace %n`.)
 
@@ -155,7 +154,7 @@ Sisa yang diketahui: tab editor/terminal yang dibuat **sebelum** perubahan ini m
 
 ## §14 Monaco editor
 
-- **MISSING** — **Autosave** dengan delay pendek. Editor hanya menyimpan saat Ctrl/Cmd+S atau lewat akselerator menu aplikasi (`pages/editor/editor.js:113-138,262`); perubahan isi hanya menyalakan flag dirty (`pages/editor/editor.js:246-248`). Tidak ada timer/debounce di mana pun.
+Seluruh requirement sudah sesuai, termasuk **autosave**: perubahan memicu debounce 700 ms yang menulis file lewat jalur simpan yang sama dengan Ctrl/Cmd+S (`pages/editor/editor.js`), ditambah flush saat halaman kehilangan fokus atau disembunyikan supaya ketikan terakhir tidak tertinggal di timer. Simpan manual tetap ada, dan guard dirty saat menutup tab tetap berlaku sebagai jaring pengaman.
 
 Preview/temporary tab, focus existing tanpa duplikat, pin saat edit/double-click, dan scope per task sudah sesuai blueprint.
 
@@ -195,7 +194,7 @@ Yang sudah sesuai: Files/Git disembunyikan saat tanpa path, Docs tetap tampil ta
 
 ## §20 Git
 
-- **DIFFERENT** — **Diff working tree tidak terjangkau dari UI.** Handler ada (`main/git.js:332` `ipc.handle('gitDiff', …)`) tetapi tidak ada renderer yang memanggilnya; satu-satunya pemakaian diff adalah diff per-commit lewat `gitCommitDiff` (`js/sidebar/gitPanel.js:844`). Klik file yang berubah membuka file di editor, bukan menampilkan diff (`js/sidebar/gitPanel.js:453-458`).
+Semua item sudah ada, termasuk **diff working tree**: klik baris file menampilkan diff-nya di bawah baris itu lewat `ipc.invoke('gitDiff', …)` (`js/sidebar/gitPanel.js`), dengan satu diff terbuka pada satu waktu. Renderer diff dipakai bersama dengan tampilan commit (`renderDiffRows`). Untuk file untracked panel menampilkan catatan agar di-stage dulu, karena git tidak punya pembanding sebelum itu; "Open File" tetap tersedia di menu klik-kanan baris.
 
 Item §20 lainnya sudah ada, termasuk deteksi repo untuk workspace di subfolder (`main/git.js:58-77,199-216`), stage/unstage, commit, branch, checkout, pull/push/sync, conflict indicator, dan refresh.
 
@@ -385,6 +384,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 2. **Tile / split view sekarang persisten** (§5, §6, §21, §28). Layout disimpan per task sebagai field `splitState` (`js/tabState/task.js:49-52`), ditulis oleh `splitView.persist()` pada setiap perubahan group/ratio (`js/splitView.js`) dan dipasang kembali oleh `splitView.restoreForSelectedTask()` saat task dipilih (`js/browserUI.js:520-521`). Karena state-nya menempel di record task, ia ikut format session v3 yang sudah ada tanpa perubahan format. `clearAll()` sengaja tidak menulis apa pun: ia hanya membongkar tampilan, sehingga layout task tetap utuh saat kembali.
 3. **Tile sampai 3 panel** (§21, §36). Group memegang 2–3 pane (`maxPanesPerGroup`), lebar tiap pane disimpan sebagai `fractions` yang selalu berjumlah 1, dan setiap gutter punya divider sendiri (`js/splitViewDivider.js`). Satu pane bisa dikeluarkan tanpa membubarkan group lewat "Remove from Split View" (`js/navbar/tabContextMenu.js`), dan menutup satu pane dari `A+B+C` menyisakan `A+C` tiled; group baru hilang saat tinggal satu pane.
 4. **Metadata tab + URL internal generik** (§13, §26, §31). Tab membawa `kind` dan `resource`; URL editor dan terminal menjadi generik sehingga tidak ada path workspace di address bar maupun di session, dan resource sampai ke halaman lewat preload bridge. Browser control juga dibatasi ke tab `kind: 'web'` saja.
+5. **Batch kecil**: autosave Monaco (§14), diff working tree di panel Git (§20), dan `createdAt`/`updatedAt` pada workspace (§4).
 
 ## Catatan
 

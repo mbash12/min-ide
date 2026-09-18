@@ -22,6 +22,12 @@ let dirty = false
 /* mtime of the file when it was loaded or last saved */
 let loadedMtimeMs = null
 
+/* Autosave: write shortly after the last edit instead of keeping changes only
+in memory. The manual save (Ctrl/Cmd+S and the app menu) still works. */
+const autosaveDelayMs = 700
+let autosaveTimer = null
+let saving = false
+
 /* pending requests to the preload bridge: id -> { resolve, reject } */
 const pendingRequests = {}
 let requestCounter = 0
@@ -115,10 +121,27 @@ function setDirty (value) {
   }
 }
 
-async function saveFile () {
-  if (!monacoEditor || !editorFilePath) {
+function scheduleAutosave () {
+  clearTimeout(autosaveTimer)
+  autosaveTimer = setTimeout(flushAutosave, autosaveDelayMs)
+}
+
+/* writes the pending edit, if there is one. Does nothing when a save is
+already running: that save will pick up the newer content anyway. */
+async function flushAutosave () {
+  clearTimeout(autosaveTimer)
+  autosaveTimer = null
+  if (!dirty || saving) {
     return
   }
+  await saveFile()
+}
+
+async function saveFile () {
+  if (!monacoEditor || !editorFilePath || saving) {
+    return
+  }
+  saving = true
   try {
     // check if file changed on disk since load (external edit)
     const currentStat = await sendRequest('editor-stat', { path: editorFilePath })
@@ -139,6 +162,8 @@ async function saveFile () {
   } catch (err) {
     console.error('save failed:', err)
     showEditorError(err.message || l('editorSaveError'))
+  } finally {
+    saving = false
   }
 }
 
@@ -250,6 +275,7 @@ function createEditor (content) {
 
     monacoEditor.onDidChangeModelContent(function () {
       setDirty(true)
+      scheduleAutosave()
     })
 
     // follow system theme
@@ -287,6 +313,15 @@ window.addEventListener('beforeunload', function (e) {
     e.returnValue = ''
   }
 })
+
+/* the pending autosave should not sit in a timer while the page is going away,
+so write it out as soon as the page loses focus or is hidden */
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState === 'hidden') {
+    flushAutosave()
+  }
+})
+window.addEventListener('blur', flushAutosave)
 
 // expose dirty state for main process tab close confirmation (via executeJavaScript)
 window.editorIsDirty = function () { return dirty }

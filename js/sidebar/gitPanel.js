@@ -350,6 +350,10 @@ function buildSection (title, entries, sectionKey, actions, emptyText) {
 }
 
 function buildFileRow (entry, sectionKey) {
+  // the row and, once opened, its diff live in one wrapper
+  const wrapper = document.createElement('div')
+  wrapper.className = 'git-file-entry'
+
   const row = document.createElement('div')
   row.className = 'git-file-row'
   row.dataset.path = entry.path
@@ -449,12 +453,10 @@ function buildFileRow (entry, sectionKey) {
 
   row.appendChild(actions)
 
-  // click to open file in editor
+  // click to open the file's diff, like the VS Code source control list.
+  // The row menu still opens the file itself.
   row.addEventListener('click', function () {
-    const editorView = require('editorView.js')
-    if (entry.fullPath) {
-      editorView.openFile(entry.fullPath)
-    }
+    toggleFileDiff(wrapper, entry, sectionKey)
   })
 
   // context menu: stage/unstage/discard/open
@@ -478,7 +480,29 @@ function buildFileRow (entry, sectionKey) {
     remoteMenu.open(menu, e.clientX, e.clientY)
   })
 
-  return row
+  wrapper.appendChild(row)
+  return wrapper
+}
+
+/* the diff currently shown in the changed-files list, so only one is open */
+let openFileDiff = null
+
+async function toggleFileDiff (wrapper, entry, sectionKey) {
+  if (openFileDiff && openFileDiff.parentNode === wrapper) {
+    openFileDiff.remove()
+    openFileDiff = null
+    return
+  }
+  if (openFileDiff) {
+    openFileDiff.remove()
+    openFileDiff = null
+  }
+
+  const viewer = await buildWorkingTreeDiffViewer(entry, sectionKey)
+  // the panel may have been re-rendered while the diff was loading, in which
+  // case this wrapper is detached and the nodes go with it
+  wrapper.appendChild(viewer)
+  openFileDiff = viewer
 }
 
 async function stageFiles (files) {
@@ -829,6 +853,51 @@ function buildGraphDetail (commit) {
   return detail
 }
 
+/* renders unified diff text as hunk headers and lines; null when there is
+nothing to show. Shared by the commit view and the working tree view. */
+function renderDiffRows (diffText) {
+  const fragment = document.createDocumentFragment()
+  const hunks = []
+  let currentHunk = null
+
+  diffText.split('\n').forEach(function (line) {
+    if (/^@@/.test(line)) {
+      currentHunk = { header: line, lines: [] }
+      hunks.push(currentHunk)
+    } else if (currentHunk && (/^[+\- ]/.test(line) || /^\\/.test(line))) {
+      currentHunk.lines.push(line)
+    }
+  })
+  if (hunks.length === 0) {
+    return null
+  }
+
+  hunks.forEach(function (hunk) {
+    const header = document.createElement('div')
+    header.className = 'git-graph-diff-hunk'
+    header.textContent = hunk.header
+    fragment.appendChild(header)
+    hunk.lines.forEach(function (line) {
+      const row = document.createElement('div')
+      row.className = 'git-graph-diff-line'
+      if (line[0] === '+') row.classList.add('added')
+      else if (line[0] === '-') row.classList.add('removed')
+      else row.classList.add('context')
+      row.textContent = line
+      fragment.appendChild(row)
+    })
+  })
+
+  return fragment
+}
+
+function diffMessage (text) {
+  const el = document.createElement('div')
+  el.className = 'git-graph-diff-empty'
+  el.textContent = text
+  return el
+}
+
 async function buildDiffViewer (commit) {
   const wrap = document.createElement('div')
   wrap.className = 'git-graph-diff'
@@ -845,52 +914,55 @@ async function buildDiffViewer (commit) {
     if (token !== renderToken) return wrap
     empty(wrap)
     if (!result || result.error || !result.diff) {
-      const err = document.createElement('div')
-      err.className = 'git-graph-diff-empty'
-      err.textContent = result && result.error ? result.error : 'No diff'
-      wrap.appendChild(err)
+      wrap.appendChild(diffMessage(result && result.error ? result.error : 'No diff'))
       return wrap
     }
-    const lines = result.diff.split('\n')
-    const hunks = []
-    let currentHunk = null
-    lines.forEach(function (line) {
-      if (/^@@/.test(line)) {
-        currentHunk = { header: line, lines: [] }
-        hunks.push(currentHunk)
-      } else if (currentHunk && (/^[+\- ]/.test(line) || /^\\/.test(line))) {
-        currentHunk.lines.push(line)
-      }
-    })
-    if (hunks.length === 0) {
-      const emptyMsg = document.createElement('div')
-      emptyMsg.className = 'git-graph-diff-empty'
-      emptyMsg.textContent = 'No changes in this commit'
-      wrap.appendChild(emptyMsg)
-      return wrap
+    const rows = renderDiffRows(result.diff)
+    if (rows) {
+      wrap.appendChild(rows)
+    } else {
+      wrap.appendChild(diffMessage('No changes in this commit'))
     }
-    hunks.forEach(function (hunk) {
-      const header = document.createElement('div')
-      header.className = 'git-graph-diff-hunk'
-      header.textContent = hunk.header
-      wrap.appendChild(header)
-      hunk.lines.forEach(function (line) {
-        const row = document.createElement('div')
-        row.className = 'git-graph-diff-line'
-        if (line[0] === '+') row.classList.add('added')
-        else if (line[0] === '-') row.classList.add('removed')
-        else row.classList.add('context')
-        row.textContent = line
-        wrap.appendChild(row)
-      })
-    })
   } catch (e) {
     if (token !== renderToken) return wrap
     empty(wrap)
-    const err = document.createElement('div')
-    err.className = 'git-graph-diff-empty'
-    err.textContent = e.message || 'Failed to load diff'
-    wrap.appendChild(err)
+    wrap.appendChild(diffMessage(e.message || 'Failed to load diff'))
+  }
+  return wrap
+}
+
+/* the diff of one file in the working tree, shown under its row in the
+changed-files list */
+async function buildWorkingTreeDiffViewer (entry, sectionKey) {
+  const wrap = document.createElement('div')
+  wrap.className = 'git-graph-diff'
+
+  if (sectionKey === 'untracked') {
+    // git has nothing to diff against until the file is staged
+    wrap.appendChild(diffMessage('Untracked file — stage it to see a diff'))
+    return wrap
+  }
+
+  wrap.appendChild(diffMessage('Loading diff…'))
+  const token = renderToken
+  try {
+    const result = await ipc.invoke('gitDiff', currentGitRoot, entry.path, sectionKey === 'staged')
+    if (token !== renderToken) return wrap
+    empty(wrap)
+    if (!result || result.error || !result.diff) {
+      wrap.appendChild(diffMessage(result && result.error ? result.error : 'No changes'))
+      return wrap
+    }
+    const rows = renderDiffRows(result.diff)
+    if (rows) {
+      wrap.appendChild(rows)
+    } else {
+      wrap.appendChild(diffMessage('No changes'))
+    }
+  } catch (e) {
+    if (token !== renderToken) return wrap
+    empty(wrap)
+    wrap.appendChild(diffMessage(e.message || 'Failed to load diff'))
   }
   return wrap
 }
