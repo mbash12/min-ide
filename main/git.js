@@ -1,4 +1,4 @@
-/* global fs, path, ipc, isPathInside */
+/* global fs, path, ipc, isPathInside, net, settings */
 /* git integration for the sidebar Source Control panel.
 fs, path and ipc are provided by main.js (concatenated bundle).
 Uses the system `git` binary via child_process.
@@ -339,6 +339,54 @@ ipc.handle('gitDiff', function (e, cwd, filePath, staged) {
   var r = runGit(cwd, args)
   if (r.status !== 0) return { error: r.stderr || 'git diff failed' }
   return { diff: r.stdout }
+})
+
+ipc.handle('gitGenerateCommitMessage', async function (e, cwd) {
+  if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
+  var key = settings.get('openrouterApiKey')
+  if (!key) return { error: 'Set an OpenRouter API key in Pro Settings first.' }
+
+  var diffResult = runGit(cwd, ['diff', '--staged', '--no-color', '--stat'])
+  var patchResult = runGit(cwd, ['diff', '--staged', '--no-color', '--unified=2'])
+  if (patchResult.status !== 0) return { error: patchResult.stderr || 'Could not read staged changes.' }
+  if (!patchResult.stdout.trim()) return { error: 'Stage changes before generating a commit message.' }
+
+  var model = settings.get('agentModel') || 'anthropic/claude-3.5-sonnet'
+  var promptText = [
+    'Write one concise Git commit message for the staged changes below.',
+    'Use an imperative subject, preferably Conventional Commits when appropriate.',
+    'Return only the commit message. Keep the subject under 72 characters.',
+    '',
+    diffResult.stdout.trim(),
+    '',
+    patchResult.stdout.slice(0, 30000)
+  ].join('\n')
+
+  try {
+    var response = await net.fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + key,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [{ role: 'user', content: promptText }],
+        temperature: 0.2,
+        max_tokens: 120
+      })
+    })
+    var body = await response.json()
+    if (!response.ok) {
+      return { error: (body && body.error && body.error.message) || ('HTTP ' + response.status) }
+    }
+    var message = body && body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content
+    message = String(message || '').trim().replace(/^```(?:text)?\s*|\s*```$/g, '').trim()
+    if (!message) return { error: 'The model returned an empty commit message.' }
+    return { message: message }
+  } catch (err) {
+    return { error: (err && err.message) || String(err) }
+  }
 })
 
 /* full diff of a single commit (for the graph's detail view) */

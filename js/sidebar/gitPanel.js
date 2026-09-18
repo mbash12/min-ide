@@ -20,7 +20,6 @@ let loadingWorkspacePath = null
 let refreshGeneration = 0
 let commitMessage = ''
 
-let currentBranches = null
 let currentGraph = null
 let currentLogDetailed = null
 
@@ -111,7 +110,6 @@ function onWorkspaceSelected (workspaceId) {
   currentWorkspacePath = null
   currentGitRoot = null
   currentStatus = null
-  currentBranches = null
   currentGraph = null
   currentLogDetailed = null
   commitMessage = ''
@@ -161,53 +159,16 @@ function buildEmptyState (message, actionLabel, actionFn) {
   return wrap
 }
 
-function buildHeader (status) {
-  const header = document.createElement('div')
-  header.className = 'git-header'
-
-  const branchRow = document.createElement('div')
-  branchRow.className = 'git-branch-row'
-
-  const branchIcon = document.createElement('span')
-  branchIcon.className = 'codicon codicon-source-control'
-  branchRow.appendChild(branchIcon)
-
-  const branchName = document.createElement('span')
-  branchName.className = 'git-branch-name'
-  branchName.textContent = status.branch || l('gitNoBranch') || 'no branch'
-  branchName.title = status.branch || ''
-  branchRow.appendChild(branchName)
-
-  if (status.ahead || status.behind) {
-    const syncInfo = document.createElement('span')
-    syncInfo.className = 'git-sync-info'
-    const parts = []
-    if (status.ahead) parts.push('↑' + status.ahead)
-    if (status.behind) parts.push('↓' + status.behind)
-    syncInfo.textContent = parts.join(' ')
-    branchRow.appendChild(syncInfo)
-  }
-
-  header.appendChild(branchRow)
-
-  if (status.gitRoot) {
-    const rootLabel = document.createElement('div')
-    rootLabel.className = 'git-root-label'
-    rootLabel.textContent = status.gitRoot
-    rootLabel.title = status.gitRoot
-    header.appendChild(rootLabel)
-  }
-
-  return header
-}
-
 function buildCommitBox () {
   const box = document.createElement('div')
   box.className = 'git-commit-box'
 
   const textarea = document.createElement('textarea')
   textarea.className = 'git-commit-input'
-  textarea.placeholder = l('gitCommitMessage') || 'Message (Ctrl+Enter to commit)'
+  const branch = currentStatus && currentStatus.branch
+  textarea.placeholder = branch
+    ? 'Message (Ctrl+Enter to commit on "' + branch + '")'
+    : (l('gitCommitMessage') || 'Message (Ctrl+Enter to commit)')
   textarea.rows = 2
   textarea.value = commitMessage
   textarea.addEventListener('input', function () {
@@ -221,7 +182,36 @@ function buildCommitBox () {
       doCommit()
     }
   })
-  box.appendChild(textarea)
+  const inputWrap = document.createElement('div')
+  inputWrap.className = 'git-commit-input-wrap'
+  inputWrap.appendChild(textarea)
+
+  const generateBtn = document.createElement('button')
+  generateBtn.type = 'button'
+  generateBtn.className = 'git-generate-message codicon codicon-sparkle'
+  generateBtn.title = 'Generate Commit Message'
+  generateBtn.setAttribute('aria-label', generateBtn.title)
+  generateBtn.addEventListener('click', async function () {
+    const cwd = currentGitRoot || currentWorkspacePath
+    generateBtn.disabled = true
+    generateBtn.classList.add('codicon-loading', 'codicon-modifier-spin')
+    generateBtn.classList.remove('codicon-sparkle')
+    const result = await ipc.invoke('gitGenerateCommitMessage', cwd)
+    generateBtn.classList.remove('codicon-loading', 'codicon-modifier-spin')
+    generateBtn.classList.add('codicon-sparkle')
+    if (!result || result.error) {
+      alert((result && result.error) || 'Could not generate a commit message.')
+    } else {
+      commitMessage = result.message
+      textarea.value = result.message
+      textarea.focus()
+      updateCommitButtonState()
+      persistStateSoon()
+    }
+    generateBtn.disabled = !(currentStatus && currentStatus.staged && currentStatus.staged.length > 0)
+  })
+  inputWrap.appendChild(generateBtn)
+  box.appendChild(inputWrap)
 
   const actions = document.createElement('div')
   actions.className = 'git-commit-actions'
@@ -233,9 +223,9 @@ function buildCommitBox () {
   actions.appendChild(commitBtn)
 
   const commitAllBtn = document.createElement('button')
-  commitAllBtn.className = 'git-commit-button secondary'
-  commitAllBtn.textContent = l('gitCommitAll') || 'Commit All'
+  commitAllBtn.className = 'git-commit-button secondary git-commit-button-dropdown codicon codicon-chevron-down'
   commitAllBtn.title = l('gitCommitAllHint') || 'Stage all and commit'
+  commitAllBtn.setAttribute('aria-label', commitAllBtn.title)
   commitAllBtn.addEventListener('click', async function () {
     commitBtn.disabled = true
     commitAllBtn.disabled = true
@@ -263,6 +253,7 @@ function buildCommitBox () {
     // VSCode enables commit only when there is staged changes and message, but also offers Commit All
     commitBtn.disabled = !hasMessage || !hasStaged
     commitAllBtn.disabled = !hasMessage
+    generateBtn.disabled = !hasStaged
   }
   box._updateState = updateCommitButtonState
   // initial
@@ -374,8 +365,18 @@ function buildFileRow (entry, sectionKey) {
 
   const label = document.createElement('span')
   label.className = 'git-file-label'
-  label.textContent = entry.path
   label.title = entry.path + ' (' + entry.status + ')'
+  const pathParts = entry.path.split(/[\\/]/)
+  const fileName = document.createElement('span')
+  fileName.className = 'git-file-name'
+  fileName.textContent = pathParts.pop() || entry.path
+  label.appendChild(fileName)
+  if (pathParts.length) {
+    const parentPath = document.createElement('span')
+    parentPath.className = 'git-file-path'
+    parentPath.textContent = pathParts.join('/')
+    label.appendChild(parentPath)
+  }
   row.appendChild(label)
 
   const statusBadge = document.createElement('span')
@@ -502,18 +503,6 @@ async function discardFiles (files) {
   await refresh()
 }
 
-async function fetchBranches (gitRoot) {
-  if (!gitRoot) return null
-  try {
-    const result = await ipc.invoke('gitBranches', gitRoot)
-    if (result && !result.error && result.branches) {
-      return result
-    }
-  } catch (e) {
-  }
-  return null
-}
-
 async function fetchGraph (gitRoot) {
   if (!gitRoot) return { graph: null, commits: null }
   try {
@@ -570,14 +559,29 @@ function showMoreActions (e) {
   remoteMenu.open(menu, x, y)
 }
 
-/* checks out a branch after a confirmation prompt */
-function checkoutBranch (branchName) {
-  if (!confirm((l('gitCheckoutConfirm') || 'Switch to branch %s?').replace('%s', branchName))) return
+async function showBranchSwitcher (event) {
+  if (event) event.stopPropagation()
   const cwd = currentGitRoot || currentWorkspacePath
-  ipc.invoke('gitCheckout', cwd, branchName).then(function (err) {
-    if (err) alert(err)
-    refresh()
+  const result = await ipc.invoke('gitBranches', cwd)
+  if (!result || result.error || !Array.isArray(result.branches)) {
+    alert((result && result.error) || 'Could not load branches.')
+    return
+  }
+  const localBranches = result.branches.filter(function (branch) { return !branch.isRemote })
+  const items = localBranches.map(function (branch) {
+    return {
+      label: (branch.isCurrent ? '✓ ' : '') + branch.displayName,
+      click: branch.isCurrent
+        ? function () {}
+        : async function () {
+          const err = await ipc.invoke('gitCheckout', cwd, branch.name)
+          if (err) alert(err)
+          await refresh()
+        }
+    }
   })
+  const remoteMenu = require('remoteMenuRenderer.js')
+  remoteMenu.open([items], event ? event.clientX : 0, event ? event.clientY : 0)
 }
 
 function buildBranchesSection () {
@@ -600,106 +604,54 @@ function buildBranchesSection () {
   header.appendChild(chevron)
   const titleEl = document.createElement('span')
   titleEl.className = 'git-section-title'
-  const count = currentBranches && currentBranches.branches ? currentBranches.branches.length : 0
-  titleEl.textContent = (l('gitBranches') || 'Branches') + (count ? ' (' + count + ')' : '')
+  titleEl.textContent = l('gitRepositories') || 'Repositories'
   header.appendChild(titleEl)
-  const headerActions = document.createElement('div')
-  headerActions.className = 'git-section-header-actions'
-  const createBtn = document.createElement('button')
-  createBtn.className = 'codicon codicon-add git-icon-button small'
-  createBtn.title = l('gitCreateBranch') || 'Create Branch'
-  createBtn.addEventListener('click', function (e) {
-    e.stopPropagation()
-    const name = prompt(l('gitBranchName') || 'Branch name')
-    if (name) {
-      const cwd = currentGitRoot || currentWorkspacePath
-      ipc.invoke('gitCreateBranch', cwd, name).then(function (err) { if (err) alert(err); refresh() })
-    }
-  })
-  headerActions.appendChild(createBtn)
-  header.appendChild(headerActions)
   section.appendChild(header)
 
   const body = document.createElement('div')
-  body.className = 'git-section-body git-branch-list'
+  body.className = 'git-section-body git-repository-list'
 
-  if (!currentBranches || !currentBranches.branches || currentBranches.branches.length === 0) {
-    const empty = document.createElement('div')
-    empty.className = 'git-section-empty'
-    empty.textContent = l('gitNoBranches') || 'No branches'
-    body.appendChild(empty)
-  } else {
-    currentBranches.branches.forEach(function (branch) {
-      const row = document.createElement('div')
-      row.className = 'git-branch-item' + (branch.isCurrent ? ' current' : '')
-      row.dataset.branch = branch.name
-      const icon = document.createElement('span')
-      icon.className = 'codicon codicon-git-branch'
-      row.appendChild(icon)
-      const label = document.createElement('span')
-      label.className = 'git-branch-name'
-      label.textContent = branch.displayName
-      label.title = branch.name + (branch.isCurrent ? ' (current)' : '') + (branch.isRemote ? ' (remote)' : '')
-      row.appendChild(label)
-      if (branch.isRemote) {
-        const meta = document.createElement('span')
-        meta.className = 'git-branch-meta'
-        meta.textContent = 'remote'
-        row.appendChild(meta)
-      }
-      const actions = document.createElement('div')
-      actions.className = 'git-branch-actions'
-      if (!branch.isCurrent && !branch.isRemote) {
-        const checkoutBtn = document.createElement('button')
-        checkoutBtn.className = 'codicon codicon-check git-branch-action-btn'
-        checkoutBtn.title = l('gitCheckout') || 'Checkout'
-        checkoutBtn.addEventListener('click', function (e) {
-          e.stopPropagation()
-          checkoutBranch(branch.displayName)
-        })
-        actions.appendChild(checkoutBtn)
-      }
-      if (!branch.isRemote && !branch.isCurrent) {
-        const deleteBtn = document.createElement('button')
-        deleteBtn.className = 'codicon codicon-trash git-branch-action-btn'
-        deleteBtn.title = l('gitDeleteBranch') || 'Delete Branch'
-        deleteBtn.addEventListener('click', function (e) {
-          e.stopPropagation()
-          if (!confirm((l('gitDeleteBranchConfirm') || 'Delete branch %s?').replace('%s', branch.displayName))) return
-          const cwd = currentGitRoot || currentWorkspacePath
-          ipc.invoke('gitDeleteBranch', cwd, branch.displayName, false).then(function (err) { if (err) alert(err); refresh() })
-        })
-        actions.appendChild(deleteBtn)
-      }
-      row.appendChild(actions)
-      row.addEventListener('click', function () {
-        if (branch.isCurrent) return
-        if (branch.isRemote) return
-        checkoutBranch(branch.displayName)
-      })
-      row.addEventListener('contextmenu', function (e) {
-        e.preventDefault()
-        const remoteMenu = require('remoteMenuRenderer.js')
-        const menu = []
-        if (!branch.isCurrent && !branch.isRemote) {
-          menu.push([{ label: l('gitCheckout') || 'Checkout', click: function () { checkoutBranch(branch.displayName) } }])
-        }
-        if (!branch.isRemote && !branch.isCurrent) {
-          menu.push([{
-            label: l('gitDeleteBranch') || 'Delete Branch',
-            click: function () {
-              if (confirm((l('gitDeleteBranchConfirm') || 'Delete branch %s?').replace('%s', branch.displayName))) {
-                const cwd = currentGitRoot || currentWorkspacePath
-                ipc.invoke('gitDeleteBranch', cwd, branch.displayName, false).then(function (err) { if (err) alert(err); refresh() })
-              }
-            }
-          }])
-        }
-        if (menu.length) remoteMenu.open(menu, e.clientX, e.clientY)
-      })
-      body.appendChild(row)
-    })
+  const row = document.createElement('div')
+  row.className = 'git-repository-row'
+  const repoIcon = document.createElement('span')
+  repoIcon.className = 'codicon codicon-repo'
+  row.appendChild(repoIcon)
+
+  const repositoryName = document.createElement('span')
+  repositoryName.className = 'git-repository-name'
+  const root = currentGitRoot || currentWorkspacePath || ''
+  repositoryName.textContent = root.split(/[\\/]/).filter(Boolean).pop() || root
+  repositoryName.title = root
+  row.appendChild(repositoryName)
+
+  const branchIcon = document.createElement('span')
+  branchIcon.className = 'codicon codicon-git-branch git-repository-branch-icon'
+  row.appendChild(branchIcon)
+  const branchName = document.createElement('button')
+  branchName.type = 'button'
+  branchName.className = 'git-repository-branch'
+  branchName.textContent = (currentStatus && currentStatus.branch) || l('gitNoBranch') || 'no branch'
+  branchName.title = l('gitCheckout') || 'Switch Branch'
+  branchName.addEventListener('click', showBranchSwitcher)
+  row.appendChild(branchName)
+
+  if (currentStatus && (currentStatus.ahead || currentStatus.behind)) {
+    const syncInfo = document.createElement('span')
+    syncInfo.className = 'git-sync-info'
+    const parts = []
+    if (currentStatus.behind) parts.push('↓' + currentStatus.behind)
+    if (currentStatus.ahead) parts.push('↑' + currentStatus.ahead)
+    syncInfo.textContent = parts.join(' ')
+    row.appendChild(syncInfo)
   }
+
+  const more = document.createElement('button')
+  more.type = 'button'
+  more.className = 'codicon codicon-ellipsis git-icon-button git-repository-more'
+  more.title = l('gitMoreActions') || 'More Actions'
+  more.addEventListener('click', showMoreActions)
+  row.appendChild(more)
+  body.appendChild(row)
   section.appendChild(body)
   return section
 }
@@ -1144,6 +1096,38 @@ function buildGraphSection () {
   return section
 }
 
+function buildViewSplitter (graphView) {
+  const splitter = document.createElement('div')
+  splitter.className = 'git-view-splitter'
+  splitter.setAttribute('role', 'separator')
+  splitter.setAttribute('aria-orientation', 'horizontal')
+  splitter.tabIndex = 0
+
+  splitter.addEventListener('mousedown', function (event) {
+    event.preventDefault()
+    const startY = event.clientY
+    const startHeight = graphView.getBoundingClientRect().height
+    document.body.classList.add('is-resizing-git-views')
+
+    function resize (moveEvent) {
+      const panelHeight = panel.getBoundingClientRect().height
+      const maxHeight = Math.max(96, panelHeight - 180)
+      const nextHeight = Math.max(72, Math.min(maxHeight, startHeight + startY - moveEvent.clientY))
+      graphView.style.flexBasis = Math.round(nextHeight) + 'px'
+    }
+
+    function stop () {
+      document.removeEventListener('mousemove', resize)
+      document.removeEventListener('mouseup', stop)
+      document.body.classList.remove('is-resizing-git-views')
+    }
+
+    document.addEventListener('mousemove', resize)
+    document.addEventListener('mouseup', stop)
+  })
+  return splitter
+}
+
 async function refresh () {
   const wsPath = getWorkspacePath()
   if (isLoading && loadingWorkspacePath === wsPath) return
@@ -1166,16 +1150,14 @@ async function refresh () {
       const gitRoot = status.gitRoot || wsPath
       currentStatus = status
       // fetch branches and graph in parallel when repo exists
-      const [branches, graph] = await Promise.all([fetchBranches(gitRoot), fetchGraph(gitRoot)])
+      const graph = await fetchGraph(gitRoot)
       if (generation !== refreshGeneration || getWorkspacePath() !== wsPath) return
       currentGitRoot = gitRoot
-      currentBranches = branches
       currentGraph = graph.graph
       currentLogDetailed = graph.commits
     } else if (status && status.isRepo === false) {
       currentGitRoot = null
       currentStatus = { isRepo: false }
-      currentBranches = null
       currentGraph = null
       currentLogDetailed = null
     } else {
@@ -1264,19 +1246,49 @@ function render () {
 
   // VSCode-like title (actions live in the More menu)
   panel.appendChild(buildTitleBar())
-  // header (branch + root)
-  panel.appendChild(buildHeader(currentStatus))
+  panel.appendChild(buildBranchesSection())
 
-  // commit box
+  // VS Code keeps the commit input and resource groups together as the
+  // repository view. Branches and Graph are separate views below it.
+  const repositoryView = document.createElement('div')
+  repositoryView.className = 'git-repository-view git-changes-view'
+
+  const totalChanges = (currentStatus.staged?.length || 0) + (currentStatus.unstaged?.length || 0) + (currentStatus.untracked?.length || 0) + (currentStatus.conflicted?.length || 0)
+  const viewHeader = document.createElement('div')
+  viewHeader.className = 'git-section-header git-view-header'
+  const changesViewCollapsed = collapsedSections.has('changesView')
+  repositoryView.classList.toggle('collapsed', changesViewCollapsed)
+  viewHeader.setAttribute('aria-expanded', String(!changesViewCollapsed))
+  viewHeader.addEventListener('click', function () {
+    const collapsed = repositoryView.classList.toggle('collapsed')
+    if (collapsed) collapsedSections.add('changesView')
+    else collapsedSections.delete('changesView')
+    viewHeader.setAttribute('aria-expanded', String(!collapsed))
+    persistStateSoon()
+  })
+  const viewChevron = document.createElement('span')
+  viewChevron.className = 'codicon codicon-chevron-down git-section-chevron'
+  viewHeader.appendChild(viewChevron)
+  const viewTitle = document.createElement('span')
+  viewTitle.className = 'git-section-title'
+  viewTitle.textContent = l('gitChanges') || 'Changes'
+  viewHeader.appendChild(viewTitle)
+  if (totalChanges > 0) {
+    const count = document.createElement('span')
+    count.className = 'git-view-count'
+    count.textContent = String(totalChanges)
+    viewHeader.appendChild(count)
+  }
+  repositoryView.appendChild(viewHeader)
+
   const commitBox = buildCommitBox()
-  panel.appendChild(commitBox)
+  repositoryView.appendChild(commitBox)
 
   // the changes area (file sections) fills the remaining panel height and
   // scrolls on its own; Branches/Graph stay pinned at the bottom
   const changesBody = document.createElement('div')
   changesBody.className = 'git-changes-body'
 
-  const totalChanges = (currentStatus.staged?.length || 0) + (currentStatus.unstaged?.length || 0) + (currentStatus.untracked?.length || 0) + (currentStatus.conflicted?.length || 0)
   if (totalChanges === 0) {
     const clean = document.createElement('div')
     clean.className = 'git-clean-message'
@@ -1349,12 +1361,16 @@ function render () {
     }
   }
 
-  panel.appendChild(changesBody)
+  repositoryView.appendChild(changesBody)
+  panel.appendChild(repositoryView)
 
-  // repo/branches + graph at the very bottom (after all file sections)
+  // Changes and Graph are sibling views separated by a draggable split bar.
   if (currentStatus && currentStatus.isRepo && !currentStatus.error) {
-    panel.appendChild(buildBranchesSection())
-    panel.appendChild(buildGraphSection())
+    const graphView = buildGraphSection()
+    graphView.classList.add('git-split-view')
+    const splitter = buildViewSplitter(graphView)
+    panel.appendChild(splitter)
+    panel.appendChild(graphView)
   }
 
   // update commit box state after rendering
