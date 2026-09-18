@@ -25,9 +25,9 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | --- | --- | --- |
 | 2 | Core hierarchy | DIFFERENT — task-scoped preferences |
 | 3 | Favicon | — bersih |
-| 4 | Workspace model | DIFFERENT — `sidebarState` |
+| 4 | Workspace model | DITUNDA — `sidebarState` |
 | 5 | Workspace switching | — bersih |
-| 6 | Workspace persistence | MISSING — notes; DIFFERENT — AI reference |
+| 6 | Workspace persistence | MISSING — notes |
 | 7 | Archive Workspace | DITUNDA — auto-unpin (§22) |
 | 8 | Missing workspace path | — bersih |
 | 9 | Profiles | MISSING — Clear Data; DIFFERENT — delete tidak diblokir |
@@ -44,20 +44,20 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 20 | Git | — bersih |
 | 21 | Tile / Split View | — bersih |
 | 22 | Pinned Tasks | DITUNDA — arah diubah ke pinned tab |
-| 23 | Download preference | MISSING — tidak Task-scoped |
+| 23 | Download preference | DITUNDA — tidak Task-scoped |
 | 24 | AI coding agent | DIFFERENT — hanya OpenRouter |
 | 25 | AI session model | DIFFERENT — history per Task, bukan per Workspace; MISSING — ownership |
 | 26 | Browser control | — bersih |
 | 27 | Extra settings page | MISSING — 4 seksi |
 | 28 | Startup behavior | — bersih |
-| 29 | Task deletion | DITUNDA — pinned task (§22); MISSING — download preference |
+| 29 | Task deletion | DITUNDA — pinned task (§22), download preference (§23) |
 | 30 | Workspace deletion | DITUNDA — pinned task (§22) |
 | 31 | Architecture guidelines | DIFFERENT — duplikasi store, global swap, tanpa `ide/` |
 | 32 | Upstream compatibility | DIFFERENT — footprint core besar (remote sudah benar) |
 | 33 | Implementation order | Sebagian fase belum lengkap |
 | 34 | Non-goals | — dipatuhi |
 | 35 | Coding-agent working rules | VIOLATION — 3 aturan |
-| 36 | Definition of success | 3 dari 14 langkah belum penuh |
+| 36 | Definition of success | 2 dari 14 langkah belum penuh (keduanya diterima) |
 
 Dua hal yang paling sering muncul sebagai akar gap: **tab metadata tidak ada** (§13, §26, §31) dan **AI session ownership tidak dimodelkan** (§25, §29, §30).
 
@@ -87,7 +87,7 @@ Task terakhir, tab terakhir, tiled state, sidebar state, dan runtime yang tetap 
 ## §6 Workspace persistence
 
 - **MISSING** — **Notes** tidak dipersist karena subsistemnya tidak ada sama sekali (lihat §17).
-- **DIFFERENT** — "AI-related references": pointer ke session aktif milik sebuah task adalah Map in-memory (`main/agent.js:22`) yang tidak pernah ditulis ke disk, sehingga setelah restart session mana yang terpasang tidak kembali dan dipilih ulang secara heuristik (`main/agent.js:329-333`).
+Pointer session aktif kini persisten (`main/agent.js`): `prefsByCwd` ditulis ke `<userData>/pi-agent/agent-prefs.json` dan dibaca lagi saat dipakai, jadi setelah restart sebuah task kembali ke percakapan yang tadi terbuka, bukan ke yang terakhir dimodifikasi (`resolveSessionFile` memeriksa `prefs.sessionPath` sebelum jalur heuristik `restoreRecent`). `skipRestore` ikut bertahan, sehingga pilihan "session baru" tidak berubah jadi restore otomatis. Entry dibuang saat workspace dihapus; archive tidak menghapusnya karena task-nya masih ada.
 
 ---
 
@@ -353,8 +353,8 @@ Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork
 
 | Langkah | Status | Bukti |
 | --- | --- | --- |
-| Launch → Workspace 1 + Task "Development" aktif | Sebagian | Fresh start membuat `Workspace 1` tanpa task bernama "Development" dan tanpa path default; membuka tab tour Min (`js/sessionRestore.js:103-107,116-121`) |
-| Files sidebar menunjukkan project | Sebagian | Files/Git/Design disembunyikan sampai `workspace.path` diisi manual, jadi workspace baru tampil kosong (`js/sidebar.js:61-82`; `js/sidebar/fileTree.js:33-34`) |
+| Launch → Workspace 1 + Task "Development" aktif | **Diterima** | Task pertama sengaja memakai penamaan default Min, bukan "Development" |
+| Files sidebar menunjukkan project | **Diterima** | Workspace baru belum punya folder, jadi tab yang butuh path (Files/Git/Design) memang tidak aktif sampai path dipilih — perilaku ini yang diinginkan (`js/sidebar.js` `updatePathTabs`) |
 | Click source file → Monaco terbuka | OK | `js/sidebar/fileTree.js:161-167` |
 | Open Terminal → shell di project root | OK | `js/terminalView.js`; pintu masuk: menu File > Open Terminal (`main/menu.js`) dan keybinding `addTerminal` (`js/defaultKeybindings.js`) |
 | Tile `Monaco \| Website \| Terminal` (3 panel) | OK | Sampai 3 pane per group (`js/splitView.js` `maxPanesPerGroup`) |
@@ -368,7 +368,7 @@ Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork
 | Reopen → state restored lazily | OK | Task/tab restore lazily (`js/sessionRestore.js:137-149`), layout split ikut kembali |
 | Restart → Workspace/Task/layout kembali, load lazy | OK | Restore workspace/task/tab, lazy view creation, dan layout split (`js/sessionRestore.js:137-165`) |
 
-Sisa langkah yang belum penuh adalah default saat pertama kali jalan (§36 baris 1–2) dan kepemilikan AI session (§36 baris 9).
+Satu langkah yang belum penuh tinggal kepemilikan AI session (§25); dua langkah default saat pertama kali jalan sudah diputuskan untuk dibiarkan apa adanya.
 
 ---
 
@@ -409,6 +409,10 @@ Untuk melanjutkan: `git stash pop`. Kalau tidak diperlukan lagi: `git stash drop
 Dua hal yang sudah diketahui dan sebaiknya diingat kalau dilanjutkan: `ctrl+space` bisa bentrok dengan IME di Linux (gampang diganti karena lewat keymap), dan popup-nya wajib memanggil `webviews.requestPlaceholder` saat tampil — view native menggambar di atas DOM renderer, jadi tanpa itu popup-nya tidak terlihat.
 
 Karena §22 ditunda, tiga item yang bergantung padanya ikut ditunda: auto-unpin saat archive (§7), hapus pinned task saat task dihapus (§29), dan saat workspace dihapus (§30).
+
+**§23 download per Task** — ditunda atas permintaan. Menyimpan direktori terakhir per task berarti download kedua dan seterusnya di task itu langsung tersimpan tanpa dialog (Electron hanya bisa memilihkan path lewat `setSavePath`, yang melewati dialog). Perubahan perilaku itu yang membuatnya ditunda, bukan kesulitannya. §29 ikut menunggu.
+
+**§4 `sidebarState` sebagai field workspace** — ditunda, dan sebaiknya tidak dikerjakan. State itu sekarang ada di IndexedDB dan ditulis saat sidebar berubah; memindahkannya ke record workspace membuat setiap buka/tutup sidebar mengubah string state session, sehingga `sessionRestore.save` yang berjalan tiap 30 detik ikut menulis `sessionRestore.json` terus-menerus. Bebannya naik tanpa manfaat yang terlihat.
 
 ## Catatan
 

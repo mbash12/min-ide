@@ -236,6 +236,83 @@ function getTaskSessionDir (taskId, cwd) {
   return require('path').join(sessionsRoot, 'tasks', 'task-' + digest)
 }
 
+/* The per-task session pointer has to outlive a restart: without it a task
+ * comes back on whichever conversation was modified last instead of the one
+ * that was actually open. It sits next to the sessions it refers to, as one
+ * small JSON file keyed by session key. */
+function getAgentPrefsPath () {
+  const sessionsRoot = getSessionsRoot()
+  if (!sessionsRoot) return null
+  return require('path').join(sessionsRoot, '..', 'agent-prefs.json')
+}
+
+let agentPrefsLoaded = false
+let agentPrefsSaveTimer = null
+
+function loadAgentPrefs () {
+  if (agentPrefsLoaded) return
+  agentPrefsLoaded = true
+
+  const prefsPath = getAgentPrefsPath()
+  if (!prefsPath) return
+  try {
+    const parsed = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'))
+    Object.keys(parsed || {}).forEach(function (sessionKey) {
+      const entry = parsed[sessionKey]
+      if (entry && typeof entry === 'object') {
+        prefsByCwd.set(sessionKey, entry)
+      }
+    })
+  } catch (err) {
+    // no file yet, or unreadable: start with nothing remembered
+  }
+}
+
+function saveAgentPrefs () {
+  const prefsPath = getAgentPrefsPath()
+  if (!prefsPath) return
+
+  const stored = {}
+  prefsByCwd.forEach(function (value, key) {
+    stored[key] = value
+  })
+  try {
+    // write-file-atomic does not create the directory, and pi-agent/ is made
+    // by the SDK, so it may not exist yet
+    fs.mkdirSync(require('path').dirname(prefsPath), { recursive: true })
+    require('write-file-atomic').sync(prefsPath, JSON.stringify(stored), {})
+  } catch (err) {
+    console.warn('failed to save agent session pointers', err)
+  }
+}
+
+/* coalesces the writes: a single action can set several fields in a row */
+function scheduleAgentPrefsSave () {
+  if (agentPrefsSaveTimer) return
+  agentPrefsSaveTimer = setTimeout(function () {
+    agentPrefsSaveTimer = null
+    saveAgentPrefs()
+  }, 400)
+}
+
+/* the remembered settings of a session, loading the file on first use so the
+ * order modules load in does not matter */
+function prefsFor (sessionKey) {
+  loadAgentPrefs()
+  return prefsByCwd.get(sessionKey) || {}
+}
+
+function setSessionPrefs (sessionKey, prefs) {
+  prefsByCwd.set(sessionKey, prefs)
+  scheduleAgentPrefsSave()
+}
+
+function forgetSessionPrefs (sessionKey) {
+  if (prefsByCwd.delete(sessionKey)) {
+    scheduleAgentPrefsSave()
+  }
+}
+
 function isAllowedSessionPath (sessionPath) {
   if (!sessionPath || typeof sessionPath !== 'string') return false
   const pathMod = require('path')
@@ -398,7 +475,7 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
   const clientTaskId = getClientTaskId(taskId)
   const effectiveCwd = getEffectiveCwd(cwd)
   const sessionDir = getTaskSessionDir(taskId, cwd)
-  const prefs = prefsByCwd.get(sessionKey) || {}
+  const prefs = prefsFor(sessionKey)
   const apiKey = settings.get('openrouterApiKey') || null
   const modelId = prefs.modelId || settings.get('agentModel') || 'anthropic/claude-3.5-sonnet'
   let provider = prefs.provider || settings.get('agentProvider') || 'openrouter'
@@ -501,7 +578,7 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
 
   prefs.sessionPath = getLiveSessionFile(entry)
   prefs.skipRestore = false
-  prefsByCwd.set(sessionKey, prefs)
+  setSessionPrefs(sessionKey, prefs)
 
   try {
     const persistedThinking = prefs.thinkingLevel || settings.get('agentThinkingLevel')
@@ -515,7 +592,7 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
 function snapshotState (taskId, cwd) {
   const sessionKey = getSessionKey(taskId, cwd)
   const entry = agentSessions.get(sessionKey)
-  const prefs = prefsByCwd.get(sessionKey) || {}
+  const prefs = prefsFor(sessionKey)
   let thinkingLevel = prefs.thinkingLevel || settings.get('agentThinkingLevel') || null
   let availableThinkingLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
   let context = null
@@ -635,10 +712,10 @@ ipc.on('agent-new-session', function (e, data) {
   const cwd = data && data.cwd
   const sessionKey = getSessionKey(taskId, cwd)
   const clientTaskId = getClientTaskId(taskId)
-  const prefs = prefsByCwd.get(sessionKey) || {}
+  const prefs = prefsFor(sessionKey)
   prefs.sessionPath = null
   prefs.skipRestore = true
-  prefsByCwd.set(sessionKey, prefs)
+  setSessionPrefs(sessionKey, prefs)
   destroySession(sessionKey).then(function () {
     broadcastAgentEvent({ type: 'session_reset' }, sessionKey, clientTaskId)
     broadcastAgentEvent({ type: 'context_cleared' }, sessionKey, clientTaskId)
@@ -652,10 +729,10 @@ ipc.on('agent-set-model', function (e, data) {
   const sessionKey = getSessionKey(taskId, cwd)
   const modelId = data && data.modelId
   const provider = (data && data.provider) || 'openrouter'
-  const prefs = prefsByCwd.get(sessionKey) || {}
+  const prefs = prefsFor(sessionKey)
   prefs.modelId = modelId || null
   prefs.provider = modelId ? provider : null
-  prefsByCwd.set(sessionKey, prefs)
+  setSessionPrefs(sessionKey, prefs)
   const existing = agentSessions.get(sessionKey)
   if (!existing) return
   ensureSession(taskId, cwd, undefined, data && data.workspaceId).catch(function () {})
@@ -667,9 +744,9 @@ ipc.on('agent-set-thinking', function (e, data) {
   if (!level) return
   const sessionKey = getSessionKey(data && data.taskId, data && data.cwd)
   const clientTaskId = getClientTaskId(data && data.taskId)
-  const prefs = prefsByCwd.get(sessionKey) || {}
+  const prefs = prefsFor(sessionKey)
   prefs.thinkingLevel = level
-  prefsByCwd.set(sessionKey, prefs)
+  setSessionPrefs(sessionKey, prefs)
   const entry = agentSessions.get(sessionKey)
   if (entry && entry.session) {
     try {
@@ -831,8 +908,11 @@ ipc.on('agent-destroy-workspace-sessions', function (e, data) {
   try {
     const taskIds = (data && data.taskIds) || []
     taskIds.forEach(function (taskId) {
-      destroySession(getSessionKey(taskId, null))
+      const sessionKey = getSessionKey(taskId, null)
+      destroySession(sessionKey)
       deleteTaskSessionFiles(taskId)
+      // the task is gone, so its saved pointer is dead weight
+      forgetSessionPrefs(sessionKey)
     })
   } catch (err) {}
 })
@@ -850,10 +930,10 @@ ipc.handle('agent-delete-session', async function (e, data) {
   const pathMod = require('path')
   const deletingCurrent = !!(snap.sessionPath && pathMod.resolve(snap.sessionPath) === pathMod.resolve(sessionPath))
   if (deletingCurrent) {
-    const prefs = prefsByCwd.get(sessionKey) || {}
+    const prefs = prefsFor(sessionKey)
     prefs.sessionPath = null
     prefs.skipRestore = true
-    prefsByCwd.set(sessionKey, prefs)
+    setSessionPrefs(sessionKey, prefs)
     await destroySession(sessionKey)
   }
   try {
