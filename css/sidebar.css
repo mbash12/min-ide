@@ -93,18 +93,16 @@ body.dark-mode #sidebar-panels {
   border-left-color: rgba(255, 255, 255, 0.1);
 }
 
-/* drag handle on the right edge of the sidebar. The visible strip is thin,
-but the padding extends the grab area so it is easier to hit. */
+/* drag handle on the panel's right edge. It is a normal flex item so it is
+part of the sidebar's width - the webview margin is applied after it, keeping
+the strip in renderer space where it can actually be grabbed (native views
+paint above the renderer and would swallow the clicks otherwise). */
 
 #sidebar-resizer {
-  width: 3px;
+  width: 5px;
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
-  /* extend the clickable area without changing the layout */
-  margin-right: -6px;
-  padding-right: 6px;
-  background-clip: content-box;
 }
 #sidebar-resizer:hover,
 body.is-resizing-sidebar #sidebar-resizer {

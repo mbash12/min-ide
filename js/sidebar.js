@@ -100,11 +100,11 @@ const sidebar = {
     if (!sidebar.isVisible) {
       return 0
     }
-    let shift = activityBar.offsetWidth
-    if (sidebar.panelVisible && sidebar.activeTab) {
-      shift += currentPanelWidth
-    }
-    return shift
+    // Measure the sidebar instead of summing the parts: the resizer strip is
+    // part of its width, and the native views must start *after* it. Views
+    // always paint above the renderer, so any overlap makes the strip
+    // impossible to grab.
+    return Math.round(sidebarEl.getBoundingClientRect().width)
   },
 
   /* applies the sidebar width to the webview margins and NTP background so
