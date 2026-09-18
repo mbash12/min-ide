@@ -90,9 +90,7 @@ const webviews = {
   IPCEvents: [],
   hasViewForTab: function(tabId) {
     if (!tabId) return false
-    const home = workspaces.findWorkspaceContainingTask(tabId)
-    if (!home) return false
-    const task = home.tasks.getTaskContainingTab(tabId)
+    const task = workspaces.findTaskContainingTab(tabId)
     return !!(task && task.tabs.get(tabId) && task.tabs.get(tabId).hasWebContents)
   },
   setEditorDirty: function (tabId, isDirty) {
@@ -211,9 +209,8 @@ const webviews = {
     } else {
       // if the containing workspace uses a profile, its tabs get an
       // isolated session partition (cookies / storage only)
-      const home = workspaces.findWorkspaceContainingTask(tabId)
-      const profileId = home ? home.profileId : (workspaces.getSelected() ? workspaces.getSelected().profileId : null)
-      partition = require('profiles.js').getPartition(profileId) || 'persist:webcontent'
+      const home = workspaces.findWorkspaceContainingTab(tabId)
+      partition = require('profiles.js').getPartition(home ? home.profileId : null) || 'persist:webcontent'
     }
 
     ipc.send('createView', {
@@ -235,9 +232,12 @@ const webviews = {
       }
     }
 
-    workspaces.findWorkspaceContainingTask(tabId).tasks.getTaskContainingTab(tabId).tabs.update(tabId, {
-      hasWebContents: true
-    })
+    const ownerTask = workspaces.findTaskContainingTab(tabId)
+    if (ownerTask) {
+      ownerTask.tabs.update(tabId, {
+        hasWebContents: true
+      })
+    }
   },
   /* true when the user is typing in chrome (sidebar, address bar, etc.) so
   a page view must not steal keyboard focus */
@@ -291,9 +291,12 @@ const webviews = {
     webviews.emitEvent('view-hidden', id)
 
     if (webviews.hasViewForTab(id)) {
-      workspaces.findWorkspaceContainingTask(id).tasks.getTaskContainingTab(id).tabs.update(id, {
-        hasWebContents: false
-      })
+      const ownerTask = workspaces.findTaskContainingTab(id)
+      if (ownerTask) {
+        ownerTask.tabs.update(id, {
+          hasWebContents: false
+        })
+      }
     }
     //we may be destroying a view for which the tab object no longer exists, so this message should be sent unconditionally
     ipc.send('destroyView', id)

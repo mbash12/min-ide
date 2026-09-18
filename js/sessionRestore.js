@@ -102,8 +102,11 @@ const sessionRestore = {
       console.log('starting fresh workspace state (' + reason + ')')
       var workspaceId = workspaces.add({ name: 'Workspace 1' })
       browserUI.switchToWorkspace(workspaceId)
+      // switchToWorkspace with no tasks creates one via tasks.add + addTab,
+      // which already attaches a view. Return after it settles.
       return workspaceId
     }
+
 
     try {
       // first run, show the tour

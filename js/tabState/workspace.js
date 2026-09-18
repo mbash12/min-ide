@@ -140,6 +140,18 @@ class WorkspaceStore {
     return list ? list.get(taskId) : null
   }
 
+  // Task ids and tab ids are separate namespaces, so a tab must be routed
+  // through the task that owns it.
+  findWorkspaceContainingTab (tabId) {
+    if (!tabId) return null
+    return this.find(ws => ws.tasks.find(task => task.tabs.has(tabId))) || null
+  }
+
+  findTaskContainingTab (tabId) {
+    const ws = this.findWorkspaceContainingTab(tabId)
+    return ws ? ws.tasks.getTaskContainingTab(tabId) : null
+  }
+
   getSelectedTask () {
     const ws = this.getSelected()
     return ws ? ws.tasks.getSelected() : null

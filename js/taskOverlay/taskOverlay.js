@@ -52,7 +52,8 @@ function deleteTabFromOverlay (item) {
 
   var tabId = item.getAttribute('data-tab')
 
-  var task = workspaces.findWorkspaceContainingTask(tabId).tasks.getTaskContainingTab(tabId)
+  var task = workspaces.findTaskContainingTab(tabId)
+  if (!task) return
 
   if (!editorView.confirmDiscard(tabId)) return
   editorView.allowDiscard(tabId)
@@ -60,7 +61,7 @@ function deleteTabFromOverlay (item) {
     splitView.handleTabDestroyed(tabId)
   }
 
-  workspaces.findWorkspaceContainingTask(tabId).tasks.get(task.id).tabs.destroy(tabId)
+  task.tabs.destroy(tabId)
   webviews.destroy(tabId)
 
   tabBar.updateAll()
@@ -410,8 +411,8 @@ var taskOverlay = {
 
         sortedItems.forEach(function (item) {
           var tabId = item.getAttribute('data-tab')
-          var previousHome = workspaces.findWorkspaceContainingTask(tabId)
-          var previousTask = previousHome.tasks.getTaskContainingTab(tabId) // note: can't use e.from here, because it contains only a single element and items could be coming from multiple tasks
+          var previousTask = workspaces.findTaskContainingTab(tabId) // note: can't use e.from here, because it contains only a single element and items could be coming from multiple tasks
+          if (!previousTask) return
 
           var oldTab = previousTask.tabs.splice(previousTask.tabs.getIndex(tabId), 1)[0]
 
