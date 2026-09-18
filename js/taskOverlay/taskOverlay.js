@@ -471,6 +471,8 @@ var taskOverlay = {
     this.isShown = true
     var indicatorEl = document.getElementById('workspace-indicator')
     if (indicatorEl) indicatorEl.classList.add('active')
+    var tasksBtnEl = document.getElementById('tasks-button')
+    if (tasksBtnEl) tasksBtnEl.classList.add('active')
 
     taskOverlay.render()
 
@@ -561,6 +563,8 @@ var taskOverlay = {
 
       var indicatorEl = document.getElementById('workspace-indicator')
       if (indicatorEl) indicatorEl.classList.remove('active')
+      var tasksBtnEl = document.getElementById('tasks-button')
+      if (tasksBtnEl) tasksBtnEl.classList.remove('active')
     }
   },
 
@@ -588,6 +592,10 @@ var taskOverlay = {
       }
       var indicatorEl = document.getElementById('workspace-indicator')
       if (indicatorEl && indicatorEl.contains(e.target)) {
+        return
+      }
+      var tasksBtnEl = document.getElementById('tasks-button')
+      if (tasksBtnEl && tasksBtnEl.contains(e.target)) {
         return
       }
       taskOverlay.hide()
@@ -710,6 +718,16 @@ var taskOverlay = {
     ipcRenderer.on('addTask', addTaskFromMenu) // for menu item
 
     addTaskLabel.textContent = l('newTask')
+
+    // task switcher button in the navbar (next to the workspace indicator).
+    // Its title/aria-label come from data-label via localizationHelpers.
+    var tasksButton = document.getElementById('tasks-button')
+    if (tasksButton) {
+      tasksButton.addEventListener('click', function (e) {
+        e.stopPropagation()
+        taskOverlay.toggle()
+      })
+    }
 
     addTaskButton.addEventListener('click', function (e) {
       browserUI.addTask()
