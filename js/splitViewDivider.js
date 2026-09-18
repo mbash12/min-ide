@@ -1,83 +1,96 @@
 /*
-Drag handle in the gutter between the two split panes.
-It lives in the renderer (the only visible UI layer between the panes)
-and updates the split ratio while dragging.
-
-The divider element is created lazily when split view is entered and
-removed when it exits.
+Drag handles in the gutters between the panes of the shown split group: one
+divider per boundary, so a group of three panes has two. They live in the
+renderer, which is the only visible layer between the panes because the native
+views never cover the gutters - a divider that overlapped a pane would be
+unreachable, since views paint above the renderer.
 
 While dragging, mouse events over the panes (which are native
-WebContentsViews on top of the renderer) are relayed back to this
-module via the 'view-mouse-event' IPC channel - see
-js/preload/default.js and the viewManager relay in the main process.
+WebContentsViews on top of the renderer) are relayed back to this module via
+the 'view-mouse-event' IPC channel - see js/preload/default.js and the
+viewManager relay in the main process.
 */
 
 let splitView = null // set by initialize()
 
-let dividerElement = null
-let dragState = null // { full, startX, startRatio }
+let dividerElements = []
+let dragState = null // { index }
 
-function getDivider () {
-  if (!dividerElement) {
-    dividerElement = document.createElement('div')
-    dividerElement.className = 'split-view-divider'
-    dividerElement.addEventListener('mousedown', function (e) {
+/* creates or removes dividers so there is exactly one per gutter */
+function getDividerElements () {
+  const group = splitView.getActiveGroup()
+  if (!group) {
+    return []
+  }
+  const wanted = Math.max(0, group.paneTabIds.length - 1)
+
+  while (dividerElements.length < wanted) {
+    const index = dividerElements.length
+    const el = document.createElement('div')
+    el.className = 'split-view-divider'
+    el.addEventListener('mousedown', function (e) {
       e.preventDefault()
-      startDragging(e)
+      startDragging(e, index)
     })
-    document.getElementById('webviews').appendChild(dividerElement)
+    document.getElementById('webviews').appendChild(el)
+    dividerElements.push(el)
   }
-  return dividerElement
+  while (dividerElements.length > wanted) {
+    dividerElements.pop().remove()
+  }
+
+  return dividerElements
 }
 
-function removeDivider () {
-  if (dividerElement) {
-    dividerElement.remove()
-    dividerElement = null
-  }
+function removeDividers () {
+  dividerElements.forEach(function (el) {
+    el.remove()
+  })
+  dividerElements = []
 }
 
-function updateDividerPosition () {
-  if (!splitView.isSplit() || !dividerElement) {
+function updateDividerPositions () {
+  if (!splitView.isSplit()) {
     return
   }
-  const bounds = splitView.getBounds()
-  const leftPane = bounds[0]
-  const full = splitView.webviews.getViewBounds(splitView.getActiveTabId(), true)
+  const group = splitView.getActiveGroup()
+  const full = splitView.webviews.getViewBounds(group.paneTabIds[group.activePane], true)
 
-  // the divider sits exactly in the gutter between the two panes
-  dividerElement.style.left = (leftPane.x + leftPane.width) + 'px'
-  dividerElement.style.top = full.y + 'px'
-  dividerElement.style.height = full.height + 'px'
+  getDividerElements().forEach(function (el, index) {
+    const left = splitView.getDividerLeft(index)
+    if (left === null) {
+      return
+    }
+    // the divider fills the gutter exactly, so no part of it is hidden
+    el.style.left = left + 'px'
+    el.style.top = full.y + 'px'
+    el.style.height = full.height + 'px'
+  })
 }
 
-function applyRatio (windowX) {
-  if (!dragState) {
-    return
-  }
-  const deltaX = windowX - dragState.startX
-  const newRatio = dragState.startRatio + (deltaX / dragState.full.width)
-  splitView.setSplitRatio(newRatio, true)
-  updateDividerPosition()
+function moveDivider (index, windowX) {
+  splitView.setDividerPosition(index, windowX, true)
+  updateDividerPositions()
 }
 
-function startDragging (e) {
-  const full = splitView.webviews.getViewBounds(splitView.getActiveTabId(), true)
-  const activeGroup = splitView.getActiveGroup()
-  dragState = {
-    full: full,
-    startX: e.clientX,
-    startRatio: activeGroup ? activeGroup.splitRatio : 0.5
+function startDragging (e, index) {
+  dragState = { index }
+  const dragged = dividerElements[index]
+  if (dragged) {
+    dragged.classList.add('is-dragging')
   }
 
-  function onMouseMove (e) {
-    applyRatio(e.clientX)
+  function onMouseMove (moveEvent) {
+    moveDivider(index, moveEvent.clientX)
   }
 
   function onMouseUp () {
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
     document.body.classList.remove('is-resizing-split')
+    if (dragged) {
+      dragged.classList.remove('is-dragging')
+    }
     dragState = null
   }
 
@@ -95,17 +108,19 @@ ipc.on('view-mouse-event', function (e, args) {
     if (typeof args.windowX === 'number') {
       // window-relative cursor position, independent of the pane bounds that
       // the drag itself is moving
-      applyRatio(args.windowX)
+      moveDivider(dragState.index, args.windowX)
       return
     }
-    // the event coordinates are relative to the pane that sent them,
-    // so convert them to window coordinates using the pane bounds
+    // fall back to the pane-relative position when the cursor position could
+    // not be read in the main process
     const paneIndex = splitView.getPaneIds().indexOf(args.viewId)
     if (paneIndex < 0) {
       return
     }
     const paneBounds = splitView.getBounds()[paneIndex]
-    applyRatio(paneBounds.x + args.x)
+    if (paneBounds) {
+      moveDivider(dragState.index, paneBounds.x + args.x)
+    }
   } else if (args.type === 'mouseup') {
     // release the mouse button as if it happened in the renderer
     document.dispatchEvent(new MouseEvent('mouseup'))
@@ -115,7 +130,7 @@ ipc.on('view-mouse-event', function (e, args) {
 const splitViewDivider = {
   initialize: function (splitViewModule) {
     splitView = splitViewModule
-    // keep the divider in sync with split view state changes
+    // keep the dividers in sync with split view state changes
     splitViewModule.onLayoutChange = function (isEntering) {
       if (isEntering === true) {
         splitViewDivider.show()
@@ -127,14 +142,13 @@ const splitViewDivider = {
     }
   },
   show: function () {
-    getDivider()
-    updateDividerPosition()
+    updateDividerPositions()
   },
   hide: function () {
-    removeDivider()
+    removeDividers()
   },
   update: function () {
-    updateDividerPosition()
+    updateDividerPositions()
   }
 }
 

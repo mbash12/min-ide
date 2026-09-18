@@ -43,21 +43,20 @@
   margin-left: 15px;
 }
 
-/* drag handle between the two panes in split view */
+/* drag handles between the panes in split view */
 
 .split-view-divider {
   width: 4px;
   position: fixed;
-  transform: translateX(-2px);
   cursor: col-resize;
   z-index: 3;
 }
 .split-view-divider:hover,
-body.is-resizing-split .split-view-divider {
+.split-view-divider.is-dragging {
   background: rgba(0, 0, 0, 0.15);
 }
 .dark-theme .split-view-divider:hover,
-.dark-theme body.is-resizing-split .split-view-divider {
+.dark-theme .split-view-divider.is-dragging {
   background: rgba(255, 255, 255, 0.2);
 }
 body.is-resizing-split {

@@ -470,6 +470,7 @@
     "tabMenuReload": "Reload",
     "tabMenuSplitView": "Split View",
     "tabMenuExitSplitView": "Exit Split View",
+    "tabMenuRemoveFromSplitView": "Remove from Split View",
     "tabMenuCloseSelectedTabs": "Close Selected Tabs",
     "splitViewAction": "Split View",
     "splitViewSelectTab": "Select the tab to split with",

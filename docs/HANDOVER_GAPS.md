@@ -42,7 +42,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 18 | Sidebar | MISSING — aktivitas Notes |
 | 19 | File Tree | — bersih |
 | 20 | Git | DIFFERENT — diff working tree tidak terjangkau dari UI |
-| 21 | Tile / Split View | DIFFERENT — maks 2 panel |
+| 21 | Tile / Split View | — bersih |
 | 22 | Pinned Tasks | MISSING — seluruh fitur |
 | 23 | Download preference | MISSING — tidak Task-scoped |
 | 24 | AI coding agent | DIFFERENT — hanya OpenRouter |
@@ -57,7 +57,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 33 | Implementation order | Sebagian fase belum lengkap |
 | 34 | Non-goals | — dipatuhi |
 | 35 | Coding-agent working rules | VIOLATION — 3 aturan |
-| 36 | Definition of success | 4 dari 14 langkah belum penuh |
+| 36 | Definition of success | 3 dari 14 langkah belum penuh |
 
 Dua hal yang paling sering muncul sebagai akar gap: **tab metadata tidak ada** (§13, §26, §31) dan **AI session ownership tidak dimodelkan** (§25, §29, §30).
 
@@ -200,9 +200,7 @@ Item §20 lainnya sudah ada, termasuk deteksi repo untuk workspace di subfolder 
 
 ## §21 Tile / Split View
 
-- **DIFFERENT** — **Maksimal 2 panel, bukan 3.** Modulnya didokumentasikan dan ditulis sebagai "groups of two tabs"; pasangan hanya dibuat lewat `enterWithPair(tabAId, tabBId)` (`js/splitView.js:2-5,23-24,92-128`). Tidak ada jalur untuk menile tab ketiga, sehingga skenario `A+B+C → A+C` tidak bisa dimodelkan.
-
-Yang sudah sesuai: columns only, semua tipe tab bisa ditile, divider resizable, width dan tiled relationship **dipersist per task** (`js/splitView.js` `persist`/`restoreForSelectedTask` + field `splitState` di `js/tabState/task.js:49-52`), association antar tab (bukan pane entity), satu tab hanya di satu association, dan auto-hapus saat tinggal satu.
+Seluruh requirement sudah sesuai: maksimal 3 panel, columns only, semua tipe tab bisa ditile, divider resizable (satu divider per gutter, `js/splitViewDivider.js`), width dan tiled relationship dipersist per task (`fractions` + field `splitState`), association antar tab (bukan pane entity), satu tab hanya di satu association, `A+B+C → A+C` saat satu pane di-untile atau ditutup, dan relationship otomatis hilang begitu tinggal satu tab.
 
 ---
 
@@ -361,7 +359,7 @@ Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork
 | Files sidebar menunjukkan project | Sebagian | Files/Git/Design disembunyikan sampai `workspace.path` diisi manual, jadi workspace baru tampil kosong (`js/sidebar.js:61-82`; `js/sidebar/fileTree.js:33-34`) |
 | Click source file → Monaco terbuka | OK | `js/sidebar/fileTree.js:161-167` |
 | Open Terminal → shell di project root | OK | `js/terminalView.js`; pintu masuk: menu File > Open Terminal (`main/menu.js`) dan keybinding `addTerminal` (`js/defaultKeybindings.js`) |
-| Tile `Monaco \| Website \| Terminal` (3 panel) | Tidak | Split view dibatasi 2 panel (`js/splitView.js:24,92-118`) |
+| Tile `Monaco \| Website \| Terminal` (3 panel) | OK | Sampai 3 pane per group (`js/splitView.js` `maxPanesPerGroup`) |
 | AI agent aktif di task tersebut | OK | `js/sidebar/agentPanel.js:54-69`; `main/agent.js:395-513` |
 | Agent edit source & jalankan command | OK | `main/agent.js:448` |
 | Agent kontrol web tab untuk testing | OK | `main/agentTools.js:77-168`; isolasi task di `js/browserControlRenderer.js:90-122` |
@@ -372,7 +370,7 @@ Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork
 | Reopen → state restored lazily | OK | Task/tab restore lazily (`js/sessionRestore.js:137-149`), layout split ikut kembali |
 | Restart → Workspace/Task/layout kembali, load lazy | OK | Restore workspace/task/tab, lazy view creation, dan layout split (`js/sessionRestore.js:137-165`) |
 
-Yang menghalangi "cukup untuk dipakai harian" sekarang tinggal **tile 3 panel**. Pintu masuk terminal dan persistensi tile sudah ditutup — lihat **Sudah ditutup** di akhir dokumen.
+Sisa langkah yang belum penuh adalah default saat pertama kali jalan (§36 baris 1–2) dan kepemilikan AI session (§36 baris 9).
 
 ---
 
@@ -382,6 +380,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 
 1. **§36 — pintu masuk terminal.** Terminal tab sebelumnya hanya bisa dibuat lewat bang `!term`. Sekarang ada `js/terminalView.js` (modul tunggal yang membuka terminal), item menu File > Open Terminal, dan keybinding default `addTerminal` (`ctrl+\``).
 2. **Tile / split view sekarang persisten** (§5, §6, §21, §28). Layout disimpan per task sebagai field `splitState` (`js/tabState/task.js:49-52`), ditulis oleh `splitView.persist()` pada setiap perubahan group/ratio (`js/splitView.js`) dan dipasang kembali oleh `splitView.restoreForSelectedTask()` saat task dipilih (`js/browserUI.js:520-521`). Karena state-nya menempel di record task, ia ikut format session v3 yang sudah ada tanpa perubahan format. `clearAll()` sengaja tidak menulis apa pun: ia hanya membongkar tampilan, sehingga layout task tetap utuh saat kembali.
+3. **Tile sampai 3 panel** (§21, §36). Group memegang 2–3 pane (`maxPanesPerGroup`), lebar tiap pane disimpan sebagai `fractions` yang selalu berjumlah 1, dan setiap gutter punya divider sendiri (`js/splitViewDivider.js`). Satu pane bisa dikeluarkan tanpa membubarkan group lewat "Remove from Split View" (`js/navbar/tabContextMenu.js`), dan menutup satu pane dari `A+B+C` menyisakan `A+C` tiled; group baru hilang saat tinggal satu pane.
 
 ## Catatan
 

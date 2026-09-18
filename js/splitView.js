@@ -20,11 +20,52 @@ to the webviews module via initialize(), and webviews reads back the split state
 through the webviews.splitProvider hook.
 */
 
-const gutterWidth = 4 // gap between the two panes
+const gutterWidth = 4 // gap between two panes
 const minPaneWidth = 100 // minimum width of a pane when resizing
+const maxPanesPerGroup = 3 // most panes a single tiled group can hold
+
+/* a new group starts with the width divided evenly */
+function evenFractions (count) {
+  return new Array(count).fill(1 / count)
+}
+
+/* the saved pane widths of a group: one positive entry per pane, normalized to
+add up to 1. Anything unusable falls back to an even split. Layouts saved
+before a group could hold more than two panes stored a single splitRatio, which
+is still read so those layouts keep their divider position. */
+function readFractions (group, paneCount) {
+  if (Array.isArray(group.fractions) && group.fractions.length === paneCount) {
+    const usable = group.fractions.every(f => typeof f === 'number' && isFinite(f) && f > 0)
+    if (usable) {
+      const total = group.fractions.reduce((a, b) => a + b, 0)
+      return group.fractions.map(f => f / total)
+    }
+  }
+  if (paneCount === 2 && typeof group.splitRatio === 'number' && isFinite(group.splitRatio)) {
+    const left = Math.min(1, Math.max(0, group.splitRatio))
+    return [left, 1 - left]
+  }
+  return evenFractions(paneCount)
+}
+
+/* panes are kept in tab bar order, so the leftmost pane is the leftmost tab.
+Each pane keeps its own width while the group is reordered. */
+function normalizeGroupOrder (group) {
+  const widthsByTab = {}
+  group.paneTabIds.forEach(function (tabId, i) {
+    widthsByTab[tabId] = group.fractions[i]
+  })
+  const activeTabId = group.paneTabIds[group.activePane]
+
+  group.paneTabIds = group.paneTabIds.slice().sort(function (a, b) {
+    return tabs.getIndex(a) - tabs.getIndex(b)
+  })
+  group.fractions = group.paneTabIds.map(tabId => widthsByTab[tabId])
+  group.activePane = Math.max(0, group.paneTabIds.indexOf(activeTabId))
+}
 
 const splitView = {
-  groups: [], // [{ paneTabIds: [leftTabId, rightTabId], activePane: 0|1, splitRatio }]
+  groups: [], // [{ paneTabIds: [tabId, ...2-3], activePane: 0|1|2, fractions: [0.5, 0.5] }]
   activeGroupIndex: null, // index into groups of the group currently shown, or null
   selectionAnchor: null, // tabId of the first tab in the split-pair selection flow
   onLayoutChange: null, // set by splitViewDivider.js to keep the divider in sync
@@ -56,7 +97,7 @@ const splitView = {
         return {
           paneTabIds: group.paneTabIds.slice(),
           activePane: group.activePane,
-          splitRatio: group.splitRatio
+          fractions: group.fractions.slice()
         }
       }),
       activeGroupIndex: splitView.activeGroupIndex
@@ -83,7 +124,10 @@ const splitView = {
     let activeGroupIndex = null
 
     state.groups.forEach(function (group, index) {
-      if (!group || !Array.isArray(group.paneTabIds) || group.paneTabIds.length !== 2) {
+      if (!group || !Array.isArray(group.paneTabIds)) {
+        return
+      }
+      if (group.paneTabIds.length < 2 || group.paneTabIds.length > maxPanesPerGroup) {
         return
       }
       if (!group.paneTabIds.every(tabId => tabs.has(tabId))) {
@@ -93,10 +137,11 @@ const splitView = {
       if (restored.some(other => other.paneTabIds.some(tabId => group.paneTabIds.includes(tabId)))) {
         return
       }
+      const activePane = Math.min(Math.max(0, group.activePane | 0), group.paneTabIds.length - 1)
       restored.push({
         paneTabIds: group.paneTabIds.slice(),
-        activePane: group.activePane === 1 ? 1 : 0,
-        splitRatio: typeof group.splitRatio === 'number' ? Math.min(1, Math.max(0, group.splitRatio)) : 0.5
+        activePane: activePane,
+        fractions: readFractions(group, group.paneTabIds.length)
       })
       if (index === state.activeGroupIndex) {
         activeGroupIndex = restored.length - 1
@@ -142,13 +187,6 @@ const splitView = {
     }
     return tabs.getSelected()
   },
-  getOtherPaneTabId: function () {
-    const group = splitView.getActiveGroup()
-    if (!group) {
-      return null
-    }
-    return group.paneTabIds[1 - group.activePane]
-  },
   /* finds the group containing tabId (shown or paused) */
   getGroupForTab: function (tabId) {
     return splitView.groups.find(group => group.paneTabIds.includes(tabId)) || null
@@ -170,47 +208,107 @@ const splitView = {
     splitView.notifyGroupsChanged()
     splitView.showSplit()
   },
-  /* creates a new split group (or reuses the group containing one of the tabs)
-  and shows it. The panes follow the tab bar order: the tab that comes first
-  in the tab list becomes the left pane. */
-  enterWithPair: function (tabAId, tabBId, activeTabId = tabBId) {
+  /* tiles two tabs, or adds the second one to the group the first already
+  belongs to. A group holds up to maxPanesPerGroup panes; once it is full the
+  new tab takes the place of the active pane. Panes follow the tab bar order,
+  so the tab that comes first in the tab list becomes the left pane. */
+  tileTabs: function (tabAId, tabBId, activeTabId = tabBId) {
     const indexA = tabs.getIndex(tabAId)
     const indexB = tabs.getIndex(tabBId)
     if (indexA < 0 || indexB < 0 || tabAId === tabBId) {
       return
     }
 
-    // Reuse an existing group that contains one of the tabs. A tab can only
-    // belong to one group; remove any other groups that contain either side
-    // before assigning the pair so stale/old state cannot leave a tab in two
-    // groups at once.
     let group = splitView.getGroupForTab(tabAId) || splitView.getGroupForTab(tabBId)
-    splitView.groups.slice().reverse().forEach(function (candidate) {
-      if (candidate !== group && (candidate.paneTabIds.includes(tabAId) || candidate.paneTabIds.includes(tabBId))) {
-        splitView.removeGroup(splitView.groups.indexOf(candidate))
-      }
-    })
-    if (group) {
-      group.paneTabIds = [tabAId, tabBId]
-    } else {
+    if (!group) {
       group = {
         paneTabIds: [tabAId, tabBId],
         activePane: 0,
-        splitRatio: 0.5
+        fractions: evenFractions(2)
       }
       splitView.groups.push(group)
+    } else if (!group.paneTabIds.includes(tabBId)) {
+      // a tab may only belong to one group
+      splitView.removeTabFromGroups(tabBId, group)
+      if (group.paneTabIds.length < maxPanesPerGroup) {
+        group.paneTabIds.push(tabBId)
+        group.fractions = evenFractions(group.paneTabIds.length)
+      } else {
+        group.paneTabIds[group.activePane] = tabBId
+      }
     }
 
     // the pane containing the active tab gets focus
-    group.activePane = group.paneTabIds.indexOf(activeTabId)
-    if (group.activePane < 0) {
-      group.activePane = 0
-    }
-    group.splitRatio = 0.5
+    normalizeGroupOrder(group)
+    const activePane = group.paneTabIds.indexOf(activeTabId)
+    group.activePane = activePane >= 0 ? activePane : 0
 
     splitView.persist()
     splitView.notifyGroupsChanged()
     splitView.showGroup(splitView.groups.indexOf(group))
+  },
+  /* removes a tab from the group it is in, keeping the rest of the group
+  tiled. When the tab that was being shown is the removed one, the group's
+  active pane takes over as the selected tab. */
+  untileTab: function (tabId) {
+    const group = splitView.getGroupForTab(tabId)
+    if (!group) {
+      return
+    }
+    splitView.detachTab(group, tabId)
+  },
+  /* takes a tab out of a group. The group disappears once it holds fewer than
+  two panes; a shown group that survives is laid out again. */
+  detachTab: function (group, tabId) {
+    const index = group.paneTabIds.indexOf(tabId)
+    const groupIndex = splitView.groups.indexOf(group)
+    if (index < 0 || groupIndex < 0) {
+      return
+    }
+    const wasShown = splitView.activeGroupIndex === groupIndex
+    const wasActiveTab = wasShown && splitView.getActiveTabId() === tabId
+
+    group.paneTabIds.splice(index, 1)
+    group.fractions.splice(index, 1)
+
+    if (group.paneTabIds.length < 2) {
+      // tile relationships need at least two tabs
+      splitView.removeGroup(groupIndex, group.paneTabIds[0])
+      return
+    }
+
+    // the panes that are left share the whole width, keeping their proportions
+    const remaining = group.fractions.reduce((a, b) => a + b, 0)
+    if (remaining > 0) {
+      group.fractions = group.fractions.map(fraction => fraction / remaining)
+    }
+
+    if (group.activePane > index) {
+      group.activePane--
+    } else if (group.activePane >= group.paneTabIds.length) {
+      group.activePane = group.paneTabIds.length - 1
+    }
+
+    if (wasShown) {
+      const activeId = group.paneTabIds[group.activePane]
+      if (wasActiveTab) {
+        tabs.setSelected(activeId)
+      }
+      splitView.applyLayout()
+      splitView.webviews.resize()
+    }
+
+    splitView.persist()
+    splitView.notifyGroupsChanged()
+  },
+  /* removes a tab from every group except `keep`, so a tab never ends up in
+  two groups at once */
+  removeTabFromGroups: function (tabId, keep) {
+    splitView.groups.slice().forEach(function (group) {
+      if (group !== keep && group.paneTabIds.includes(tabId)) {
+        splitView.detachTab(group, tabId)
+      }
+    })
   },
   /* shows the active group's split layout */
   showSplit: function () {
@@ -323,19 +421,13 @@ const splitView = {
     }
     splitView.removeGroup(groupIndex, preferredActiveId)
   },
-  /* removes every group containing tabId; if the shown group is affected,
-  the other pane's tab (if any) becomes the visible tab */
+  /* takes tabId out of every group it belongs to. The group survives if it
+  still holds two panes, so closing one pane of A+B+C leaves A+C tiled. */
   handleTabDestroyed: function (tabId) {
-    const affectedGroups = splitView.groups
-      .map((group, index) => ({ group, index }))
-      .filter(({ group }) => group.paneTabIds.includes(tabId))
-
-    // remove from the end because removing a group changes later indices
-    affectedGroups.reverse().forEach(({ group }) => {
-      const index = splitView.groups.indexOf(group)
-      if (index < 0) return
-      const otherPaneId = group.paneTabIds[1 - group.paneTabIds.indexOf(tabId)]
-      splitView.removeGroup(index, otherPaneId)
+    splitView.groups.slice().forEach(function (group) {
+      if (group.paneTabIds.includes(tabId)) {
+        splitView.detachTab(group, tabId)
+      }
     })
   },
   /* called from browserUI.switchToTab while split: switches which pane is active,
@@ -345,10 +437,9 @@ const splitView = {
     const shownGroup = splitView.getActiveGroup()
 
     if (shownGroup) {
-      if (tabId === shownGroup.paneTabIds[0]) {
-        shownGroup.activePane = 0
-      } else if (tabId === shownGroup.paneTabIds[1]) {
-        shownGroup.activePane = 1
+      const paneIndex = shownGroup.paneTabIds.indexOf(tabId)
+      if (paneIndex >= 0) {
+        shownGroup.activePane = paneIndex
       } else {
         const tabGroup = splitView.getGroupForTab(tabId)
         if (tabGroup) {
@@ -369,40 +460,26 @@ const splitView = {
     }
   },
   /* reorders the panes of every group to match the tab bar order after a tab
-  is moved. The pane whose tab comes first in the tab list becomes the left
-  pane, and the active pane follows its tab. Groups whose tabs were moved away
-  are destroyed. */
+  is moved. Groups whose tabs were moved away lose those panes, and a group
+  that drops below two panes is destroyed. */
   handleTabReorder: function () {
     if (splitView.groups.length === 0) {
       return
     }
 
-    // remove groups whose tabs are gone
-    const groupsToRemove = []
-    splitView.groups.forEach(function (group, index) {
-      const indexA = tabs.getIndex(group.paneTabIds[0])
-      const indexB = tabs.getIndex(group.paneTabIds[1])
-      if (indexA < 0 || indexB < 0) {
-        groupsToRemove.push(index)
-      }
-    })
-    // remove in reverse index order to keep indices valid
-    groupsToRemove.reverse().forEach(function (index) {
-      splitView.removeGroup(index)
+    splitView.groups.slice().forEach(function (group) {
+      group.paneTabIds.slice().forEach(function (tabId) {
+        if (tabs.getIndex(tabId) < 0) {
+          splitView.detachTab(group, tabId)
+        }
+      })
     })
     if (splitView.groups.length === 0) {
       return
     }
 
-    // normalize the pane order of every group
     splitView.groups.forEach(function (group) {
-      const [tabA, tabB] = group.paneTabIds
-      const indexA = tabs.getIndex(tabA)
-      const indexB = tabs.getIndex(tabB)
-      if (indexA > indexB) {
-        group.paneTabIds = [tabB, tabA]
-        group.activePane = 1 - group.activePane
-      }
+      normalizeGroupOrder(group)
     })
 
     if (splitView.isSplit()) {
@@ -411,16 +488,36 @@ const splitView = {
     splitView.persist()
     splitView.notifyGroupsChanged()
   },
-  /* sets the split ratio (0-1) of the shown group and updates the pane bounds.
-  liveResize skips the full setSplitView IPC (which detaches and re-attaches
-  views) and only resizes the existing views, which is what we want while
-  dragging the divider. */
-  setSplitRatio: function (ratio, liveResize = false) {
+  /* moves the boundary between pane `index` and pane `index + 1` to windowX,
+  keeping the combined width of the two panes constant. liveResize skips the
+  full setSplitView IPC (which detaches and re-attaches views) and only resizes
+  the existing views, which is what we want while dragging a divider. */
+  setDividerPosition: function (index, windowX, liveResize = false) {
     const group = splitView.getActiveGroup()
-    if (!group) {
+    if (!group || index < 0 || index >= group.paneTabIds.length - 1) {
       return
     }
-    group.splitRatio = Math.min(1, Math.max(0, ratio))
+
+    const full = splitView.webviews.getViewBounds(group.paneTabIds[group.activePane], true)
+    const count = group.paneTabIds.length
+    const available = Math.max(0, full.width - gutterWidth * (count - 1))
+    if (available <= 0) {
+      return
+    }
+    const minFraction = Math.min(minPaneWidth, Math.floor(available / count)) / available
+
+    // the boundary sits after the panes to its left, plus the gutters before it
+    const fractionBefore = group.fractions.slice(0, index).reduce((a, b) => a + b, 0)
+    const leftOfBoundary = available * fractionBefore + gutterWidth * index
+    const pairTotal = group.fractions[index] + group.fractions[index + 1]
+
+    // the two panes keep their combined width, so only the split between them changes
+    const upperBound = Math.max(minFraction, pairTotal - minFraction)
+    const leftFraction = Math.min(Math.max((windowX - full.x - leftOfBoundary) / available, minFraction), upperBound)
+
+    group.fractions[index] = leftFraction
+    group.fractions[index + 1] = pairTotal - leftFraction
+
     splitView.persist()
     if (liveResize) {
       splitView.webviews.resize()
@@ -444,43 +541,78 @@ const splitView = {
       splitView.onLayoutChange()
     }
   },
-  /* computes the bounds for each pane, splitting the full view rect by the
-  shown group's splitRatio */
+  /* pane widths in pixels for the full view width. The stored fractions are
+  clamped so no pane is narrower than minPaneWidth, and the result always adds
+  up to the width that is left between the gutters. */
+  computePaneWidths: function (group, totalWidth) {
+    const count = group.paneTabIds.length
+    const available = Math.max(0, totalWidth - gutterWidth * (count - 1))
+    const minWidth = Math.min(minPaneWidth, Math.floor(available / count))
+    const maxWidth = Math.max(minWidth, available - minWidth * (count - 1))
+
+    const widths = group.fractions.map(fraction => Math.round(available * fraction))
+    for (let i = 0; i < count; i++) {
+      widths[i] = Math.min(Math.max(widths[i], minWidth), maxWidth)
+    }
+
+    // rounding and clamping can leave a few pixels over; hand them back to the
+    // panes that still have room
+    let remainder = available - widths.reduce((a, b) => a + b, 0)
+    for (let i = 0; i < count && remainder !== 0; i++) {
+      const target = Math.min(Math.max(widths[i] + remainder, minWidth), maxWidth)
+      remainder -= target - widths[i]
+      widths[i] = target
+    }
+
+    return widths
+  },
+  /* computes the bounds for each pane: the panes sit side by side in tab bar
+  order, separated by a gutter */
   getBounds: function () {
     const group = splitView.getActiveGroup()
+    if (!group) {
+      return []
+    }
     const full = splitView.webviews.getViewBounds(group.paneTabIds[group.activePane], true)
-    const minWidth = Math.min(minPaneWidth, Math.floor(full.width / 4))
-    const leftWidth = Math.round(full.width * group.splitRatio)
-    const clampedLeftWidth = Math.min(Math.max(leftWidth, minWidth), full.width - minWidth - gutterWidth)
-    const rightWidth = full.width - clampedLeftWidth - gutterWidth
+    const bounds = []
+    let x = full.x
 
-    return [
-      {
-        x: full.x,
+    splitView.computePaneWidths(group, full.width).forEach(function (width) {
+      bounds.push({
+        x: x,
         y: full.y,
-        width: clampedLeftWidth,
+        width: width,
         height: full.height
-      },
-      {
-        x: full.x + clampedLeftWidth + gutterWidth,
-        y: full.y,
-        width: rightWidth,
-        height: full.height
-      }
-    ]
+      })
+      x += width + gutterWidth
+    })
+
+    return bounds
+  },
+  /* the left edge of the boundary between pane `index` and pane `index + 1` */
+  getDividerLeft: function (index) {
+    const group = splitView.getActiveGroup()
+    if (!group) {
+      return null
+    }
+    const full = splitView.webviews.getViewBounds(group.paneTabIds[group.activePane], true)
+    const widths = splitView.computePaneWidths(group, full.width)
+    let x = full.x
+    for (let i = 0; i < index; i++) {
+      x += widths[i] + gutterWidth
+    }
+    return x + widths[index]
   },
   getBoundsForTab: function (tabId) {
     const group = splitView.getActiveGroup()
     if (!group) {
       return null
     }
-    const bounds = splitView.getBounds()
-    if (tabId === group.paneTabIds[0]) {
-      return bounds[0]
-    } else if (tabId === group.paneTabIds[1]) {
-      return bounds[1]
+    const paneIndex = group.paneTabIds.indexOf(tabId)
+    if (paneIndex < 0) {
+      return null
     }
-    return null
+    return splitView.getBounds()[paneIndex] || null
   },
   /* removes both the visible split and all paused groups from the window.
   Workspace/profile/task lifecycle changes use this instead of destroy(), since
@@ -561,7 +693,7 @@ const splitView = {
 
     // the clicked tab becomes the active tab (its pane gets focus)
     tabs.setSelected(clickedTabId)
-    splitView.enterWithPair(anchorTabId, clickedTabId)
+    splitView.tileTabs(anchorTabId, clickedTabId)
   }
 }
 

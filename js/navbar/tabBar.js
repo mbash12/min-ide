@@ -471,13 +471,16 @@ function updateSplitGroupIndicators () {
     if (groupIndex >= 0) {
       const group = splitView.groups[groupIndex]
       el.classList.add(groupColors[groupIndex % groupColors.length])
-      const otherTabId = group.paneTabIds[1 - group.paneTabIds.indexOf(tab.id)]
-      const otherTab = tabs.get(otherTabId)
-      const otherTitle = (otherTab && otherTab.title) ? otherTab.title : l('newTabLabel')
-      // append the split partner to the tooltip (updateTab sets the base title)
+      // list every other pane of the group in the tooltip
+      const partners = group.paneTabIds
+        .filter(tabId => tabId !== tab.id)
+        .map(function (tabId) {
+          const partner = tabs.get(tabId)
+          return (partner && partner.title) ? partner.title : l('newTabLabel')
+        })
       const baseTitle = el.getAttribute('data-base-title') || el.title
       el.setAttribute('data-base-title', baseTitle)
-      el.title = baseTitle + ' · ' + l('splitWithTab').replace('%t', otherTitle)
+      el.title = baseTitle + ' · ' + l('splitWithTab').replace('%t', partners.join(', '))
     } else {
       const baseTitle = el.getAttribute('data-base-title')
       if (baseTitle) {

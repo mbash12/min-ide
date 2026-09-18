@@ -96,15 +96,26 @@ function getTabMenu (tabId) {
   })
 
   // split view actions
-  if (splitView.isSplit()) {
+  const splitGroup = splitView.getGroupForTab(tabId)
+  if (splitGroup) {
+    // with three panes, taking one out is different from leaving split view
+    if (splitGroup.paneTabIds.length > 2) {
+      tabMenu[0].push({
+        label: l('tabMenuRemoveFromSplitView'),
+        click: function () {
+          splitView.untileTab(tabId)
+        }
+      })
+    }
     tabMenu[0].push({
       label: l('tabMenuExitSplitView'),
       click: function () {
-        splitView.destroy()
+        // act on the group this tab belongs to, shown or paused
+        splitView.removeGroup(splitView.groups.indexOf(splitGroup), tabId)
       }
     })
   } else {
-    // start the split-pair selection flow: the next tab clicked becomes the pair
+    // start the tile selection flow: the next tab clicked joins this one
     tabMenu[0].push({
       label: l('tabMenuSplitView'),
       click: function () {
