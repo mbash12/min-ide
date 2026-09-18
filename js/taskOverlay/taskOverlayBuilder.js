@@ -161,7 +161,11 @@ var TaskOverlayBuilder = {
 
         var lastTabEl = document.createElement('span')
         lastTabEl.className = 'task-last-tab-title'
-        var lastTabTitle = task.tabs.get().sort((a, b) => b.lastActivity - a.lastActivity)[0].title
+        // FORK: a task can have no tabs (moved away, or just created), and
+        // upstream reads [0].title unconditionally, which throws and aborts the
+        // whole overlay render for that task and every task after it.
+        var tabsByActivity = task.tabs.get().sort((a, b) => b.lastActivity - a.lastActivity)
+        var lastTabTitle = tabsByActivity.length > 0 ? tabsByActivity[0].title : ''
 
         if (lastTabTitle) {
           lastTabTitle = searchbarUtils.getRealTitle(lastTabTitle)
