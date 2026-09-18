@@ -56,6 +56,14 @@ ipc.handle('readDirectory', function (e, dirPath) {
   return getDirectoryEntries(dirPath)
 })
 
+/* Whether a workspace's stored folder is still usable. A path that is empty,
+ * missing, or no longer a directory is reported as not ok; the renderer turns
+ * that workspace into a browser-only one until the user picks a new path, and
+ * the stored path itself is left alone. */
+ipc.handle('workspacePathStatus', function (e, dirPath) {
+  return { ok: isDirectoryPath(dirPath) }
+})
+
 /* creates an empty file or directory. Returns null on success, or an error
 message string on failure. */
 ipc.handle('fileTreeCreate', function (e, workspaceRoot, parentPath, name, type) {

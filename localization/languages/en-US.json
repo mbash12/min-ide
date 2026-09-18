@@ -284,6 +284,7 @@
     "workspaceCreateTitle": "New Workspace",
     "workspaceCreateAction": "Create",
     "workspaceEditTitle": "Edit Workspace",
+    "workspaceFolderMissing": "Folder not found. Choose a new path in workspace settings.",
     "workspacePathLabel": "Path",
     "workspacePathBrowse": "Browse...",
     "workspacePathClear": "Clear",

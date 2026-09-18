@@ -85,6 +85,17 @@
   direction: rtl;
   text-align: left;
 }
+
+/* the stored folder is gone: the path stays visible but is called out */
+.ws-row-path-missing {
+  color: #c47f17;
+  opacity: 0.9;
+}
+.ws-row-warning {
+  font-size: 0.85em;
+  color: #c47f17;
+  margin-right: 0.25em;
+}
 .ws-row.selected .ws-row-name {
   font-weight: 600;
 }

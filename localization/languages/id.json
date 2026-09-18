@@ -110,6 +110,7 @@
     "workspacesHeading": "Workspaces",
     "defaultWorkspaceName": "Workspace %n", //this is the name used for newly-created workspaces; %n is replaced with a number ("workspace 1", "workspace 2", etc)
     "workspaceNameLabel": "Nama",
+    "workspaceFolderMissing": "Folder tidak ditemukan. Pilih path baru di setelan workspace.",
     "workspaceCreateTitle": "Workspace Baru",
     "workspaceCreateAction": "Buat",
     "workspaceEditTitle": "Edit Workspace",

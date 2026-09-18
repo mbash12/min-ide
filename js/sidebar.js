@@ -68,7 +68,17 @@ const sidebar = {
   sidebar had to switch to another tab. */
   updatePathTabs: function () {
     const ws = workspaces.getSelected()
-    const hasPath = !!(ws && ws.path)
+    let hasPath = !!(ws && ws.path)
+    if (hasPath) {
+      // a folder that was deleted or moved makes the workspace browser-only
+      // until the user picks a new one; while the check is running the tabs
+      // stay visible so a valid folder is never hidden for a moment
+      const pathStatus = require('workspacePathStatus.js')
+      pathStatus.refresh(ws)
+      if (pathStatus.isUsable(ws.id) === false) {
+        hasPath = false
+      }
+    }
     let activeHidden = false
     sidebar.pathTabs.forEach(function (tabId) {
       const tab = document.getElementById('sidebar-tab-' + tabId)
@@ -341,6 +351,12 @@ const sidebar = {
           sidebar.updatePathTabs()
         }
       }
+    })
+
+    /* the path check finishes after updatePathTabs has already run, so re-run
+    it once the answer is in */
+    require('workspacePathStatus.js').onChange(function () {
+      sidebar.updatePathTabs()
     })
 
     // initial load: bind to the workspace selected during session restore

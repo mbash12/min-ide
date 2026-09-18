@@ -167,6 +167,16 @@ function createWorkspaceRow (ws) {
     pathEl.className = 'ws-row-path'
     pathEl.textContent = ws.path
     pathEl.title = ws.path
+    // the folder is gone: say so instead of pretending the workspace still has
+    // files, and leave the stored path in place so the user can replace it (§8)
+    if (require('workspacePathStatus.js').isUsable(ws.id) === false) {
+      const warning = document.createElement('span')
+      warning.className = 'codicon codicon-warning ws-row-warning'
+      warning.title = l('workspaceFolderMissing')
+      mainEl.appendChild(warning)
+      pathEl.classList.add('ws-row-path-missing')
+      pathEl.title = l('workspaceFolderMissing')
+    }
     mainEl.appendChild(pathEl)
   }
   row.appendChild(mainEl)
@@ -226,6 +236,16 @@ function createArchivedWorkspaceRow (ws) {
     pathEl.className = 'ws-row-path'
     pathEl.textContent = ws.path
     pathEl.title = ws.path
+    // the folder is gone: say so instead of pretending the workspace still has
+    // files, and leave the stored path in place so the user can replace it (§8)
+    if (require('workspacePathStatus.js').isUsable(ws.id) === false) {
+      const warning = document.createElement('span')
+      warning.className = 'codicon codicon-warning ws-row-warning'
+      warning.title = l('workspaceFolderMissing')
+      mainEl.appendChild(warning)
+      pathEl.classList.add('ws-row-path-missing')
+      pathEl.title = l('workspaceFolderMissing')
+    }
     mainEl.appendChild(pathEl)
   }
   row.appendChild(mainEl)
@@ -489,6 +509,13 @@ var workspaceDrawer = {
       })
     })
     workspaces.on('workspace-selected', function () {
+      updateIndicator()
+      if (workspaceDrawer.isShown) workspaceDrawer.render()
+    })
+
+    /* the folder check finishes after the rows are built, so rebuild them once
+    the answer is in to show or clear the missing-folder warning */
+    require('workspacePathStatus.js').onChange(function () {
       updateIndicator()
       if (workspaceDrawer.isShown) workspaceDrawer.render()
     })

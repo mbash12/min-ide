@@ -29,7 +29,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 5 | Workspace switching | — bersih |
 | 6 | Workspace persistence | MISSING — notes; DIFFERENT — AI reference |
 | 7 | Archive Workspace | MISSING — auto-unpin |
-| 8 | Missing workspace path | DIFFERENT — deteksi path hilang tidak ada |
+| 8 | Missing workspace path | — bersih |
 | 9 | Profiles | MISSING — Clear Data; DIFFERENT — delete tidak diblokir |
 | 10 | Profile switching | DIFFERENT — semua view dibongkar, bukan hanya web tab |
 | 11 | Clear Profile Data | MISSING — seluruh fitur |
@@ -99,10 +99,9 @@ Task terakhir, tab terakhir, tiled state, sidebar state, dan runtime yang tetap 
 
 ## §8 Missing workspace path
 
-- **DIFFERENT** — Tidak ada **deteksi** path yang sudah tidak ada/tidak accessible, dan tidak ada **indikator** `folder + slash/warning`. Row workspace hanya merender path bila truthy, dengan class polos (`js/workspaceDrawer/workspaceDrawer.js:164-170`; `css/workspaceDrawer.css:79-87`).
-- **DIFFERENT** — Files dan Git disembunyikan hanya ketika `ws.path` **kosong**, bukan ketika path tersimpan sudah hilang: `hasPath = !!(ws && ws.path)` (`js/sidebar.js:69-96`). Dengan path yang sudah tidak ada, tab tetap tampil dan tree hanya menampilkan baris error (`js/sidebar/fileTree.js:196-198,233-237`) alih-alih memperlakukan workspace sebagai browser-only.
+Seluruh requirement sudah sesuai. Folder yang hilang terdeteksi lewat `workspacePathStatus` (`main/fileTree.js`), dan `js/workspacePathStatus.js` menyimpan hasilnya per workspace dengan cache supaya pemeriksaan tidak diulang pada tiap refresh sidebar. Workspace seperti itu diperlakukan sebagai browser-only: Files/Git disembunyikan dan barisnya menampilkan ikon peringatan berikut tooltip (`js/workspaceDrawer/workspaceDrawer.js`, `css/workspaceDrawer.css`). Stored path tidak pernah dihapus otomatis dan tetap bisa diganti lewat Workspace Settings.
 
-Dua hal yang sudah sesuai: stored path tidak dihapus otomatis, dan path bisa diganti lewat Workspace Settings.
+Dua keputusan yang sengaja diambil: selama pemeriksaan belum selesai statusnya dianggap **usable**, sehingga folder yang valid tidak pernah berkedip tersembunyi; dan bila pemeriksaan itu sendiri gagal (IPC error), status juga dianggap usable — lebih baik menampilkan file yang mungkin baik-baik saja daripada menyembunyikannya.
 
 ---
 
@@ -381,6 +380,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 4. **Metadata tab + URL internal generik** (§13, §26, §31). Tab membawa `kind` dan `resource`; URL editor dan terminal menjadi generik sehingga tidak ada path workspace di address bar maupun di session, dan resource sampai ke halaman lewat preload bridge. Browser control juga dibatasi ke tab `kind: 'web'` saja.
 5. **Batch kecil**: autosave Monaco (§14), diff working tree di panel Git (§20), dan `createdAt`/`updatedAt` pada workspace (§4).
 6. **Batch cepat lanjutan**: `action=read` untuk membaca teks halaman (§26), penghapusan berkas transkrip AI saat workspace dihapus (§30), dan prefill nama default di modal workspace (§4).
+7. **Path workspace hilang** (§8). Folder yang sudah tidak ada membuat workspace jadi browser-only: Files/Git disembunyikan dan baris workspace menampilkan peringatan, tanpa menghapus path tersimpan.
 
 ## Catatan
 
