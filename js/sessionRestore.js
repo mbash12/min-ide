@@ -151,16 +151,23 @@ const sessionRestore = {
       var mostRecentWorkspaces = workspaces.getActive().sort((a, b) => {
         return workspaces.getLastActivity(b.id) - workspaces.getLastActivity(a.id)
       })
-      if (mostRecentWorkspaces.length > 0) {
-        workspaces.setSelected(mostRecentWorkspaces[0].id)
+
+      if (mostRecentWorkspaces.length === 0) {
+        backupAndStartFresh('no restorable workspace')
+        browserUI.addTab(tasks.getSelected().tabs.add())
+        return
       }
 
       // switch to the previously selected workspace (restores its active task)
+      // Doing this first guarantees a task is selected: selectedInWindow is a
+      // temporary property and is never persisted, so tasks.getSelected() is
+      // null until a task is explicitly selected.
+      browserUI.switchToWorkspace(mostRecentWorkspaces[0].id)
 
-      if (tasks.getSelected().tabs.isEmpty() || startupConfigOption === 1) {
-        browserUI.switchToWorkspace(mostRecentWorkspaces[0].id)
-        if (tasks.getSelected().tabs.isEmpty()) {
-          tabEditor.show(tasks.getSelected().tabs.getSelected())
+      var selectedTask = tasks.getSelected()
+      if (!selectedTask || selectedTask.tabs.isEmpty() || startupConfigOption === 1) {
+        if (selectedTask && selectedTask.tabs.isEmpty()) {
+          tabEditor.show(selectedTask.tabs.getSelected())
         }
       } else {
         window.createdNewTaskOnStartup = true

@@ -77,7 +77,6 @@
     "newTabAction": "New Tab", //this is a verb, used to label a button that adds a tab to the tabstrip when clicked
     /* workspace drawer */
     "viewTasks": "View Workspaces",
-    "viewTaskSwitcher": "Switch task", //used to label the button that opens the task switcher for the current workspace
     "sidebarToggle": "Toggle sidebar",
     "sidebarResize": "Resize sidebar",
     "sidebarAi": "AI",

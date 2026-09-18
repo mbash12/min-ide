@@ -196,6 +196,8 @@ class TaskList {
 
   slice (...args) { return this.tasks.slice.apply(this.tasks, args) }
 
+  splice (...args) { return this.tasks.splice.apply(this.tasks, args) }
+
   filter (...args) { return this.tasks.filter.apply(this.tasks, args) }
 
   find (filter) {

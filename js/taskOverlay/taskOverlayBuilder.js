@@ -1,3 +1,4 @@
+var browserUI = require('browserUI.js')
 var searchbarUtils = require('searchbar/searchbarUtils.js')
 var urlParser = require('util/urlParser.js')
 var searchEngine = require('util/searchEngine.js')
@@ -24,7 +25,7 @@ function getTaskRelativeDate (task) {
 }
 
 function toggleCollapsed (taskContainer, task) {
-  tasks.update(task.id, { collapsed: !tasks.isCollapsed(task.id) })
+  tasks.update(task.id, {collapsed: !tasks.isCollapsed(task.id)})
   taskContainer.classList.toggle('collapsed')
 
   var collapseButton = taskContainer.querySelector('.task-collapse-button')
@@ -75,7 +76,7 @@ var TaskOverlayBuilder = {
             this.blur()
           }
 
-          tasks.update(task.id, { name: this.value })
+          tasks.update(task.id, {name: this.value})
         })
 
         input.addEventListener('focusin', function (e) {
@@ -87,21 +88,43 @@ var TaskOverlayBuilder = {
         })
         return input
       },
-      settingsButton: function (task, events) {
-        var button = document.createElement('button')
-        button.className = 'task-settings-button i carbon:overflow-menu-vertical'
-        button.setAttribute('tabindex', '-1')
-        button.title = l('taskSettings')
+      deleteButton: function (container, task) {
+        var deleteButton = document.createElement('button')
+        deleteButton.className = 'task-delete-button i carbon:trash-can'
+        deleteButton.tabIndex = -1 // needed for keyboardNavigationHelper
 
-        button.addEventListener('click', function (e) {
-          e.stopPropagation()
-          events.taskSettings(task.id, button)
+        deleteButton.addEventListener('click', function (e) {
+          if (task.tabs.isEmpty()) {
+            container.remove()
+            browserUI.closeTask(task.id)
+          } else {
+            container.classList.add('deleting')
+            setTimeout(function () {
+              if (container.classList.contains('deleting')) {
+                container.style.opacity = 0
+                // transitionend would be nice here, but it doesn't work if the element is removed from the DOM
+                setTimeout(function () {
+                  container.remove()
+                  browserUI.closeTask(task.id)
+                }, 500)
+              }
+            }, 10000)
+          }
         })
+        return deleteButton
+      },
+      deleteWarning: function (container, task) {
+        var deleteWarning = document.createElement('div')
+        deleteWarning.className = 'task-delete-warning'
 
-        return button
+        deleteWarning.innerHTML = l('taskDeleteWarning').unsafeHTML
+        deleteWarning.addEventListener('click', function (e) {
+          container.classList.remove('deleting')
+        })
+        return deleteWarning
       },
 
-      actionContainer: function (taskContainer, task, taskIndex, events) {
+      actionContainer: function (taskContainer, task, taskIndex) {
         var taskActionContainer = document.createElement('div')
         taskActionContainer.className = 'task-action-container'
 
@@ -113,9 +136,9 @@ var TaskOverlayBuilder = {
         var input = this.nameInputField(task, taskIndex)
         taskActionContainer.appendChild(input)
 
-        // add the settings button (rename / profile / delete popup)
-        var settingsButton = this.settingsButton(task, events)
-        taskActionContainer.appendChild(settingsButton)
+        // add the delete button
+        var deleteButton = this.deleteButton(taskContainer, task)
+        taskActionContainer.appendChild(deleteButton)
 
         return taskActionContainer
       },
@@ -134,8 +157,7 @@ var TaskOverlayBuilder = {
 
         var lastTabEl = document.createElement('span')
         lastTabEl.className = 'task-last-tab-title'
-        var mostRecentTab = task.tabs.get().sort((a, b) => b.lastActivity - a.lastActivity)[0]
-        var lastTabTitle = mostRecentTab ? mostRecentTab.title : ''
+        var lastTabTitle = task.tabs.get().sort((a, b) => b.lastActivity - a.lastActivity)[0].title
 
         if (lastTabTitle) {
           lastTabTitle = searchbarUtils.getRealTitle(lastTabTitle)
@@ -196,13 +218,15 @@ var TaskOverlayBuilder = {
         var taskActionContainer = this.actionContainer(
           container,
           task,
-          taskIndex,
-          events
+          taskIndex
         )
         container.appendChild(taskActionContainer)
 
         var infoContainer = this.infoContainer(task)
         container.appendChild(infoContainer)
+
+        var deleteWarning = this.deleteWarning(container, task)
+        container.appendChild(deleteWarning)
 
         var tabContainer = TaskOverlayBuilder.create.tab.container(task, events)
         container.appendChild(tabContainer)

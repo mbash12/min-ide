@@ -95,23 +95,8 @@ body.dark-theme #workspace-indicator.active {
   text-overflow: ellipsis;
 }
 
-/* task switcher button: opens the task overlay for the current workspace */
-#tasks-button {
-  padding: 0;
-  width: 36px;
-  margin-right: 0.25em;
-  border-radius: 4px;
-  opacity: 0.85;
-}
-#tasks-button:hover,
-#tasks-button.active {
-  opacity: 1;
-  background: rgba(0, 0, 0, 0.075);
-}
-body.dark-theme #tasks-button:hover,
-body.dark-theme #tasks-button.active {
-  background: rgba(255, 255, 255, 0.1);
-}
+/* the task switcher button is styled in css/taskOverlay.css, next to the
+overlay rules it belongs to */
 
 /* the task drawer (opens from the workspace indicator) is styled in taskOverlay.css */
 

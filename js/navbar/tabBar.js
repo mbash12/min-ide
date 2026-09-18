@@ -56,6 +56,10 @@ const tabBar = {
     }
 
     var el = tabBar.getTab(tabId)
+    if (!el) {
+      // the tab can be in another task, whose elements are not in the DOM
+      return
+    }
     el.classList.add('active')
     el.setAttribute('aria-selected', 'true')
 
