@@ -445,6 +445,11 @@ color so adjacent groups are distinguishable. */
 function updateSplitGroupIndicators () {
   const groupColors = ['split-group-0', 'split-group-1', 'split-group-2', 'split-group-3']
 
+  // window.tabs is undefined until the first task is selected (startup);
+  // clearAll -> notifyGroupsChanged can fire before that.
+  if (!window.tabs) {
+    return
+  }
   tabs.get().forEach(function (tab) {
     const el = tabBar.getTab(tab.id)
     if (!el) {
