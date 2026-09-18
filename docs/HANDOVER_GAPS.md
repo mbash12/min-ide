@@ -25,7 +25,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | --- | --- | --- |
 | 2 | Core hierarchy | DIFFERENT — model Task kurang 2 anggota |
 | 3 | Favicon | — bersih |
-| 4 | Workspace model | MISSING — `createdAt`/`updatedAt`; DIFFERENT — `sidebarState`, nama default |
+| 4 | Workspace model | MISSING — `createdAt`/`updatedAt`; DIFFERENT — `sidebarState`, prefill nama |
 | 5 | Workspace switching | DIFFERENT — tile state tidak kembali |
 | 6 | Workspace persistence | MISSING — tile relationship, tile width, notes; DIFFERENT — AI reference |
 | 7 | Archive Workspace | MISSING — auto-unpin |
@@ -75,8 +75,9 @@ Hierarki `Workspace → Task → Tab` itu sendiri **sudah nyata** (bukan lagi al
 
 - **MISSING** — Field `createdAt` dan `updatedAt` tidak ada di record workspace. `makeWorkspace` hanya membuat `id, name, profileId, path, archived, activeTaskId, collapsed, selectedInWindow, tasks` (`js/tabState/workspace.js:10-22`).
 - **DIFFERENT** — `sidebarState` dan `activityBarVisible` bukan field workspace seperti di blueprint, melainkan disimpan terpisah di IndexedDB dengan key `workspace:<id>` (`js/util/uiStateDB.js:13-16,44-60`; ditulis dari `js/sidebar.js:204-221`). Fungsional tetap persisten per workspace, tapi bukan bagian dari data model workspace.
-- **DIFFERENT** — Nama default tidak mengikuti pola `Workspace 1`, `Workspace 2`. Row memakai `l('defaultTaskName')` (`js/workspaceDrawer/workspaceDrawer.js:161,220,466`), yang di en-US bernilai `"Task %n"` (`localization/languages/en-US.json:256`) — jadi workspace tanpa nama tampil sebagai "Task 1" di locale Inggris.
-- **DIFFERENT** — Modal create tidak mengisi nama default; input dikosongkan (`js/workspaceDrawer/workspaceDrawer.js:67`). Blueprint minta nama default sudah terisi dan langsung editable saat modal dibuka.
+- **DIFFERENT** — Modal create tidak mengisi nama default; input dikosongkan (`js/workspaceDrawer/workspaceDrawer.js:67`). Blueprint minta nama default sudah terisi dan langsung editable saat modal dibuka. (Pola namanya sendiri sudah benar: `defaultWorkspaceName` = `Workspace %n`.)
+
+Kepemilikan nama default sudah dipisah dengan benar: task memakai `defaultTaskName`, workspace memakai `defaultWorkspaceName` (`js/workspaceDrawer/workspaceDrawer.js:161,220,466`).
 
 ---
 
@@ -385,8 +386,10 @@ Yang menghalangi "cukup untuk dipakai harian": **tile 3 panel + persistensinya**
 
 ## Catatan
 
-Tiga hal di luar cakupan gap di atas, tapi mempengaruhi cara membaca dokumen ini:
+Tiga hal yang sudah ditutup bersamaan dengan dokumen ini, jadi tidak lagi terhitung sebagai gap:
 
-1. **Banner di `HANDOVER.md:3-5` sudah basi.** Banner menyatakan hierarki `Workspace → Task → Tab` masih berupa alias, padahal sekarang sudah nyata (`js/tabState/workspace.js`). Banner juga menautkan audit lama yang sudah usang sebagai perbandingan resmi.
-2. **`docs/HANDOVER_AUDIT.md` sudah usang di beberapa bagian.** Yang paling menyesatkan: §10 Profile switching dilaporkan IMPLEMENTED (sekarang justru membongkar semua view), §7 Archive dilaporkan tidak menghentikan AI agent (sekarang sudah menghentikan), §25 AI session dilaporkan memakai key `ws-<id>` (sekarang `task-<id>`), dan §32 Upstream remote dilaporkan MISSING (sekarang sudah benar).
-3. **Lokalisasi `id.json` masih memakai kata "Workspace" untuk Task.** `localization/languages/id.json:39,95` masih berisi `"taskN": "Workspace %n"` dan `"defaultTaskName": "Workspace %n"`, ditambah `viewTasks`, `newTask`, dan `taskDeleteWarning` yang juga masih berbunyi "Workspace". Perbaikan penamaan sesi sebelumnya hanya menyentuh `en-US`, sehingga di locale Indonesia konsep task masih tampil sebagai "Workspace". Ini tidak berasal dari blueprint, tapi bertentangan dengan keputusan penamaan yang sudah diambil.
+1. **Banner `HANDOVER.md:3-5`** sudah diperbarui: menyatakan hierarki `Workspace → Task → Tab` sudah nyata, dan menautkan dokumen ini sebagai acuan status.
+2. **`docs/HANDOVER_AUDIT.md`** sudah ditandai `SUPERSEDED` dengan daftar bagian yang tidak lagi akurat (§1.1, §7, §10, §25, §32), dan baris tabel ringkasannya dikoreksi. Isinya tetap disimpan sebagai catatan kondisi kode sebelum refactor.
+3. **Penamaan task di lokalisasi** sudah dirapikan: key task-level di `localization/languages/id.json` kembali berbunyi "Task" (`taskN`, `defaultTaskName`, `viewTasks`, `newTask`, `switchToTask`, `createTask`, `closeTask`, `moveToTask`, `nameTask`, `taskDeleteWarning`, `taskSettings`, `taskRename`, `taskDelete`, `returnToTask`, `appMenuNewTask`, `focusModeExplanation1`). Dua sisa di `en-US` juga ikut diperbaiki (`taskDeleteWarning` → "Task deleted", `returnToTask` → "Return to your previous task"). Nama default workspace dipisah ke key baru `defaultWorkspaceName` (`Workspace %n`) supaya tidak ikut berubah menjadi "Task".
+
+Catatan kecil: key `taskN` tidak dipakai di mana pun di kode (tidak ada pemanggil `l('taskN')`), nilainya tetap diselaraskan agar tidak menyesatkan.

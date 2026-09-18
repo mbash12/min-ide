@@ -1,5 +1,15 @@
 # Handover Audit — Blueprint vs Implementasi
 
+> **SUPERSEDED — jangan dipakai sebagai acuan status.**
+> Audit ini ditulis pada commit `b3aa644e`, **sebelum** refactor `Workspace → Task → Tab`. Digantikan oleh **[HANDOVER_GAPS.md](HANDOVER_GAPS.md)**, yang memuat gap terkini dengan bukti `file:line`.
+> Bagian yang sudah tidak akurat:
+> - **§1.1** — menyatakan `Workspace` adalah alias dari Task. Sekarang hierarki dua level sudah nyata (`js/tabState/workspace.js`), sehingga kesimpulan "Pinned Tasks dan AI session ownership tidak mungkin" tidak lagi berlaku.
+> - **§7 Archive** — dulu tidak menghentikan AI agent; sekarang sudah (`js/browserUI.js:416-464`).
+> - **§10 Profile switching** — dilaporkan IMPLEMENTED; sekarang justru membongkar semua view termasuk editor dan terminal (`js/browserUI.js:326-331`), yang bertentangan dengan blueprint.
+> - **§25 AI session** — dulu ber-key `ws-<id>`; sekarang per-task (`task-<id>`, `main/agent.js:91-99`), sehingga history tidak lagi dibagi antar Task.
+> - **§32 Upstream remote** — dilaporkan MISSING; sekarang `origin` = fork, `upstream` = `minbrowser/min`, `pushDefault` = `origin`.
+> Nilai historisnya tetap ada sebagai catatan kondisi kode sebelum refactor.
+
 Dokumen ini membandingkan `HANDOVER.md` (blueprint) dengan kode yang benar-benar ada di repo.
 
 **Penting:** `HANDOVER.md` ditulis sebagai *rencana*, bukan deskripsi sistem yang sudah jadi. Beberapa keputusan struktural di blueprint tidak diimplementasikan, dan konsekuensinya ada fitur yang secara struktural belum bisa dibangun di atas fondasi saat ini.
@@ -43,6 +53,8 @@ Dokumen ini membandingkan `HANDOVER.md` (blueprint) dengan kode yang benar-benar
 ## 1. Temuan struktural utama
 
 ### 1.1 Workspace adalah alias dari Task, bukan layer di atasnya
+
+> **KOREKSI:** temuan ini sudah tidak berlaku. Setelah refactor, `Workspace` adalah store tersendiri yang memiliki satu `TaskList` per workspace (`js/tabState/workspace.js`), dan `js/tabState/task.js` kembali menjadi Task Min (tab group). Alias `const TaskList = WorkspaceList` dan shim `require('tabState/workspace.js')` di `task.js` sudah dihapus. Yang tersisa dari era ini hanyalah swap `window.tasks` dan `js/util/followTaskList.js` — lihat §31/§35 di `HANDOVER_GAPS.md`.
 
 Ini akar dari sebagian besar penyimpangan lain.
 
@@ -153,15 +165,15 @@ Catatan: website storage (cookies/localStorage) **benar** tetap di Electron sess
 
 | § | Topik | Status |
 | --- | --- | --- |
-| 2 | Core hierarchy | **MISSING** — di-alias |
+| 2 | Core hierarchy | ~~MISSING — di-alias~~ **DONE** — dua level nyata (lihat banner) |
 | 3 | Favicon | **IMPLEMENTED** |
 | 4 | Workspace model | **PARTIAL** |
 | 5 | Workspace switching | **PARTIAL** — runtime hidup, tile tidak persisten |
 | 6 | Workspace persistence | **PARTIAL** |
-| 7 | Archive | **PARTIAL** |
+| 7 | Archive | **PARTIAL** — ~~AI agent tidak dihentikan~~ sudah dihentikan; sisa: auto-unpin |
 | 8 | Missing workspace path | **PARTIAL** |
 | 9 | Profiles | **PARTIAL** |
-| 10 | Profile switching | **IMPLEMENTED** |
+| 10 | Profile switching | **PARTIAL** — membongkar semua view, bukan hanya web tab |
 | 11 | Clear profile data | **MISSING** |
 | 12 | Central database | **PARTIAL** — JSON, bukan SQLite |
 | 13 | Tabs / internal URL | **PARTIAL** — path bocor |
@@ -176,14 +188,14 @@ Catatan: website storage (cookies/localStorage) **benar** tetap di Electron sess
 | 22 | Pinned Tasks | **MISSING** |
 | 23 | Download preference | **MISSING** |
 | 24 | AI coding agent | **PARTIAL** |
-| 25 | AI session model | **MOSTLY MISSING** |
+| 25 | AI session model | **MOSTLY MISSING** — kini per-Task, bukan per-Workspace |
 | 26 | Browser control | **IMPLEMENTED** (2 gap) |
 | 27 | Settings page | **PARTIAL** |
 | 28 | Startup behavior | **IMPLEMENTED** |
 | 29 | Task deletion | **PARTIAL** |
 | 30 | Workspace deletion | **PARTIAL** |
 | 31 | Architecture guidelines | **PARTIAL** — tanpa folder `ide/` |
-| 32 | Upstream compatibility | **MISSING** — `origin` = upstream |
+| 32 | Upstream compatibility | ~~MISSING — `origin` = upstream~~ **DONE** — `origin` = fork, `upstream` = minbrowser/min |
 | 33 | Implementation order | Sebagian — lihat §6 |
 | 34 | Non-goals | Dipatuhi |
 | 35 | Working rules | n/a |

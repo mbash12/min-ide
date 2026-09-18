@@ -1,8 +1,9 @@
 # Min IDE Fork — Implementation Blueprint
 
 > **Status: RENCANA, BUKAN AS-BUILT.**
-> Dokumen ini adalah blueprint. Sebagian keputusan struktural di bawah belum diimplementasikan — terutama hierarki `Workspace → Task → Tab` (§2), yang di kode sekarang berupa alias (`Workspace` = Task Min yang lama), sehingga §22 (Pinned Tasks) dan §25 (AI session ownership) belum bisa dibangun.
-> Perbandingan lengkap rencana vs kode: **[docs/HANDOVER_AUDIT.md](docs/HANDOVER_AUDIT.md)**.
+> Dokumen ini adalah blueprint. Sebagian isinya belum diimplementasikan.
+> Hierarki `Workspace → Task → Tab` (§2) **sudah nyata** — `Workspace` bukan lagi alias dari Task Min (§22 Pinned Tasks dan §25 AI session ownership kini punya fondasi untuk dibangun, meski keduanya belum ada).
+> Daftar gap terkini (hanya yang kurang/berbeda dari blueprint, dengan bukti `file:line`): **[docs/HANDOVER_GAPS.md](docs/HANDOVER_GAPS.md)**.
 
 ## 1. Goal
 

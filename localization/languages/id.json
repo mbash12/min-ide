@@ -36,7 +36,7 @@
     "DDGAnswerSubtitle": "Jawaban", //this is a noun - it is used as a subtitle when displaying Instant Answers from DuckDuckGo in the searchbar
     "suggestedSite": "Situs yang disarankan", //this is used to label suggested websites from the DuckDuckGo API,
     "resultsFromDDG": "Hasil dari DuckDuckGo", //this is used as a label to indicate which results come from DuckDuckGo's API
-    "taskN": "Workspace %n", //this is used as a way to identify which tab a workspace is in "workspace 1", "workspace 2", ...
+    "taskN": "Task %n", //this is used as a way to identify which tab a task is in "task 1", "task 2", ...
     /* custom commands
         these are some of the items that show up when you press ! in the searchbar.
         Each one of these strings describes what the command will do when you run it. */
@@ -64,11 +64,11 @@
     "enableBlocking": "Aktifkan pemblokiran konten untuk situs ini",
     "disableBlocking": "Nonaktifkan pemblokiran konten untuk situs ini",
     "clearHistoryConfirmation": "Bersihkan semua riwayat dan data penjelajahan?",
-    "switchToTask": "Beralih ke Workspace",
-    "createTask": "Buat Workspace",
-    "closeTask": "Tutup Workspace",
-    "moveToTask": "Pindahkan tab ini ke Workspace",
-    "nameTask": "Namakan workspace ini",
+    "switchToTask": "Beralih ke Task",
+    "createTask": "Buat Task",
+    "closeTask": "Tutup Task",
+    "moveToTask": "Pindahkan tab ini ke Task",
+    "nameTask": "Namakan task ini",
     "addBookmark": "Tambah markah",
     "searchBookmarks": "Cari markah",
     "bookmarksAddTag": "Tambah penanda...",
@@ -90,11 +90,11 @@
     "privateTab": "Tab penyamaran",
     "newTabAction": "Tab Baru", //this is a verb, used to label a button that adds a tab to the tabstrip when clicked
     /* workspace drawer */
-    "viewTasks": "Lihat Workspace",
-    "newTask": "Workspace Baru", //"new" is a verb - it is used for a button at the bottom of the workspace drawer
-    "defaultTaskName": "Workspace %n", //this is the name used for newly-created workspaces; %n is replaced with a number ("workspace 1", "workspace 2", etc)
+    "viewTasks": "Lihat Task",
+    "newTask": "Task Baru", //"new" is a verb - it is used for a button at the bottom of the task overlay
+    "defaultTaskName": "Task %n", //this is the name used for newly-created tasks; %n is replaced with a number ("task 1", "task 2", etc)
     "taskDeleteWarning": {
-      "unsafeHTML": "Workspace dihapus. <a>Urungkan?</a>"
+      "unsafeHTML": "Task dihapus. <a>Urungkan?</a>"
     },
     "tasksSearchTabs": "Cari tab",
     "taskProfileLabel": "Profil",
@@ -108,22 +108,23 @@
     "taskProfileEmpty": "Belum ada profil. Tambahkan satu di bawah untuk mendapatkan sesi terpisah (cookie & penyimpanan) untuk sebuah workspace.",
     "taskProfileManagerTitle": "Profil workspace",
     "workspacesHeading": "Workspaces",
+    "defaultWorkspaceName": "Workspace %n", //this is the name used for newly-created workspaces; %n is replaced with a number ("workspace 1", "workspace 2", etc)
     "workspaceNameLabel": "Nama",
     "workspaceCreateTitle": "Workspace Baru",
     "workspaceCreateAction": "Buat",
     "workspaceEditTitle": "Edit Workspace",
-    "taskSettings": "Setelan workspace",
-    "taskRename": "Ganti nama workspace",
-    "taskDelete": "Hapus workspace",
+    "taskSettings": "Setelan task",
+    "taskRename": "Ganti nama task",
+    "taskDelete": "Hapus task",
     "workspaceArchiveAction": "Arsipkan workspace",
     "workspaceRestoreAction": "Pulihkan workspace",
     "archivedWorkspacesHeading": "Diarsipkan",
     "profilesHeading": "Profil Workspace",
     "profilesSubheading": "Setiap profil memiliki cookie dan penyimpanan situsnya sendiri. Riwayat, markah, dan autofill tetap dibagikan.",
     "profilesListHeading": "Profil",
-    "returnToTask": "Kembali ke workspace sebelumnya",
-    "taskDescriptionTwo": "%t dan %t", //used to describe a workspace that has two tabs, %t is replaced with the tab titles
-    "taskDescriptionThree": "%t, %t, dan %n lainnya", //used to describe a workspace that has three or more tabs
+    "returnToTask": "Kembali ke task sebelumnya",
+    "taskDescriptionTwo": "%t dan %t", //used to describe a task that has two tabs, %t is replaced with the tab titles
+    "taskDescriptionThree": "%t, %t, dan %n lainnya", //used to describe a task that has three or more tabs
     /* find in page toolbar */
     "searchInPage": "Cari di Laman", //this is used as the placeholder text for the textbox in the find in page toolbar
     "findMatchesSingular": "%i dari %t yang cocok", //this and the next label are used to indicate which match is currently highlighted
@@ -131,7 +132,7 @@
     /* Focus mode */
     "isFocusMode": "Anda di Mode Fokus.",
     "closeDialog": "Tutup", //used as a label for the button that closes the dialog
-    "focusModeExplanation1": "Dalam mode fokus, Anda tidak bisa membuat tab baru atau beralih workspace.",
+    "focusModeExplanation1": "Dalam mode fokus, Anda tidak bisa membuat tab baru atau beralih task.",
     "focusModeExplanation2": "Anda bisa keluar dari mode fokus setelah menghapus centang \"Mode Fokus\" di menu Tampilan.",
     /* relative dates */
     "timeRangeJustNow": "Baru saja",
@@ -241,7 +242,7 @@
     "appMenuNewTab": "Tab Baru",
     "appMenuDuplicateTab": "Duplikat Tab",
     "appMenuNewPrivateTab": "Tab Penyamaran Baru",
-    "appMenuNewTask": "Workspace Baru",
+    "appMenuNewTask": "Task Baru",
     "appMenuNewWindow": null, //missing translation
     "appMenuSavePageAs": "Simpan Laman Sebagai",
     "appMenuPrint": "Cetak",

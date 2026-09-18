@@ -255,10 +255,10 @@
     "newTask": "New Task", //"new" is a verb - it is used for a button at the bottom of the task overlay
     "defaultTaskName": "Task %n", //this is the name used for newly-created tasks; %n is replaced with a number ("task 1", "task 2", etc)
     "taskDeleteWarning": {
-      "unsafeHTML": "Workspace deleted. <a>Undo?</a>"
+      "unsafeHTML": "Task deleted. <a>Undo?</a>"
     },
     "tasksSearchTabs": "Search tabs",
-    "returnToTask": "Return to your previous workspace",
+    "returnToTask": "Return to your previous task",
     "taskDescriptionTwo": "%t and %t", //used to describe a task that has two tabs, %t is replaced with the tab titles
     "taskDescriptionThree": "%t, %t, and %n more", //used to describe a task that has three or more tabs
     "taskProfileLabel": "Profile",
@@ -279,6 +279,7 @@
     "workspaceRestoreAction": "Restore workspace",
     "archivedWorkspacesHeading": "Archived",
     "workspacesHeading": "Workspaces",
+    "defaultWorkspaceName": "Workspace %n", //this is the name used for newly-created workspaces; %n is replaced with a number ("workspace 1", "workspace 2", etc)
     "workspaceNameLabel": "Name",
     "workspaceCreateTitle": "New Workspace",
     "workspaceCreateAction": "Create",

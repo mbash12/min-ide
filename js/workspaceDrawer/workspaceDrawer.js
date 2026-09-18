@@ -158,7 +158,7 @@ function createWorkspaceRow (ws) {
   mainEl.className = 'ws-row-main'
   const nameEl = document.createElement('span')
   nameEl.className = 'ws-row-name'
-  nameEl.textContent = ws.name || l('defaultTaskName').replace('%n', workspaces.getIndex(ws.id) + 1)
+  nameEl.textContent = ws.name || l('defaultWorkspaceName').replace('%n', workspaces.getIndex(ws.id) + 1)
   mainEl.appendChild(nameEl)
 
   if (ws.path) {
@@ -217,7 +217,7 @@ function createArchivedWorkspaceRow (ws) {
   mainEl.className = 'ws-row-main'
   const nameEl = document.createElement('span')
   nameEl.className = 'ws-row-name'
-  nameEl.textContent = ws.name || l('defaultTaskName').replace('%n', workspaces.getIndex(ws.id) + 1)
+  nameEl.textContent = ws.name || l('defaultWorkspaceName').replace('%n', workspaces.getIndex(ws.id) + 1)
   mainEl.appendChild(nameEl)
 
   if (ws.path) {
@@ -463,7 +463,7 @@ var workspaceDrawer = {
       const ws = workspaces.getSelected()
       if (!ws || !indicatorName || !indicatorIcon) return
       const task = tasks.getSelected()
-      const wsName = ws.name || l('defaultTaskName').replace('%n', workspaces.getIndex(ws.id) + 1)
+      const wsName = ws.name || l('defaultWorkspaceName').replace('%n', workspaces.getIndex(ws.id) + 1)
       const name = task && task.name ? wsName + ' › ' + task.name : wsName
       indicatorName.textContent = name
       indicator.title = name
