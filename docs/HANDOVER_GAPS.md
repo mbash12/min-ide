@@ -368,7 +368,7 @@ Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork
 | Launch → Workspace 1 + Task "Development" aktif | Sebagian | Fresh start membuat `Workspace 1` tanpa task bernama "Development" dan tanpa path default; membuka tab tour Min (`js/sessionRestore.js:103-107,116-121`) |
 | Files sidebar menunjukkan project | Sebagian | Files/Git/Design disembunyikan sampai `workspace.path` diisi manual, jadi workspace baru tampil kosong (`js/sidebar.js:61-82`; `js/sidebar/fileTree.js:33-34`) |
 | Click source file → Monaco terbuka | OK | `js/sidebar/fileTree.js:161-167` |
-| Open Terminal → shell di project root | Sebagian | cwd benar, tapi hanya bisa dibuat lewat bang `!term`; tidak ada item menu/navbar (`js/searchbar/customBangs.js:110-121`) |
+| Open Terminal → shell di project root | OK | `js/terminalView.js`; pintu masuk: menu File > Open Terminal (`main/menu.js`) dan keybinding `addTerminal` (`js/defaultKeybindings.js`) |
 | Tile `Monaco \| Website \| Terminal` (3 panel) | Tidak | Split view dibatasi 2 panel (`js/splitView.js:24,92-118`) |
 | AI agent aktif di task tersebut | OK | `js/sidebar/agentPanel.js:54-69`; `main/agent.js:395-513` |
 | Agent edit source & jalankan command | OK | `main/agent.js:448` |
@@ -380,7 +380,7 @@ Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork
 | Reopen → state restored lazily | Sebagian | Task/tab restore lazily (`js/sessionRestore.js:137-149`), tile tidak kembali |
 | Restart → Workspace/Task/layout kembali, load lazy | Sebagian | Restore workspace/task/tab dan lazy view creation jalan (`js/sessionRestore.js:137-165`), tile hilang |
 
-Yang menghalangi "cukup untuk dipakai harian": **tile 3 panel + persistensinya**, dan **pintu masuk terminal di UI**.
+Yang menghalangi "cukup untuk dipakai harian": **tile 3 panel + persistensinya**. (Pintu masuk terminal sudah ditutup — lihat riwayat commit `42659d93`.)
 
 ---
 
