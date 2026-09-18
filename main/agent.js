@@ -7,7 +7,7 @@ The pi SDK is ESM-only while Min's main bundle is a CJS concatenation, so it
 is loaded lazily with a dynamic import(). The OpenRouter API key and model id
 come from the app's settings ('openrouterApiKey' / 'agentModel', configurable on
 the settings page). Conversations persist as pi session JSONL files under
-Min's userData (one live AgentSession per workspace). Switching history
+Min's userData (one live AgentSession per task). Switching history
 replaces that live session; it does not run chats in parallel.
 
 fs, path, ipc and settings are already provided by main.js (all main modules
@@ -16,8 +16,8 @@ share one scope in the concatenated bundle) */
 let sdkPromise = null // memoized dynamic import of the ESM-only pi SDK
 let typeboxPromise = null // TypeBox lives under the pi SDK and is ESM-only
 let modelCatalogCache = null // cached model list (from the pi SDK catalog) for the picker
-/* one session per workspace, keyed by workspace id, so switching workspaces
-keeps each workspace's own conversation and context. */
+/* one session per task, keyed by task id, so switching tasks keeps each
+task's own conversation and context. */
 const agentSessions = new Map() // sessionKey -> { sessionKey, taskId, cwd, apiKey, modelId, provider, session, unsubscribe, modelRuntime, resolvedModel }
 const prefsByCwd = new Map() // sessionKey -> { modelId, provider, thinkingLevel }
 const sessionInitPromises = new Map() // sessionKey -> { signature, promise }
@@ -223,11 +223,11 @@ function getSessionsRoot () {
   }
 }
 
-/* SessionManager's default directory is keyed by cwd. Min workspaces need a
- * stronger boundary: two workspaces may intentionally share a cwd, and a
- * workspace may have no folder at all. Keep each workspace in its own stable
- * directory below Min's userData-backed sessions root. Hashing the key keeps
- * arbitrary imported workspace ids out of the filesystem path. */
+/* SessionManager's default directory is keyed by cwd. Min tasks need a
+ * stronger boundary: two tasks may intentionally share a cwd (they can live in
+ * the same workspace), and a task's workspace may have no folder at all. Keep
+ * each task in its own stable directory below Min's userData-backed sessions
+ * root. Hashing the key keeps arbitrary task ids out of the filesystem path. */
 function getTaskSessionDir (taskId, cwd) {
   const sessionsRoot = getSessionsRoot()
   if (!sessionsRoot) return null
@@ -293,17 +293,17 @@ async function listTaskSessions (sdk, effectiveCwd, sessionDir) {
   let listed = []
   try {
     listed = sessionDir
-      // A workspace directory is already the scope. list(cwd, dir) applies
-      // an additional cwd filter, which would hide a workspace's history if
+      // A task directory is already the scope. list(cwd, dir) applies
+      // an additional cwd filter, which would hide a task's history if
       // its folder is later missing or changed.
       ? await sdk.SessionManager.listAll(sessionDir)
       : await sdk.SessionManager.list(effectiveCwd)
     listed = listed || []
   } catch (e) {}
 
-  /* Sessions created before workspace-scoped storage live in pi's cwd-based
+  /* Sessions created before task-scoped storage live in pi's cwd-based
    * directory. Keep those available as a migration bridge, but only while the
-   * new workspace directory is empty; once a workspace has new sessions its
+   * new task directory is empty; once a task has new sessions its
    * history remains strictly scoped. */
   if (listed.length || !sessionDir) return listed
   try {
@@ -359,7 +359,7 @@ function broadcastAgentEvent (data, sessionKey, taskId) {
   })
 }
 
-/* Coalesce restores/opens for the same workspace. The SDK session is only
+/* Coalesce restores/opens for the same task. The SDK session is only
  * published after asynchronous setup completes, so without this guard two
  * rapid prompts or the compatibility selection events could both create and
  * replace AgentSession instances for one key. */

@@ -112,7 +112,7 @@ function saveWorkspaceModal () {
       workspaces.update(modalWorkspaceId, { name: name })
     }
     if (profileId !== (ws.profileId || '')) {
-      browserUI.setTaskProfile(modalWorkspaceId, profileId || null)
+      browserUI.setWorkspaceProfile(modalWorkspaceId, profileId || null)
     }
     if (path !== (ws.path || '')) {
       workspaces.update(modalWorkspaceId, { path: path })

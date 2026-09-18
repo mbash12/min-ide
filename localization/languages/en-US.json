@@ -31,12 +31,12 @@
     /* searchbar */
     "placesPluginOpenAgain": "Open Again",
     "placesPluginSwitchToTab": "Switch to Tab",
-    "placesPluginSwitchToTask": "Switch to \"%t\"", // %t is replaced with the name of a workspace
+    "placesPluginSwitchToTask": "Switch to \"%t\"", // %t is replaced with the name of a task
     "pasteAndGo": "Paste and Go", //context menu item
     "DDGAnswerSubtitle": "Answer", //this is a noun - it is used as a subtitle when displaying Instant Answers from DuckDuckGo in the searchbar
     "suggestedSite": "Suggested site", //this is used to label suggested websites from the DuckDuckGo API,
     "resultsFromDDG": "Results from DuckDuckGo", //this is used as a label to indicate which results come from DuckDuckGo's API
-    "taskN": "Workspace %n", //this is used as a way to identify which tab a workspace is in "workspace 1", "workspace 2", ...
+    "taskN": "Task %n", //this is used as a way to identify which tab a task is in "task 1", "task 2", ...
     /* custom commands
         these are some of the items that show up when you press ! in the searchbar.
         Each one of these strings describes what the command will do when you run it. */
@@ -50,11 +50,11 @@
     "enableBlocking": "Enable content blocking for this site",
     "disableBlocking": "Disable content blocking for this site",
     "clearHistoryConfirmation": "Clear all history and browsing data?",
-    "switchToTask": "Switch to Workspace",
-    "createTask": "Create a Workspace",
-    "closeTask": "Close a Workspace",
-    "moveToTask": "Move this tab to a workspace",
-    "nameTask": "Name this workspace",
+    "switchToTask": "Switch to Task",
+    "createTask": "Create a Task",
+    "closeTask": "Close a Task",
+    "moveToTask": "Move this tab to a task",
+    "nameTask": "Name this task",
     "addBookmark": "Add bookmark",
     "searchBookmarks": "Search bookmarks",
     "bookmarksAddTag": "Add tag...",
@@ -75,8 +75,8 @@
     "searchbarPlaceholder": "Search or enter address",
     "privateTab": "Private tab",
     "newTabAction": "New Tab", //this is a verb, used to label a button that adds a tab to the tabstrip when clicked
-    /* workspace drawer */
-    "viewTasks": "View Workspaces",
+    /* task overlay */
+    "viewTasks": "View Tasks",
     "sidebarToggle": "Toggle sidebar",
     "sidebarResize": "Resize sidebar",
     "sidebarAi": "AI",
@@ -252,15 +252,15 @@
     "editorLoading": "Loading…",
     "editorOpenError": "Could not open file: %s",
     "editorSaveError": "Could not save file",
-    "newTask": "New Workspace", //"new" is a verb - it is used for a button at the bottom of the workspace drawer
-    "defaultTaskName": "Workspace %n", //this is the name used for newly-created workspaces; %n is replaced with a number ("workspace 1", "workspace 2", etc)
+    "newTask": "New Task", //"new" is a verb - it is used for a button at the bottom of the task overlay
+    "defaultTaskName": "Task %n", //this is the name used for newly-created tasks; %n is replaced with a number ("task 1", "task 2", etc)
     "taskDeleteWarning": {
       "unsafeHTML": "Workspace deleted. <a>Undo?</a>"
     },
     "tasksSearchTabs": "Search tabs",
     "returnToTask": "Return to your previous workspace",
-    "taskDescriptionTwo": "%t and %t", //used to describe a workspace that has two tabs, %t is replaced with the tab titles
-    "taskDescriptionThree": "%t, %t, and %n more", //used to describe a workspace that has three or more tabs
+    "taskDescriptionTwo": "%t and %t", //used to describe a task that has two tabs, %t is replaced with the tab titles
+    "taskDescriptionThree": "%t, %t, and %n more", //used to describe a task that has three or more tabs
     "taskProfileLabel": "Profile",
     "taskProfileDefault": "Default",
     "taskProfileSelect": "Use this profile",
@@ -272,9 +272,9 @@
     "taskProfileDelete": "Delete profile",
     "taskProfileEmpty": "No profiles yet. Add one below to get an isolated session (cookies & storage) for a workspace.",
     "taskProfileManagerTitle": "Workspace profiles",
-    "taskSettings": "Workspace settings",
-    "taskRename": "Rename workspace",
-    "taskDelete": "Delete workspace",
+    "taskSettings": "Task settings",
+    "taskRename": "Rename task",
+    "taskDelete": "Delete task",
     "workspaceArchiveAction": "Archive workspace",
     "workspaceRestoreAction": "Restore workspace",
     "archivedWorkspacesHeading": "Archived",
@@ -399,11 +399,11 @@
     },
     "settingsStartupOptions": "When Min starts: ",
     "settingsStartupCreateTask": "Re-open previous tabs",
-    "settingsStartupNewTaskandBackground": "Move previous tabs to a background workspace",
-    "settingsStartupNewTaskOnly": "Open a new blank workspace",
+    "settingsStartupNewTaskandBackground": "Move previous tabs to a background task",
+    "settingsStartupNewTaskOnly": "Open a new blank task",
     "settingsNewWindowOptions": "In new windows: ",
-    "settingsNewWindowCreateTask": "Create a new workspace",
-    "settingsNewWindowPickTask": "Show workspace list",
+    "settingsNewWindowCreateTask": "Create a new task",
+    "settingsNewWindowPickTask": "Show task list",
     "settingsSearchEngineHeading": "Search Engine",
     "settingsDefaultSearchEngine": "Choose a default search engine:",
     "settingsDDGExplanation": "Set DuckDuckGo as the default search engine to see instant answers in the searchbar.",
@@ -422,7 +422,7 @@
     "appMenuNewTab": "New Tab",
     "appMenuDuplicateTab": "Duplicate Tab",
     "appMenuNewPrivateTab": "New Private Tab",
-    "appMenuNewTask": "New Workspace",
+    "appMenuNewTask": "New Task",
     "appMenuNewWindow": "New Window",
     "appMenuSavePageAs": "Save Page As",
     "appMenuPrint": "Print",

@@ -7,10 +7,10 @@ const agentSlash = require('sidebar/agentSlash.js')
 process (main/agent.js); this module renders the streaming transcript and
 forwards prompts over IPC.
 
-The conversation is scoped per workspace: each workspace keeps its
+The conversation is scoped per task: each task in a workspace keeps its
 own transcript, model/thinking preference and backend session. Switching
-workspaces swaps the visible transcript and asks the backend for that
-workspace's state. The composer is styled after t3.chat: a rounded card pinned
+tasks swaps the visible transcript and asks the backend for that
+task's state. The composer is styled after t3.chat: a rounded card pinned
 to the bottom with a model selector, a thinking-level selector, a live
 context-usage donut and a send/stop button. Enter sends, Shift+Enter inserts a
 newline. Sending while a reply is still running steers the current run. An
@@ -29,7 +29,7 @@ const THINKING_LABELS = {
 }
 
 let els = null // cached DOM references created by buildUI()
-let currentAssistantEl = null // bubble receiving the active text stream (active workspace only)
+let currentAssistantEl = null // bubble receiving the active text stream (active task only)
 let currentThinkingEl = null
 let isStreaming = false
 let modelsCache = null // model catalog (provider-aware) for the model picker
@@ -442,7 +442,7 @@ async function switchToSession (sessionPath) {
   try {
     const state = await ipc.invoke('agent-open-session', agentPayload({ path: sessionPath }))
     if (!state || state.ok === false) return
-    applyWorkspaceState(state)
+    applyTaskState(state)
     closeHistoryDrawer()
   } catch (e) {}
 }
@@ -458,13 +458,13 @@ async function deleteHistorySession (sessionPath) {
     const result = await ipc.invoke('agent-delete-session', agentPayload({ path: sessionPath }))
     if (!result || result.ok === false) return
     if (result.deletedCurrent) {
-      applyWorkspaceState(result.state)
+      applyTaskState(result.state)
     }
     if (historyOpen) refreshHistoryList()
   } catch (e) {}
 }
 
-function applyWorkspaceState (state) {
+function applyTaskState (state) {
   if (!els || !state) return
   const conv = currentConv()
   conv.messages = state.messages || []
@@ -876,9 +876,9 @@ function setStreamingUI (streaming) {
   updateSendButton()
 }
 
-/* rebuilds the visible transcript from the active workspace's cached messages.
+/* rebuilds the visible transcript from the active task's cached messages.
 Returns the DOM bubble of the last assistant message (if any) so the caller can
-re-attach the live stream when the workspace is still generating. */
+re-attach the live stream when the task is still generating. */
 function renderTranscript () {
   els.transcript.textContent = ''
   currentAssistantEl = null
@@ -903,7 +903,7 @@ function renderTranscript () {
   return lastAssistantBubble
 }
 
-/* clears the active workspace's transcript (DOM + cached messages) */
+/* clears the active task's transcript (DOM + cached messages) */
 function clearActiveConversation () {
   const conv = currentConv()
   conv.messages = []
@@ -969,7 +969,7 @@ async function requestCompact (instructions) {
       addErrorLine((result && result.message) || 'Could not compact context')
       return
     }
-    applyWorkspaceState(result)
+    applyTaskState(result)
   } catch (e) {
     setCompactingUI(false)
     addErrorLine('Could not compact context')
@@ -1397,7 +1397,7 @@ async function refreshState () {
     const state = await ipc.invoke('agent-get-state', agentPayload({ restore: true }))
     if (!state) return
     if (taskInfo.taskId === activeTaskId) {
-      applyWorkspaceState(state)
+      applyTaskState(state)
     } else {
       const conv = convFor(taskInfo.taskId)
       conv.messages = state.messages || []
@@ -1420,6 +1420,8 @@ function onTaskChange (taskId) {
   refreshState()
 }
 
+/* A workspace switch also changes the active task, so both events refetch
+ * the task's state. */
 function onWorkspaceChange () {
   refreshState()
 }
@@ -1428,8 +1430,8 @@ async function initialize () {
   if (!panel || els) return
   buildUI()
 
-  /* re-scope the chat whenever the workspace/task changes, like the other
-  sidebar panels (file tree, git) */
+  /* re-scope the chat whenever the task changes, like the other sidebar
+  panels (file tree, git) re-scope on workspace change */
   workspaces.on('workspace-selected', onWorkspaceChange)
   workspaces.on('workspace-updated', function (id, key) {
     if (key === 'activeTaskId') {

@@ -11,7 +11,7 @@ const browserUI = require('browserUI.js')
 const focusMode = require('focusMode.js')
 const places = require('places/places.js')
 const contentBlockingToggle = require('navbar/contentBlockingToggle.js')
-const workspaceDrawer = require('workspaceDrawer/workspaceDrawer.js')
+const taskOverlay = require('taskOverlay/taskOverlay.js')
 const bookmarkConverter = require('bookmarkConverter.js')
 const uiStateDB = require('util/uiStateDB.js')
 const searchbarPlugins = require('searchbar/searchbarPlugins.js')
@@ -37,10 +37,10 @@ function moveToTaskCommand (taskId) {
   browserUI.switchToTask(newTask.id)
   browserUI.switchToTab(currentTab.id)
 
-  workspaceDrawer.show()
+  taskOverlay.show()
 
   setTimeout(function () {
-    workspaceDrawer.hide()
+    taskOverlay.hide()
   }, 600)
 }
 
@@ -51,9 +51,9 @@ function switchToTaskCommand (taskId) {
     return
   }
 
-  // no task was specified, show all of the tasks
+  // no task was specified, show all of the tasks in this workspace
   if (!taskId) {
-    workspaceDrawer.show()
+    taskOverlay.show()
     return
   }
 
@@ -274,7 +274,7 @@ function initialize () {
       // switch to the first search result
         switchToTaskCommand(searchAndSortTasks(text)[0].task.id)
       } else {
-        workspaceDrawer.show()
+        taskOverlay.show()
       }
     }
   })
@@ -291,7 +291,7 @@ function initialize () {
         return
       }
 
-      workspaceDrawer.show()
+      taskOverlay.show()
 
       setTimeout(function () {
         browserUI.addTask()
@@ -320,9 +320,9 @@ function initialize () {
       if (taskToClose) {
         browserUI.closeTask(taskToClose.id)
         if (currentTask.id === taskToClose.id) {
-          workspaceDrawer.show()
+          taskOverlay.show()
           setTimeout(function () {
-            workspaceDrawer.hide()
+            taskOverlay.hide()
           }, 600)
         }
       }

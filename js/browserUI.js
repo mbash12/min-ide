@@ -302,10 +302,9 @@ function setWindowTitle () {
 
 /* changes the profile (session partition) used by a workspace. All existing
 views of the workspace's tasks are destroyed so they get recreated with the
-new partition. Kept under the old setTaskProfile name for callers; the id is
-a workspace id. */
+new partition. */
 
-function setTaskProfile (workspaceId, profileId, options) {
+function setWorkspaceProfile (workspaceId, profileId, options) {
   options = options || {}
   var ws = workspaces.get(workspaceId)
   if (!ws) {
@@ -730,13 +729,6 @@ tabBar.events.on('tab-closed', function (id) {
   closeTab(id)
 })
 
-// Backwards-compatible aliases: task-level names kept for callers that
-// operate on the selected workspace's task list.
-const destroyWorkspace = destroyTask
-const setWorkspaceProfile = setTaskProfile
-const archiveTask = archiveWorkspace
-const restoreTask = restoreWorkspace
-
 module.exports = {
   addTask,
   addTab,
@@ -748,15 +740,11 @@ module.exports = {
   switchToTab,
   moveTabLeft,
   moveTabRight,
-  setTaskProfile,
+  setWorkspaceProfile,
   handleProfileDeleted,
-  archiveTask,
-  restoreTask,
   addWorkspace,
-  destroyWorkspace,
   closeWorkspace,
   switchToWorkspace,
-  setWorkspaceProfile,
   archiveWorkspace,
   restoreWorkspace,
   removeWorkspaceState,
