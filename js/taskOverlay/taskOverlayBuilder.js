@@ -26,7 +26,11 @@ function getTaskRelativeDate (task) {
 
 function toggleCollapsed (taskContainer, task) {
   tasks.update(task.id, {collapsed: !tasks.isCollapsed(task.id)})
-  taskContainer.classList.toggle('collapsed')
+
+  // FORK: set the class from the state instead of flipping it. The render path
+  // leaves the collapsed class off the selected task, so a blind toggle could
+  // leave the container showing the opposite of its actual state.
+  taskContainer.classList.toggle('collapsed', tasks.isCollapsed(task.id))
 
   var collapseButton = taskContainer.querySelector('.task-collapse-button')
   collapseButton.classList.toggle('carbon:chevron-right')
