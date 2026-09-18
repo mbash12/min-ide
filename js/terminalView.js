@@ -21,7 +21,12 @@ function getTerminalURL (cwd) {
 const terminalView = {
   /* opens a new terminal tab, rooted at cwd unless one is given */
   open: function (cwd) {
-    const tabId = tabs.add({ url: getTerminalURL(cwd || getDefaultCwd()) })
+    const resolvedCwd = cwd || getDefaultCwd()
+    const tabId = tabs.add({
+      url: getTerminalURL(resolvedCwd),
+      kind: 'terminal',
+      resource: resolvedCwd
+    })
     browserUI.addTab(tabId, { enterEditMode: false })
     return tabId
   }

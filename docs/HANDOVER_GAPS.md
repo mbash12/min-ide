@@ -47,7 +47,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 23 | Download preference | MISSING — tidak Task-scoped |
 | 24 | AI coding agent | DIFFERENT — hanya OpenRouter |
 | 25 | AI session model | DIFFERENT — history per Task, bukan per Workspace; MISSING — ownership |
-| 26 | Browser control | MISSING — baca teks halaman; DIFFERENT — internal tab tidak dikecualikan |
+| 26 | Browser control | MISSING — baca teks halaman |
 | 27 | Extra settings page | MISSING — 4 seksi |
 | 28 | Startup behavior | — bersih |
 | 29 | Task deletion | MISSING — pinned task, download preference |
@@ -145,8 +145,9 @@ Yang sudah sesuai: website storage tetap di Electron session partition, tidak di
 
 ## §13 Tabs
 
-- **DIFFERENT** — Internal URL **membocorkan resource sebenarnya**, persis kasus yang dilarang blueprint. Editor: `min://app/pages/editor/index.html?path=<path absolut>&workspace=<path absolut>` (`js/editorView.js:11-18`). Terminal: `min://terminal?cwd=<path absolut>` (`js/searchbar/customBangs.js:116-119`). Path ini dikembalikan ke address bar oleh `urlParser.getSourceURL` (`js/util/urlParser.js:108-127`). Docs sudah benar karena memakai id opaque.
-- **MISSING** — Metadata tab `{tabId, kind, filePath}` tidak disimpan di luar URL. Record tab tidak punya field `kind`/`filePath` (`js/tabState/tab.js:14-33`); `filePath` diturunkan ulang dari URL saat dibutuhkan (`js/editorView.js:59-69`). Tidak ada union `TabKind`.
+- **DIFFERENT** — Internal URL **masih membawa resource sebenarnya**, persis kasus yang dilarang blueprint. Editor: `min://app/pages/editor/index.html?path=<path absolut>&workspace=<path absolut>` (`js/editorView.js`). Terminal: `min://terminal?cwd=<path absolut>` (`js/terminalView.js`). Path ini dikembalikan ke address bar oleh `urlParser.getSourceURL` (`js/util/urlParser.js:108-127`). Docs sudah benar karena memakai id opaque.
+  Metadata untuk memindahkan resource ini sudah ada (`kind` + `resource` di record tab dan ikut persist), tetapi URL-nya belum dibuat generik: halaman editor dan terminal masih membacanya dari query, dan `main/editorFileIO.js:54` masih memakai parameter `workspace` sebagai batas akses file.
+- **MISSING** — Metadata tab `{tabId, kind, filePath}` **sebagian** sudah ada: record tab kini membawa `kind` (`web`/`editor`/`terminal`/`document`) dan `resource`, keduanya ikut persist (`js/tabState/tab.js`). Yang belum: resource-nya masih ditulis juga ke URL (§13 di atas), sehingga metadata itu belum menjadi satu-satunya sumber.
 
 ---
 
@@ -235,7 +236,8 @@ Model picker memang provider-aware lewat katalog SDK, tetapi tidak ada jalur kre
 ## §26 Browser control for AI
 
 - **MISSING** — Kemampuan **membaca teks/konten halaman**. Tidak ada action yang mengembalikan teks halaman: `snapshot` hanya mengeluarkan heading dan elemen interaktif (`main/browserControl.js:573-624`), dan `BROWSER_ACTIONS` tidak punya action baca teks (`main/agentTools.js:44-48`).
-- **DIFFERENT** — Browser control **tidak dibatasi hanya ke web page**. Hanya URL settings/profile yang diblokir (`main/browserControl.js:97-113`; `js/browserControlRenderer.js:8-20`), sementara daftar tab mengembalikan seluruh tab di task tersebut (`js/browserControlRenderer.js:77-88`) dan resolusi tab menerima tab id apa pun di task itu (`js/browserControlRenderer.js:90-122`). Akibatnya tab editor, terminal, dan document (`min://`) bisa di-list dan dijadikan target, padahal blueprint menyatakan browser-control hanya untuk web page.
+
+Pembatasan "web tabs only" sudah ditegakkan: tab membawa `kind`, dan tab non-web tidak pernah masuk daftar maupun diterima sebagai target (`js/browserControlRenderer.js` `isWebTab`). Pembatasan URL settings/profile tetap ada karena tab itu tetap `kind: 'web'`.
 
 Kemampuan lain sudah ada: tab list/create/close/select, navigate/back/forward/reload, snapshot/inspect, click/type/select/scroll, upload/download, form, press/drag/hover.
 
@@ -281,7 +283,6 @@ Document/design/snapshot/activity sudah tersapu benar lewat `db:deleteWorkspaceD
 - **DIFFERENT** — **`WorkspaceStore` menduplikasi permukaan collection/event milik `TaskList`**, bukan sekadar integration hook tipis. `js/tabState/workspace.js:32-238` mengimplementasikan ulang `on/emit/add/update/get/getSelected/destroy/getStringifyableState/getCopyableState` yang sudah ada di `js/tabState/task.js:10-213`. Blueprint meminta pola `Min core → small integration hooks → IDE modules`.
 - **DIFFERENT** — **Global swap `window.tasks`.** `repointTaskGlobal` mengganti `window.tasks` ke TaskList milik workspace terpilih pada setiap switch (`js/tabState/workspace.js:298-302`), `js/tabState.js:12-17` menyemai `new TaskList()` sekali pakai, dan `js/util/followTaskList.js:1-9` ada semata-mata untuk me-resubscribe setelah switch. Ini workaround arsitektur paralel, bukan reuse engine task Min di tempatnya. Modul terakhir itu bahkan hanya hidup untuk menambal efek samping dari swap tersebut.
 - **DIFFERENT** — **Tidak ada pengelompokan `ide/`.** Modul fork tersebar dan bercampur dengan file core di `js/`, `js/sidebar/`, `js/tabState/`, `main/`, `pages/` (mis. `js/sidebar.js`, `js/profiles.js`, `js/splitView.js`, `js/editorView.js`, `js/docsView.js`, `js/browserControlRenderer.js`, `main/git.js`, `main/terminal.js`, `main/fileTree.js`, `main/dbService.js`, `main/agent.js`). Blueprint membolehkan penyesuaian struktur, jadi ini catatan, bukan pelanggaran.
-- **DIFFERENT** — **Sniffing tipe tab diduplikasi** alih-alih memakai konsep `kind`: `isEditorURL`/`isEditorTab` (`js/editorView.js:20-26`), `isDocsURL` (`js/docsView.js:15-18`), dan deteksi terminal yang di-hardcode di `js/navbar/tabBar.js:18-35`. Tiga tempat memelihara logika metadata yang sama.
 
 ---
 

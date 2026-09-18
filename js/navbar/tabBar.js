@@ -13,18 +13,26 @@ const permissionRequests = require('navbar/permissionRequests.js')
 const splitView = require('splitView.js')
 const editorView = require('editorView.js')
 
-/* per-page lead icons for built-in min:// pages (used instead of the
-globe fallback, since internal pages never emit a favicon event) */
-const internalPageIcons = {
-  settings: 'carbon:settings',
-  proSettings: 'carbon:machine-learning-model',
+/* lead icons for the fork's internal surfaces (they never emit a favicon event) */
+const internalKindIcons = {
+  editor: 'carbon:code',
   terminal: 'carbon:terminal',
-  editor: 'carbon:code'
+  document: 'carbon:document'
 }
 
-function getInternalPageIcon (url) {
+/* built-in min:// pages that carry no kind still get an icon from their name */
+const internalPageIcons = {
+  settings: 'carbon:settings',
+  proSettings: 'carbon:machine-learning-model'
+}
+
+function getInternalPageIcon (tabData) {
+  const kindIcon = internalKindIcons[tabData.kind]
+  if (kindIcon) {
+    return kindIcon
+  }
   // normalize both short ('min://settings') and stored full forms
-  const parsed = urlParser.parse(url || '')
+  const parsed = urlParser.parse(tabData.url || '')
   const prefix = 'min://app/pages/'
   if (!parsed.startsWith(prefix)) {
     return null
@@ -282,7 +290,7 @@ const tabBar = {
     } else if (!audioActive) {
       faviconImg.hidden = true
       faviconImg.removeAttribute('src')
-      const internalIcon = getInternalPageIcon(tabData.url)
+      const internalIcon = getInternalPageIcon(tabData)
       faviconFallback.className = 'tab-favicon-fallback i ' + (internalIcon || 'carbon:globe')
       faviconFallback.hidden = false
     } else {

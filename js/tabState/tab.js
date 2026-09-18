@@ -30,6 +30,12 @@ class TabList {
       previewImage: '',
       isFileView: false,
       hasWebContents: false,
+      // FORK: what this tab shows ('web', 'editor', 'terminal', 'document').
+      // Internal surfaces record the thing they point at in `resource`
+      // (a file path, a shell's cwd, a document id) so the URL does not have
+      // to carry it - see HANDOVER §13.
+      kind: tab.kind || 'web',
+      resource: tab.resource || null,
     }
 
     if (options.atEnd) {

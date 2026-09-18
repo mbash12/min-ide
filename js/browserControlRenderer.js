@@ -28,6 +28,13 @@ function getTaskContext (taskId) {
   return { workspace: home, task: task }
 }
 
+/* The browser tool drives web pages only. The fork's own surfaces (Monaco,
+terminal, documents) are controlled through the coding-agent tools instead,
+so they are neither listed nor accepted as a target. */
+function isWebTab (tab) {
+  return !!tab && (tab.kind || 'web') === 'web'
+}
+
 function tabPayload (ctx, tab) {
   return {
     id: tab.id,
@@ -82,7 +89,7 @@ function listTabsPayload (taskId) {
     taskId: ctx.task.id,
     workspaceId: ctx.workspace.id,
     workspaceName: ctx.workspace.name || null,
-    tabs: ctx.task.tabs.get().map(function (tab) { return tabPayload(ctx, tab) }),
+    tabs: ctx.task.tabs.get().filter(isWebTab).map(function (tab) { return tabPayload(ctx, tab) }),
     selected: ctx.task.tabs.getSelected() || null
   }
 }
@@ -102,6 +109,9 @@ function resolveTab (payload) {
   }
   if (!tabId) return { ok: false, error: 'No tab in this task' }
   const tab = ctx.task.tabs.get(tabId)
+  if (!isWebTab(tab)) {
+    return { ok: false, error: 'Browser tools can only control web tabs' }
+  }
   if (payload.ensureView) {
     const focused = focusTask(ctx.task.id)
     if (focused.task.tabs.getSelected() !== tabId) {

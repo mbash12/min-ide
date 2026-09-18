@@ -256,6 +256,8 @@ function open (workspaceId, documentId, title) {
   const url = getDocsURL(ws, doc)
   const tabId = selectedTabs.add({
     url: url,
+    kind: 'document',
+    resource: doc,
     title: title ? String(title) : '',
     private: false
   })

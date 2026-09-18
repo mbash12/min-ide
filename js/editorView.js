@@ -17,12 +17,13 @@ const editorView = {
     return url
   },
 
-  isEditorURL: function (url) {
-    return typeof url === 'string' && url.startsWith(EDITOR_BASE)
+  /* tabs carry their kind, which is what everything else keys off */
+  isEditorTabData: function (tab) {
+    return !!tab && tab.kind === 'editor'
   },
 
   isEditorTab: function (tabId) {
-    return editorView.isEditorURL(tabs.get(tabId)?.url)
+    return editorView.isEditorTabData(tabs.get(tabId))
   },
 
   /* The editor page reports its dirty state through the view IPC bridge. Keep
@@ -55,17 +56,13 @@ const editorView = {
     }
   },
 
-  /* extracts the file path from an editor tab's URL */
+  /* the file an editor tab shows, kept on the tab itself */
   getFilePath: function (tabId) {
     const tab = tabs.get(tabId)
-    if (!tab || !editorView.isEditorURL(tab.url)) {
+    if (!editorView.isEditorTabData(tab)) {
       return null
     }
-    try {
-      return decodeURIComponent(new URL(tab.url).searchParams.get('path')) || null
-    } catch (e) {
-      return null
-    }
+    return tab.resource || null
   },
 
   /* finds an existing pinned (non-preview) editor tab for filePath in the
@@ -73,21 +70,14 @@ const editorView = {
   creating a duplicate */
   findPinnedTab: function (filePath) {
     return tabs.get().find(function (tab) {
-      if (tab.preview || !editorView.isEditorURL(tab.url)) {
-        return false
-      }
-      try {
-        return decodeURIComponent(new URL(tab.url).searchParams.get('path')) === filePath
-      } catch (e) {
-        return false
-      }
+      return !tab.preview && editorView.isEditorTabData(tab) && tab.resource === filePath
     })?.id || null
   },
 
   /* the current preview tab of the selected task, or null */
   findPreviewTab: function () {
     return tabs.get().find(function (tab) {
-      return tab.preview && editorView.isEditorURL(tab.url)
+      return tab.preview && editorView.isEditorTabData(tab)
     })?.id || null
   },
 
@@ -120,7 +110,7 @@ const editorView = {
       }
       const url = editorView.getEditorURL(filePath)
       editorView.allowDiscard(previewId)
-      tabs.update(previewId, { url: url })
+      tabs.update(previewId, { url: url, kind: 'editor', resource: filePath })
       require('webviews.js').update(previewId, url)
       browserUI.switchToTab(previewId)
       return previewId
@@ -129,6 +119,8 @@ const editorView = {
     // no preview tab exists yet - create one
     const tabId = tabs.add({
       url: editorView.getEditorURL(filePath),
+      kind: 'editor',
+      resource: filePath,
       private: false
     })
 
