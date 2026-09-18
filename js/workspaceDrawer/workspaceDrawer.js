@@ -481,18 +481,16 @@ var workspaceDrawer = {
       }
     }
 
-    subscribeTaskIndicator()
+    require('util/followTaskList.js').followTaskList(function (taskList) {
+      taskList.on('task-selected', updateIndicator)
+      taskList.on('task-updated', function (id, key) {
+        if (key === 'name') updateIndicator()
+      })
+    })
     workspaces.on('workspace-selected', function () {
-      subscribeTaskIndicator()
       updateIndicator()
       if (workspaceDrawer.isShown) workspaceDrawer.render()
     })
-    function subscribeTaskIndicator () {
-      tasks.on('task-selected', updateIndicator)
-      tasks.on('task-updated', function (id, key) {
-        if (key === 'name') updateIndicator()
-      })
-    }
     workspaces.on('workspace-updated', function (id, key) {
       if (key === 'name' || key === 'profileId') updateIndicator()
       if (key === 'archived' && workspaceDrawer.isShown) workspaceDrawer.render()

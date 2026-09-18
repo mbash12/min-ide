@@ -3,9 +3,9 @@
 // would go stale. followTaskList invokes subscribe(list) immediately with
 // the current list and again with each new list after a workspace switch.
 function followTaskList (subscribe) {
-  subscribe(tasks)
+  subscribe(window.tasks)
   workspaces.on('workspace-selected', function () {
-    subscribe(tasks)
+    subscribe(window.tasks)
   })
 }
 
