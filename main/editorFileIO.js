@@ -37,36 +37,25 @@ function getImageMimeType (filePath) {
   return imageMimeTypes[path.extname(filePath).toLowerCase()] || null
 }
 
-function getEditorPathFromSender (sender) {
-  try {
-    if (!sender || sender.isDestroyed()) return null
-    const parsed = new URL(sender.getURL())
-    return parsed.searchParams.get('path') || null
-  } catch (err) {
-    return null
-  }
-}
-
-function getEditorWorkspaceFromSender (sender) {
-  try {
-    if (!sender || sender.isDestroyed()) return null
-    const parsed = new URL(sender.getURL())
-    return parsed.searchParams.get('workspace') || null
-  } catch (err) {
-    return null
-  }
+/* The file a view was opened for, and the workspace it has to stay inside.
+Both come from the view's stored resource rather than its URL, which no longer
+carries them (see getViewResource in main/viewManager.js). */
+function getEditorViewResource (sender) {
+  if (!sender || sender.isDestroyed()) return null
+  return getViewResource(getViewIdForContents(sender))
 }
 
 function isAllowedEditorPath (sender, filePath) {
   if (typeof filePath !== 'string' || !filePath || filePath.indexOf('\0') !== -1) {
     return false
   }
-  const allowed = getEditorPathFromSender(sender)
+  const view = getEditorViewResource(sender)
+  const allowed = view && view.resource
   if (!allowed) return false
   if (path.resolve(allowed) !== path.resolve(filePath)) {
     return false
   }
-  const workspace = getEditorWorkspaceFromSender(sender)
+  const workspace = view.rootPath
   if (workspace && !isPathInside(workspace, filePath)) {
     return false
   }

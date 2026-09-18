@@ -14,8 +14,10 @@ function getDefaultCwd () {
   return (ws && ws.path) || '~'
 }
 
-function getTerminalURL (cwd) {
-  return TERMINAL_BASE + '?cwd=' + encodeURIComponent(cwd)
+/* deliberately generic: the directory lives in the tab's `resource` and reaches
+the page through the preload bridge, so no path ends up in the address bar */
+function getTerminalURL () {
+  return TERMINAL_BASE
 }
 
 const terminalView = {
@@ -23,7 +25,7 @@ const terminalView = {
   open: function (cwd) {
     const resolvedCwd = cwd || getDefaultCwd()
     const tabId = tabs.add({
-      url: getTerminalURL(resolvedCwd),
+      url: getTerminalURL(),
       kind: 'terminal',
       resource: resolvedCwd
     })

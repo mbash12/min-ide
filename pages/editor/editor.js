@@ -1,12 +1,17 @@
 /* Monaco-based code editor page, opened as a tab via
-min://app/pages/editor/index.html?path=<absolute file path>.
-The page is sandboxed; all file IO goes through window.postMessage to the
-preload bridge (js/preload/editor.js), which relays it to the main process.
+min://app/pages/editor/index.html.
+The file it shows is not in the URL: the host puts it on the tab and the
+preload bridge hands it over as window.minViewResource. The page is sandboxed;
+all file IO goes through window.postMessage to the preload bridge
+(js/preload/editor.js), which relays it to the main process.
 The tab title follows document.title (the file name, with a dot when there
 are unsaved changes) via the page-title-updated event. */
 
 const editorParams = new URLSearchParams(window.location.search.replace('?', ''))
-const editorFilePath = editorParams.get('path') || ''
+/* the query parameter is still read for editor tabs that were opened before
+the resource moved onto the tab */
+const editorFilePath =
+  (window.minViewResource && window.minViewResource.resource) || editorParams.get('path') || ''
 
 /* resolved once the AMD loader has loaded the editor */
 let monacoEditor = null

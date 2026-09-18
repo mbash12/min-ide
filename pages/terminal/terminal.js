@@ -6,6 +6,12 @@ const exitMessage = document.getElementById('terminal-exit-message')
 const restartButton = document.getElementById('terminal-restart-button')
 
 function getCwd () {
+  /* the host puts the directory on the tab and the preload bridge hands it over */
+  if (window.minViewResource && window.minViewResource.resource) {
+    return window.minViewResource.resource
+  }
+  /* the query parameter is still read for terminal tabs opened before the
+  directory moved onto the tab */
   try {
     return new URLSearchParams(window.location.search).get('cwd') || '~'
   } catch (e) {

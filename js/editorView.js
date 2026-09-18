@@ -7,14 +7,11 @@ being replaced and behaves like a regular tab. */
 const EDITOR_BASE = 'min://app/pages/editor/index.html'
 
 const editorView = {
-  /* the URL for an editor tab showing filePath */
-  getEditorURL: function (filePath) {
-    const ws = typeof workspaces !== 'undefined' && workspaces.getSelected ? workspaces.getSelected() : null
-    let url = EDITOR_BASE + '?path=' + encodeURIComponent(filePath)
-    if (ws && ws.path) {
-      url += '&workspace=' + encodeURIComponent(ws.path)
-    }
-    return url
+  /* the URL of an editor tab. It is deliberately generic: the file lives in
+  the tab's `resource` and reaches the page through the preload bridge, so no
+  workspace path ends up in the address bar or in the saved session. */
+  getEditorURL: function () {
+    return EDITOR_BASE
   },
 
   /* tabs carry their kind, which is what everything else keys off */
@@ -108,9 +105,12 @@ const editorView = {
       if (!editorView.confirmDiscard(previewId)) {
         return previewId
       }
-      const url = editorView.getEditorURL(filePath)
+      const url = editorView.getEditorURL()
       editorView.allowDiscard(previewId)
       tabs.update(previewId, { url: url, kind: 'editor', resource: filePath })
+      // the URL does not change, so the view has to be told about the new file
+      // and reloaded for the page to pick it up
+      require('webviews.js').updateResource(previewId)
       require('webviews.js').update(previewId, url)
       browserUI.switchToTab(previewId)
       return previewId
@@ -118,7 +118,7 @@ const editorView = {
 
     // no preview tab exists yet - create one
     const tabId = tabs.add({
-      url: editorView.getEditorURL(filePath),
+      url: editorView.getEditorURL(),
       kind: 'editor',
       resource: filePath,
       private: false

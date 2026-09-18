@@ -3,6 +3,14 @@
 var electron = require('electron')
 var ipc = electron.ipcRenderer
 
+/* The file or folder this view was opened for (set by js/webviews.js). The
+view has context isolation, so the page can only see this through
+contextBridge - and it needs it before its own scripts run, which is why the
+lookup is synchronous. */
+try {
+  electron.contextBridge.exposeInMainWorld('minViewResource', ipc.sendSync('getViewResource') || { resource: null, rootPath: null })
+} catch (e) {}
+
 var propertiesToClone = ['deltaX', 'deltaY', 'metaKey', 'ctrlKey', 'defaultPrevented', 'clientX', 'clientY']
 
 function cloneEvent (e) {

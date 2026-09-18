@@ -73,6 +73,22 @@ function setAudioMutedOnCreate (tabId, muted) {
   webviews.bindEvent('did-navigate', listener)
 }
 
+/* Internal surfaces used to put what they show in the URL query ('path' for the
+editor, 'cwd' for the terminal). Tabs opened back then are still in the saved
+session, so read it for them; tabs opened now carry it as the tab's resource
+instead and never need this. */
+function legacyResourceFromURL (url) {
+  if (typeof url !== 'string' || !url.startsWith('min://') || url.indexOf('?') === -1) {
+    return null
+  }
+  try {
+    const params = new URL(url).searchParams
+    return params.get('path') || params.get('cwd') || null
+  } catch (e) {
+    return null
+  }
+}
+
 const webviews = {
   viewFullscreenMap: {}, // tabId, isFullscreen
   selectedId: null,
@@ -177,6 +193,27 @@ const webviews = {
       return position
     }
   },
+  /* what the view for a tab should be told it is showing: the file or folder
+  an internal surface points at, plus the workspace it belongs to (the editor
+  uses that as its file access boundary). Web tabs have neither. */
+  getViewResourceFor: function (tabId) {
+    const tab = tabs.get(tabId)
+    const home = workspaces.findWorkspaceContainingTab(tabId)
+    return {
+      resource: (tab && tab.resource) || legacyResourceFromURL(tab && tab.url),
+      rootPath: (home && home.path) || null
+    }
+  },
+  /* points an existing view at another file without rebuilding it; the page
+  picks the new resource up on its next load */
+  updateResource: function (tabId) {
+    const viewResource = webviews.getViewResourceFor(tabId)
+    ipc.send('setViewResource', {
+      id: tabId,
+      resource: viewResource.resource,
+      rootPath: viewResource.rootPath
+    })
+  },
   add: function (tabId, existingViewId) {
     var tabData = tabs.get(tabId)
 
@@ -213,6 +250,7 @@ const webviews = {
       partition = require('profiles.js').getPartition(home ? home.profileId : null) || 'persist:webcontent'
     }
 
+    const viewResource = webviews.getViewResourceFor(tabId)
     ipc.send('createView', {
       existingViewId,
       id: tabId,
@@ -220,7 +258,9 @@ const webviews = {
         partition: partition
       },
       boundsString: JSON.stringify(webviews.getViewBounds(tabId)),
-      events: webviews.events.map(e => e.event).filter((i, idx, arr) => arr.indexOf(i) === idx)
+      events: webviews.events.map(e => e.event).filter((i, idx, arr) => arr.indexOf(i) === idx),
+      resource: viewResource.resource,
+      rootPath: viewResource.rootPath
     })
 
     if (!existingViewId) {

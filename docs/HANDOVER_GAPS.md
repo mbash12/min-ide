@@ -34,7 +34,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 10 | Profile switching | DIFFERENT — semua view dibongkar, bukan hanya web tab |
 | 11 | Clear Profile Data | MISSING — seluruh fitur |
 | 12 | Central database | MISSING — sebagian besar tabel; DIFFERENT — JSON, bukan DB |
-| 13 | Tabs | MISSING — tab `kind` + metadata; DIFFERENT — path bocor di URL |
+| 13 | Tabs | — bersih |
 | 14 | Monaco editor | MISSING — autosave |
 | 15 | Terminal | DIFFERENT — cwd/scrollback tidak dipersist |
 | 16 | Documents | MISSING — source mode, Mermaid; DIFFERENT — bentuk tool AI |
@@ -145,9 +145,11 @@ Yang sudah sesuai: website storage tetap di Electron session partition, tidak di
 
 ## §13 Tabs
 
-- **DIFFERENT** — Internal URL **masih membawa resource sebenarnya**, persis kasus yang dilarang blueprint. Editor: `min://app/pages/editor/index.html?path=<path absolut>&workspace=<path absolut>` (`js/editorView.js`). Terminal: `min://terminal?cwd=<path absolut>` (`js/terminalView.js`). Path ini dikembalikan ke address bar oleh `urlParser.getSourceURL` (`js/util/urlParser.js:108-127`). Docs sudah benar karena memakai id opaque.
-  Metadata untuk memindahkan resource ini sudah ada (`kind` + `resource` di record tab dan ikut persist), tetapi URL-nya belum dibuat generik: halaman editor dan terminal masih membacanya dari query, dan `main/editorFileIO.js:54` masih memakai parameter `workspace` sebagai batas akses file.
-- **MISSING** — Metadata tab `{tabId, kind, filePath}` **sebagian** sudah ada: record tab kini membawa `kind` (`web`/`editor`/`terminal`/`document`) dan `resource`, keduanya ikut persist (`js/tabState/tab.js`). Yang belum: resource-nya masih ditulis juga ke URL (§13 di atas), sehingga metadata itu belum menjadi satu-satunya sumber.
+Seluruh requirement sudah sesuai: URL internal generik (`min://app/pages/editor/index.html`, `min://terminal`) tanpa resource di dalamnya, resource disimpan di metadata tab (`kind` + `resource`, keduanya ikut persist), dan address bar menampilkan bentuk generik (`min://editor`, `min://terminal`) melalui `urlParser.getSourceURL`.
+
+Resource sampai ke halamannya lewat preload, bukan lewat URL: `js/webviews.js` menyertakannya saat membuat view, `main/viewManager.js` menyimpannya per view, dan `js/preload/default.js` menyerahkannya ke halaman sebagai `window.minViewResource` (sinkron, sebelum skrip halaman jalan — perlu `contextBridge` karena view memakai context isolation). Batas akses file editor ikut pindah: `main/editorFileIO.js` membaca resource view, bukan query URL.
+
+Sisa yang diketahui: tab editor/terminal yang dibuat **sebelum** perubahan ini masih menyimpan URL lamanya di session, sehingga path-nya masih tampil di address bar sampai tab itu dibuka ulang. Tab seperti itu tetap berfungsi karena resource-nya dibaca dari query sebagai fallback (`legacyResourceFromURL`).
 
 ---
 
@@ -382,6 +384,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 1. **§36 — pintu masuk terminal.** Terminal tab sebelumnya hanya bisa dibuat lewat bang `!term`. Sekarang ada `js/terminalView.js` (modul tunggal yang membuka terminal), item menu File > Open Terminal, dan keybinding default `addTerminal` (`ctrl+\``).
 2. **Tile / split view sekarang persisten** (§5, §6, §21, §28). Layout disimpan per task sebagai field `splitState` (`js/tabState/task.js:49-52`), ditulis oleh `splitView.persist()` pada setiap perubahan group/ratio (`js/splitView.js`) dan dipasang kembali oleh `splitView.restoreForSelectedTask()` saat task dipilih (`js/browserUI.js:520-521`). Karena state-nya menempel di record task, ia ikut format session v3 yang sudah ada tanpa perubahan format. `clearAll()` sengaja tidak menulis apa pun: ia hanya membongkar tampilan, sehingga layout task tetap utuh saat kembali.
 3. **Tile sampai 3 panel** (§21, §36). Group memegang 2–3 pane (`maxPanesPerGroup`), lebar tiap pane disimpan sebagai `fractions` yang selalu berjumlah 1, dan setiap gutter punya divider sendiri (`js/splitViewDivider.js`). Satu pane bisa dikeluarkan tanpa membubarkan group lewat "Remove from Split View" (`js/navbar/tabContextMenu.js`), dan menutup satu pane dari `A+B+C` menyisakan `A+C` tiled; group baru hilang saat tinggal satu pane.
+4. **Metadata tab + URL internal generik** (§13, §26, §31). Tab membawa `kind` dan `resource`; URL editor dan terminal menjadi generik sehingga tidak ada path workspace di address bar maupun di session, dan resource sampai ke halaman lewat preload bridge. Browser control juga dibatasi ke tab `kind: 'web'` saja.
 
 ## Catatan
 

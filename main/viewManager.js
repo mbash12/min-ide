@@ -89,7 +89,7 @@ function getDefaultViewWebPreferences () {
   )
 }
 
-function createView (existingViewId, id, webPreferences, boundsString, events) {
+function createView (existingViewId, id, webPreferences, boundsString, events, resource, rootPath) {
   if (viewStateMap[id]) {
     console.warn('Creating duplicate view')
   }
@@ -99,7 +99,9 @@ function createView (existingViewId, id, webPreferences, boundsString, events) {
   viewStateMap[id] = {
     loadedInitialURL: false,
     hasJS: viewPrefs.javascript, // need this later to see if we should swap the view for a JS-enabled one
-    partition: viewPrefs.partition || null // used to give popups the same session as their parent
+    partition: viewPrefs.partition || null, // used to give popups the same session as their parent
+    resource: resource || null, // what an internal surface is showing, see getViewResource
+    rootPath: rootPath || null
   }
 
   let view
@@ -464,8 +466,24 @@ function getTabIDFromWebContents (contents) {
   }
 }
 
+/* the id of the view whose webContents is `contents`, or null */
+function getViewIdForContents (contents) {
+  return Object.keys(viewMap).find(id => viewMap[id].webContents === contents) || null
+}
+
+/* What a view is showing. The fork's internal surfaces (editor, terminal,
+document) keep the file or folder they point at here instead of in the URL, so
+neither the address bar nor the saved session carries workspace paths. */
+function getViewResource (id) {
+  const state = id ? viewStateMap[id] : null
+  return {
+    resource: (state && state.resource) || null,
+    rootPath: (state && state.rootPath) || null
+  }
+}
+
 function getWindowFromViewContents (webContents) {
-  const viewId = Object.keys(viewMap).find(id => viewMap[id].webContents === webContents)
+  const viewId = getViewIdForContents(webContents)
   return windows.getAll().find(win => {
     const state = windows.getState(win)
     return state.selectedView === viewId || (state.splitPaneIds && state.splitPaneIds.includes(viewId))
@@ -473,7 +491,21 @@ function getWindowFromViewContents (webContents) {
 }
 
 ipc.on('createView', function (e, args) {
-  createView(args.existingViewId, args.id, args.webPreferences, args.boundsString, args.events)
+  createView(args.existingViewId, args.id, args.webPreferences, args.boundsString, args.events, args.resource, args.rootPath)
+})
+
+/* the preload reads this synchronously, before the page's own scripts run */
+ipc.on('getViewResource', function (e) {
+  e.returnValue = getViewResource(getViewIdForContents(e.sender))
+})
+
+/* internal surfaces can point their view at another file without rebuilding it */
+ipc.on('setViewResource', function (e, args) {
+  const state = args && args.id ? viewStateMap[args.id] : null
+  if (state) {
+    state.resource = args.resource || null
+    state.rootPath = args.rootPath || null
+  }
 })
 
 ipc.on('destroyView', function (e, id) {
