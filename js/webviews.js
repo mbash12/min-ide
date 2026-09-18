@@ -212,7 +212,8 @@ const webviews = {
       // if the containing workspace uses a profile, its tabs get an
       // isolated session partition (cookies / storage only)
       const home = workspaces.findWorkspaceContainingTask(tabId)
-      partition = require('profiles.js').getPartition(home ? home.profileId : null) || 'persist:webcontent'
+      const profileId = home ? home.profileId : (workspaces.getSelected() ? workspaces.getSelected().profileId : null)
+      partition = require('profiles.js').getPartition(profileId) || 'persist:webcontent'
     }
 
     ipc.send('createView', {
