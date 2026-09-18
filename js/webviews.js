@@ -89,7 +89,11 @@ const webviews = {
   events: [],
   IPCEvents: [],
   hasViewForTab: function(tabId) {
-    return tabId && tasks.getTaskContainingTab(tabId) && tasks.getTaskContainingTab(tabId).tabs.get(tabId).hasWebContents
+    if (!tabId) return false
+    const home = workspaces.findWorkspaceContainingTask(tabId)
+    if (!home) return false
+    const task = home.tasks.getTaskContainingTab(tabId)
+    return !!(task && task.tabs.get(tabId) && task.tabs.get(tabId).hasWebContents)
   },
   setEditorDirty: function (tabId, isDirty) {
     if (isDirty) {
@@ -205,10 +209,10 @@ const webviews = {
       // otherwise their localStorage (workspace profiles) would be isolated
       partition = null
     } else {
-      // if the containing task uses a workspace profile, its tabs get an
+      // if the containing workspace uses a profile, its tabs get an
       // isolated session partition (cookies / storage only)
-      const task = tasks.getTaskContainingTab(tabId)
-      partition = require('profiles.js').getPartition(task ? task.profileId : null) || 'persist:webcontent'
+      const home = workspaces.findWorkspaceContainingTask(tabId)
+      partition = require('profiles.js').getPartition(home ? home.profileId : null) || 'persist:webcontent'
     }
 
     ipc.send('createView', {
@@ -230,7 +234,7 @@ const webviews = {
       }
     }
 
-    tasks.getTaskContainingTab(tabId).tabs.update(tabId, {
+    workspaces.findWorkspaceContainingTask(tabId).tasks.getTaskContainingTab(tabId).tabs.update(tabId, {
       hasWebContents: true
     })
   },
@@ -286,7 +290,7 @@ const webviews = {
     webviews.emitEvent('view-hidden', id)
 
     if (webviews.hasViewForTab(id)) {
-      tasks.getTaskContainingTab(id).tabs.update(id, {
+      workspaces.findWorkspaceContainingTask(id).tasks.getTaskContainingTab(id).tabs.update(id, {
         hasWebContents: false
       })
     }

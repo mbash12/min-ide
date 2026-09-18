@@ -13,7 +13,10 @@ const windowSync = {
     windowSync.syncTimeout = null
   },
   initialize: function () {
-    tasks.on('*', function (...data) {
+    // Workspace-level events come from the stable store; task/tab events
+    // arrive via the store forwarder (see wireTaskEvents) with their exact
+    // upstream payload shapes.
+    workspaces.on('*', function (...data) {
       if (data[0] === 'state-sync-change') {
         return
       }
@@ -27,14 +30,24 @@ const windowSync = {
       }
     })
 
+    /* Resolves the TaskList owning a task id, searching every workspace.
+    Task/tab events carry only the task id, so this routes them to the
+    right list regardless of which workspace is selected locally. */
+    function getTaskList (taskId) {
+      return workspaces.getTaskList(taskId)
+    }
+
     ipc.on('tab-state-change-receive', function (e, data) {
       const { sourceWindowId, events } = data
       events.forEach(function (event) {
-        const priorSelectedTask = tasks.getSelected().id
+        const selectedTask = tasks.getSelected()
+        const priorSelectedTask = selectedTask && selectedTask.id
+        const priorSelectedWorkspace = workspaces.getSelected() && workspaces.getSelected().id
 
         // close window if its task is destroyed
         if (
           (event[0] === 'task-destroyed' && event[1] === priorSelectedTask) ||
+          (event[0] === 'workspace-destroyed' && event[1] === priorSelectedWorkspace) ||
           (event[0] === 'tab-destroyed' && event[2] === priorSelectedTask && tasks.getSelected().tabs.count() === 1)
         ) {
           ipc.invoke('close')
@@ -43,48 +56,73 @@ const windowSync = {
         }
 
         switch (event[0]) {
-          case 'task-added':
-            tasks.add(event[2], event[3], false)
+          case 'workspace-added':
+            workspaces.add(event[2], event[3], false)
             break
-          case 'task-selected':
-            tasks.setSelected(event[1], false, sourceWindowId)
+          case 'workspace-selected':
+            workspaces.setSelected(event[1], false, sourceWindowId)
             break
-          case 'task-destroyed':
-            tasks.destroy(event[1], false)
+          case 'workspace-destroyed':
+            workspaces.destroy(event[1], false)
             break
-          case 'tab-added':
-            tasks.get(event[4]).tabs.add(event[2], event[3], false)
-            break
-          case 'tab-updated':
-            var obj = {}
-            obj[event[2]] = event[3]
-            tasks.get(event[4]).tabs.update(event[1], obj, false)
-            break
-          case 'task-updated':
-            var obj = {}
-            obj[event[2]] = event[3]
-            tasks.update(event[1], obj, false)
-            // the profile (session partition) changed: destroy the task's views
-            // so they are recreated with the new partition
-            if (event[2] === 'profileId' || event[2] === 'archived') {
+          case 'workspace-updated': {
+            var wsObj = {}
+            wsObj[event[2]] = event[3]
+            workspaces.update(event[1], wsObj, false)
+            // the workspace was archived by another window: destroy its views
+            if (event[2] === 'archived') {
+              const ws = workspaces.get(event[1])
               browserUI.splitView.clearAll()
-              const task = tasks.get(event[1])
-              if (task) {
-                task.tabs.get().forEach(function (tab) {
-                  editorView.allowDiscard(tab.id)
-                  webviews.destroy(tab.id)
+              if (ws) {
+                ws.tasks.forEach(function (task) {
+                  task.tabs.get().forEach(function (tab) {
+                    editorView.allowDiscard(tab.id)
+                    webviews.destroy(tab.id)
+                  })
                 })
               }
             }
             break
+          }
+          case 'task-added': {
+            const homeList = event[4] ? workspaces.get(event[4]).tasks : tasks
+            homeList.add(event[2], event[3], false)
+            break
+          }
+          case 'task-selected':
+            getTaskList(event[1]).setSelected(event[1], false, sourceWindowId)
+            break
+          case 'task-destroyed':
+            getTaskList(event[1]).destroy(event[1], false)
+            break
+          case 'task-moved': {
+            const movedList = getTaskList(event[1])
+            movedList.reorder(event[2], event[3])
+            break
+          }
+          case 'tab-added':
+            workspaces.findTask(event[4]).tabs.add(event[2], event[3], false)
+            break
+          case 'tab-updated': {
+            var obj = {}
+            obj[event[2]] = event[3]
+            workspaces.findTask(event[4]).tabs.update(event[1], obj, false)
+            break
+          }
+          case 'task-updated': {
+            var taskObj = {}
+            taskObj[event[2]] = event[3]
+            getTaskList(event[1]).update(event[1], taskObj, false)
+            break
+          }
           case 'tab-selected':
-            tasks.get(event[2]).tabs.setSelected(event[1], false)
+            workspaces.findTask(event[2]).tabs.setSelected(event[1], false)
             break
           case 'tab-destroyed':
-            tasks.get(event[2]).tabs.destroy(event[1], false)
+            workspaces.findTask(event[2]).tabs.destroy(event[1], false)
             break
           case 'tab-splice':
-            tasks.get(event[1]).tabs.spliceNoEmit(...event.slice(2))
+            workspaces.findTask(event[1]).tabs.spliceNoEmit(...event.slice(2))
             break
           case 'state-sync-change':
             break
@@ -98,7 +136,7 @@ const windowSync = {
         if (event[0] === 'task-selected' && event[1] === priorSelectedTask) {
           // our task is being taken by another window
           // switch to an empty task not open in any window, if possible
-          var newTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name && !task.archived)
+          var newTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name)
             .sort((a, b) => {
               return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
             })
@@ -109,10 +147,15 @@ const windowSync = {
           }
           workspaceDrawer.show()
         }
-        if (event[0] === 'task-updated' && event[2] === 'archived' && event[3] === true && event[1] === priorSelectedTask) {
-          // our task was archived by another window; switch to an empty task
+        if (event[0] === 'workspace-selected' && event[1] === priorSelectedWorkspace) {
+          // our workspace is being taken by another window; the task-level
+          // steal handling above covers the task itself
+          workspaceDrawer.show()
+        }
+        if (event[0] === 'workspace-updated' && event[2] === 'archived' && event[3] === true && event[1] === priorSelectedWorkspace) {
+          // our workspace was archived by another window; switch to an empty task
           // not open in any window, if possible
-          var fallbackTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name && !task.archived)
+          var fallbackTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name)
             .sort((a, b) => {
               return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
             })
@@ -132,7 +175,7 @@ const windowSync = {
         }
       })
 
-      tasks.emit('state-sync-change')
+      workspaces.emit('state-sync-change')
     })
   }
 }

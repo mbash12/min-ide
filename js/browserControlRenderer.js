@@ -19,17 +19,21 @@ function isRestrictedUrl (url) {
     parsed.indexOf('/pages/profiles/') !== -1
 }
 
-function getWorkspace (workspaceId) {
-  if (!workspaceId) return null
-  return tasks.get(workspaceId) || null
+function getTaskContext (taskId) {
+  if (!taskId) return null
+  const home = workspaces.findWorkspaceContainingTask(taskId)
+  if (!home) return null
+  const task = home.tasks.get(taskId)
+  if (!task) return null
+  return { workspace: home, task: task }
 }
 
-function tabPayload (ws, tab) {
+function tabPayload (ctx, tab) {
   return {
     id: tab.id,
     url: tab.url || '',
     title: tab.title || '',
-    selected: tab.id === ws.tabs.getSelected(),
+    selected: tab.id === ctx.task.tabs.getSelected(),
     private: !!tab.private
   }
 }
@@ -50,51 +54,57 @@ function restoreChromeFocus () {
   }
 }
 
-function focusWorkspace (workspaceId) {
-  const ws = getWorkspace(workspaceId)
-  if (!ws) {
-    throw new Error('Workspace not found')
+function focusTask (taskId) {
+  const ctx = getTaskContext(taskId)
+  if (!ctx) {
+    throw new Error('Task not found')
   }
-  if (ws.archived) {
-    browserUI.restoreTask(ws.id, { focusWebview: false })
+  if (ctx.workspace.archived) {
+    browserUI.restoreWorkspace(ctx.workspace.id, { focusWebview: false })
   } else {
-    const selected = tasks.getSelected()
-    if (!selected || selected.id !== ws.id) {
-      browserUI.switchToTask(ws.id, { focusWebview: false })
+    const selectedWs = workspaces.getSelected()
+    if (!selectedWs || selectedWs.id !== ctx.workspace.id) {
+      browserUI.switchToWorkspace(ctx.workspace.id, { focusWebview: false })
     }
   }
-  return getWorkspace(ws.id)
+  const selected = tasks.getSelected()
+  if (!selected || selected.id !== ctx.task.id) {
+    browserUI.switchToTask(ctx.task.id, { focusWebview: false })
+  }
+  return getTaskContext(ctx.task.id)
 }
 
-function listTabsPayload (workspaceId) {
-  const ws = getWorkspace(workspaceId)
-  if (!ws) return { ok: false, error: 'Workspace not found' }
+function listTabsPayload (taskId) {
+  const ctx = getTaskContext(taskId)
+  if (!ctx) return { ok: false, error: 'Task not found' }
   return {
     ok: true,
-    workspaceId: ws.id,
-    workspaceName: ws.name || null,
-    tabs: ws.tabs.get().map(function (tab) { return tabPayload(ws, tab) }),
-    selected: ws.tabs.getSelected() || null
+    taskId: ctx.task.id,
+    workspaceId: ctx.workspace.id,
+    workspaceName: ctx.workspace.name || null,
+    tabs: ctx.task.tabs.get().map(function (tab) { return tabPayload(ctx, tab) }),
+    selected: ctx.task.tabs.getSelected() || null
   }
 }
 
 function resolveTab (payload) {
   payload = payload || {}
-  const ws = payload.ensureView ? focusWorkspace(payload.workspaceId) : getWorkspace(payload.workspaceId)
-  if (!ws) return { ok: false, error: 'Workspace not found' }
-  if (payload.tabId && !ws.tabs.has(payload.tabId)) {
-    return { ok: false, error: 'Tab is not in this workspace' }
+  const taskId = payload.taskId || payload.workspaceId
+  const ctx = payload.ensureView ? focusTask(taskId) : getTaskContext(taskId)
+  if (!ctx) return { ok: false, error: 'Task not found' }
+  if (payload.tabId && !ctx.task.tabs.has(payload.tabId)) {
+    return { ok: false, error: 'Tab is not in this task' }
   }
-  let tabId = payload.tabId || ws.tabs.getSelected()
+  let tabId = payload.tabId || ctx.task.tabs.getSelected()
   if (!tabId && payload.ensureView) {
-    const focused = focusWorkspace(ws.id)
-    tabId = focused.tabs.getSelected()
+    const focused = focusTask(ctx.task.id)
+    tabId = focused.task.tabs.getSelected()
   }
-  if (!tabId) return { ok: false, error: 'No tab in this workspace' }
-  const tab = ws.tabs.get(tabId)
+  if (!tabId) return { ok: false, error: 'No tab in this task' }
+  const tab = ctx.task.tabs.get(tabId)
   if (payload.ensureView) {
-    const focused = focusWorkspace(ws.id)
-    if (focused.tabs.getSelected() !== tabId) {
+    const focused = focusTask(ctx.task.id)
+    if (focused.task.tabs.getSelected() !== tabId) {
       browserUI.switchToTab(tabId, { focusWebview: false })
     } else if (!webviews.hasViewForTab(tabId)) {
       webviews.setSelected(tabId, { focus: false })
@@ -102,11 +112,12 @@ function resolveTab (payload) {
   }
   return {
     ok: true,
-    workspaceId: ws.id,
+    taskId: ctx.task.id,
+    workspaceId: ctx.workspace.id,
     tabId: tabId,
     url: tab ? tab.url : '',
     title: tab ? tab.title : '',
-    selected: tabId === ws.tabs.getSelected()
+    selected: tabId === ctx.task.tabs.getSelected()
   }
 }
 
@@ -122,37 +133,38 @@ function handleBrowserControl (action, payload) {
     if (isRestrictedUrl(payload.url)) {
       return { ok: false, error: 'Browser tools cannot open settings or profile pages' }
     }
-    const ws = focusWorkspace(payload.workspaceId)
-    const newTab = ws.tabs.add({ url: payload.url || '' })
+    const ctx = focusTask(payload.taskId || payload.workspaceId)
+    const newTab = ctx.task.tabs.add({ url: payload.url || '' })
     browserUI.addTab(newTab, {
       enterEditMode: false,
       focusWebview: false
     })
-    const tab = ws.tabs.get(newTab)
-    return Object.assign({ ok: true, workspaceId: ws.id }, tabPayload(ws, tab))
+    const tab = ctx.task.tabs.get(newTab)
+    return Object.assign({ ok: true, taskId: ctx.task.id, workspaceId: ctx.workspace.id }, tabPayload(ctx, tab))
   }
   if (action === 'closeTab') {
-    const ws = focusWorkspace(payload.workspaceId)
-    const tabId = payload.tabId || ws.tabs.getSelected()
-    if (!tabId || !ws.tabs.has(tabId)) {
-      return { ok: false, error: 'Tab not found in this workspace' }
+    const ctx = focusTask(payload.taskId || payload.workspaceId)
+    const tabId = payload.tabId || ctx.task.tabs.getSelected()
+    if (!tabId || !ctx.task.tabs.has(tabId)) {
+      return { ok: false, error: 'Tab not found in this task' }
     }
     browserUI.closeTab(tabId, { focusWebview: false })
     return {
       ok: true,
       id: tabId,
-      workspaceId: ws.id,
-      selected: ws.tabs.getSelected()
+      taskId: ctx.task.id,
+      workspaceId: ctx.workspace.id,
+      selected: ctx.task.tabs.getSelected()
     }
   }
   if (action === 'selectTab') {
-    const ws = focusWorkspace(payload.workspaceId)
+    const ctx = focusTask(payload.taskId || payload.workspaceId)
     const tabId = payload.tabId
-    if (!tabId || !ws.tabs.has(tabId)) {
-      return { ok: false, error: 'Tab not found in this workspace' }
+    if (!tabId || !ctx.task.tabs.has(tabId)) {
+      return { ok: false, error: 'Tab not found in this task' }
     }
     browserUI.switchToTab(tabId, { focusWebview: false })
-    return { ok: true, id: tabId, workspaceId: ws.id }
+    return { ok: true, id: tabId, taskId: ctx.task.id, workspaceId: ctx.workspace.id }
   }
   throw new Error('Unknown browser-control action: ' + action)
 }

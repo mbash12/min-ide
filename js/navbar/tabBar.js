@@ -403,12 +403,14 @@ webviews.bindEvent('did-stop-loading', function (tabId) {
   tabBar.updateTab(tabId)
 })
 
-tasks.on('tab-updated', function (id, key) {
-  var updateKeys = ['title', 'secure', 'url', 'muted', 'hasAudio', 'preview', 'favicon']
-  if (updateKeys.includes(key)) {
-    tabBar.updateTab(id)
-    updateSplitGroupIndicators()
-  }
+require('util/followTaskList.js').followTaskList(function (taskList) {
+  taskList.on('tab-updated', function (id, key) {
+    var updateKeys = ['title', 'secure', 'url', 'muted', 'hasAudio', 'preview', 'favicon']
+    if (updateKeys.includes(key)) {
+      tabBar.updateTab(id)
+      updateSplitGroupIndicators()
+    }
+  })
 })
 
 permissionRequests.onChange(function (tabId) {

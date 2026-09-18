@@ -1,10 +1,16 @@
-const WorkspaceList = require('tabState/workspace.js')
+const WorkspaceStore = require('tabState/workspace.js')
+const TaskList = require('tabState/task.js')
 
 function initialize () {
-  window.tasks = new WorkspaceList()
-  window.workspaces = window.tasks
-  window.WorkspaceList = WorkspaceList
-  window.TaskList = WorkspaceList
+  // The workspace store owns all workspaces and is a stable reference.
+  // window.tasks is re-pointed to the selected workspace's TaskList on
+  // every workspace switch (see WorkspaceStore.setSelected), so
+  // selected-only call sites keep working unchanged.
+  window.workspaces = new WorkspaceStore()
+  window.tasks = null
+  window.WorkspaceStore = WorkspaceStore
+  window.WorkspaceList = WorkspaceStore
+  window.TaskList = TaskList
   window.tabs = undefined
 }
 

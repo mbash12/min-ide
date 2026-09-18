@@ -67,6 +67,9 @@ const customDataStore = {
   saveDesign: (design) => invokeDB('db:saveDesign', design),
   deleteDesign: (designId) => invokeDB('db:deleteDesign', designId),
 
+  // Workspace cascade cleanup (documents, designs, snapshots, activities)
+  deleteWorkspaceDocuments: (workspaceId) => invokeDB('db:deleteWorkspaceData', workspaceId),
+
   // Workspace Documents
   listDocuments: (workspaceId) => invokeDB('db:listDocuments', workspaceId),
   getDocument: (workspaceId, id) => invokeDB('db:getDocument', { workspaceId, id }),

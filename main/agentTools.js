@@ -49,7 +49,7 @@ var BROWSER_ACTIONS = [
 var FIGMA_ACTIONS = ['status', 'node-data', 'extract-text', 'find-text', 'export']
 var DOCS_OPERATIONS = ['list', 'search', 'get', 'create', 'update']
 
-function createMinCustomTools (defineTool, Type, cwd, workspaceId) {
+function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
   const optStr = function (description) {
     return minOptional(Type, Type.String({ description: description }))
   }
@@ -60,8 +60,8 @@ function createMinCustomTools (defineTool, Type, cwd, workspaceId) {
     return minOptional(Type, Type.Boolean({ description: description }))
   }
 
-  function withWorkspace (params) {
-    return Object.assign({}, params, { workspaceId: workspaceId })
+  function withTask (params) {
+    return Object.assign({}, params, { taskId: taskId, workspaceId: workspaceId })
   }
 
   const locatorFields = {
@@ -124,8 +124,8 @@ function createMinCustomTools (defineTool, Type, cwd, workspaceId) {
       promptText: optStr('For dialog / acceptDialog: text to type into prompt()')
     }, locatorFields)),
     execute: async function (_id, params) {
-      if (!workspaceId || workspaceId === 'default') {
-        return minToolTextResult('Browser tools need an open workspace', true)
+      if (!taskId || taskId === 'default') {
+        return minToolTextResult('Browser tools need an open task', true)
       }
       const action = params.action
       if (action === 'navigate' && !params.url) {
@@ -157,12 +157,12 @@ function createMinCustomTools (defineTool, Type, cwd, workspaceId) {
         }
       }
       if (action === 'snapshot') {
-        const result = await minBrowser.snapshot(params.tabId, workspaceId)
+        const result = await minBrowser.snapshot(params.tabId, taskId, workspaceId)
         if (!result || result.ok === false) return minToolJsonResult(result, true)
         const header = (result.title || '') + '\n' + (result.url || '') + '\n'
         return minToolTextResult(header + (result.snapshot || ''))
       }
-      const result = await minBrowser.runStep(withWorkspace(params))
+      const result = await minBrowser.runStep(withTask(params))
       return minToolJsonResult(result, result && result.ok === false)
     }
   })

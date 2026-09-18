@@ -16,26 +16,31 @@ const sessionRestore = {
       return
     }
 
-    var stateString = JSON.stringify(tasks.getStringifyableState())
+    var stateString = JSON.stringify(workspaces.getStringifyableState())
     var data = {
-      version: 2,
+      version: 3,
       state: JSON.parse(stateString),
       saveTime: Date.now()
     }
 
     // save all tabs that aren't private
 
-    for (var i = 0; i < data.state.tasks.length; i++) {
-      data.state.tasks[i].tabs = data.state.tasks[i].tabs.filter(function (tab) {
-        return !tab.private
-      })
+    for (var i = 0; i < data.state.workspaces.length; i++) {
+      for (var j = 0; j < data.state.workspaces[i].tasks.length; j++) {
+        data.state.workspaces[i].tasks[j].tabs = data.state.workspaces[i].tasks[j].tabs.filter(function (tab) {
+          return !tab.private
+        })
+      }
     }
 
     //if startupTabOption is "open a new blank task", don't save any tabs in the current task
     if (settings.get('startupTabOption') === 3) {
-      for (var i = 0; i < data.state.tasks.length; i++) {
-        if (tasks.get(data.state.tasks[i].id).selectedInWindow) { //need to re-fetch the task because temporary properties have been removed
-          data.state.tasks[i].tabs = []
+      for (var i = 0; i < data.state.workspaces.length; i++) {
+        for (var j = 0; j < data.state.workspaces[i].tasks.length; j++) {
+          var liveTask = workspaces.findTask(data.state.workspaces[i].tasks[j].id)
+          if (liveTask && liveTask.selectedInWindow) { //need to re-fetch the task because temporary properties have been removed
+            data.state.workspaces[i].tasks[j].tabs = []
+          }
         }
       }
     }
@@ -83,10 +88,27 @@ const sessionRestore = {
     localStorage.setItem('1.15survey', 'true')
     */
 
+    /* Backs up a pre-v3 session file before starting fresh. Reset-fresh
+    migration: old shapes are never restored, only preserved on disk. */
+    function backupAndStartFresh (reason) {
+      if (savedStringData) {
+        try {
+          var backupSavePath = require('path').join(window.globalArgs['user-data-path'], 'sessionRestoreBackup-' + Date.now() + '.json')
+          writeFileAtomic.sync(backupSavePath, savedStringData, {})
+        } catch (e) {
+          console.warn('failed to back up old session restore data', e)
+        }
+      }
+      console.log('starting fresh workspace state (' + reason + ')')
+      var workspaceId = workspaces.add({ name: 'Workspace 1' })
+      browserUI.switchToWorkspace(workspaceId)
+      return workspaceId
+    }
+
     try {
       // first run, show the tour
       if (!savedStringData) {
-        tasks.setSelected(tasks.add()) // create a new task
+        var freshId = backupAndStartFresh('first run')
 
         var newTab = tasks.getSelected().tabs.add({
             url: 'https://minbrowser.github.io/min/tour'
@@ -99,45 +121,47 @@ const sessionRestore = {
 
       var data = JSON.parse(savedStringData)
 
-      // the data isn't restorable
-      if ((data.version && data.version !== 2) || (data.state && data.state.tasks && data.state.tasks.length === 0)) {
-        tasks.setSelected(tasks.add())
+      // the data isn't restorable (anything that isn't v3 starts fresh)
+      if (!data.version || data.version !== 3 || !data.state || !data.state.workspaces || data.state.workspaces.length === 0) {
+        backupAndStartFresh('unsupported version ' + data.version)
 
         browserUI.addTab(tasks.getSelected().tabs.add())
         return
       }
 
-      // add the saved tasks
+      // add the saved workspaces
 
-      data.state.tasks.forEach(function (task) {
-        // restore the task item
-        tasks.add(task)
+      data.state.workspaces.forEach(function (workspace) {
+        // restore the workspace item (with its tasks)
+        workspaces.add(workspace, undefined, false)
 
         /*
-        If the task contained only private tabs, none of the tabs will be contained in the session restore data, but tasks must always have at least 1 tab, so create a new empty tab if the task doesn't have any.
+        If a task contained only private tabs, none of the tabs will be contained in the session restore data, but tasks must always have at least 1 tab, so create a new empty tab if the task doesn't have any.
         */
-        if (task.tabs.length === 0) {
-          tasks.get(task.id).tabs.add()
-        }
+        workspace.tasks.forEach(function (task) {
+          if (task.tabs.length === 0) {
+            workspaces.findTask(task.id).tabs.add()
+          }
+        })
       })
 
-      var mostRecentTasks = tasks.getActive().sort((a, b) => {
-        return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
+      var mostRecentWorkspaces = workspaces.getActive().sort((a, b) => {
+        return workspaces.getLastActivity(b.id) - workspaces.getLastActivity(a.id)
       })
-      if (mostRecentTasks.length > 0) {
-        tasks.setSelected(mostRecentTasks[0].id)
+      if (mostRecentWorkspaces.length > 0) {
+        workspaces.setSelected(mostRecentWorkspaces[0].id)
       }
 
-      // switch to the previously selected tasks
+      // switch to the previously selected workspace (restores its active task)
 
       if (tasks.getSelected().tabs.isEmpty() || startupConfigOption === 1) {
-        browserUI.switchToTask(mostRecentTasks[0].id)
+        browserUI.switchToWorkspace(mostRecentWorkspaces[0].id)
         if (tasks.getSelected().tabs.isEmpty()) {
           tabEditor.show(tasks.getSelected().tabs.getSelected())
         }
       } else {
         window.createdNewTaskOnStartup = true
-        // try to reuse a previous empty task
+        // try to reuse a previous empty task in this workspace
         var lastTask = tasks.byIndex(tasks.getLength() - 1)
         if (lastTask && lastTask.tabs.isEmpty() && !lastTask.name) {
           browserUI.switchToTask(lastTask.id)
@@ -184,12 +208,12 @@ const sessionRestore = {
       tabState.initialize()
 
       // create a new tab with an explanation of what happened
-      var newTask = tasks.add()
-      var newSessionErrorTab = tasks.get(newTask).tabs.add({
+      var errorWorkspaceId = workspaces.add({ name: 'Workspace 1' })
+      browserUI.switchToWorkspace(errorWorkspaceId)
+      var newSessionErrorTab = tasks.getSelected().tabs.add({
         url: 'min://app/pages/sessionRestoreError/index.html?backupLoc=' + encodeURIComponent(backupSavePath)
       })
 
-      browserUI.switchToTask(newTask)
       browserUI.switchToTab(newSessionErrorTab)
 
       statistics.incrementValue('sessionRestorationErrors')
@@ -199,27 +223,45 @@ const sessionRestore = {
     const data = ipc.sendSync('request-tab-state')
     console.log('got from window', data)
 
-    data.tasks.forEach(function (task) {
-      // restore the task item
-      tasks.add(task, undefined, false)
+    data.workspaces.forEach(function (workspace) {
+      // restore the workspace item (with its tasks)
+      workspaces.add(workspace, undefined, false)
     })
 
     if (Object.hasOwn(window.globalArgs, 'initial-task')) {
+      const home = workspaces.findWorkspaceContainingTask(window.globalArgs['initial-task'])
+      if (home) {
+        browserUI.switchToWorkspace(home.id)
+      }
       browserUI.switchToTask(window.globalArgs['initial-task'])
       return
     }
 
     // reuse an existing task or create a new task in this window
     // same as windowSync.js
-    var newTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name && !task.archived)
-      .sort((a, b) => {
-        return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
-      })
-    if (newTaskCandidates.length > 0) {
-      browserUI.switchToTask(newTaskCandidates[0].id)
-      tabEditor.show(tasks.getSelected().tabs.getSelected())
+    var selectedWs = workspaces.getSelected()
+    if (!selectedWs) {
+      const mostRecent = workspaces.getActive().sort((a, b) => {
+        return workspaces.getLastActivity(b.id) - workspaces.getLastActivity(a.id)
+      })[0]
+      if (mostRecent) {
+        browserUI.switchToWorkspace(mostRecent.id)
+        selectedWs = workspaces.getSelected()
+      }
+    }
+    if (selectedWs) {
+      var newTaskCandidates = tasks.filter(task => task.tabs.isEmpty() && !task.selectedInWindow && !task.name)
+        .sort((a, b) => {
+          return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
+        })
+      if (newTaskCandidates.length > 0) {
+        browserUI.switchToTask(newTaskCandidates[0].id)
+        tabEditor.show(tasks.getSelected().tabs.getSelected())
+      } else {
+        browserUI.addTask()
+      }
     } else {
-      browserUI.addTask()
+      browserUI.addWorkspace()
     }
   },
   restore: function () {
@@ -239,13 +281,22 @@ const sessionRestore = {
       sessionRestore.save(true, true)
       //workaround for notifying the other windows that the task open in this window isn't open anymore.
       //This should ideally be done in windowSync, but it needs to run synchronously, which windowSync doesn't
-      ipc.send('tab-state-change', [
-        ['task-updated', tasks.getSelected().id, 'selectedInWindow', null]
-      ])
+      var outgoingWs = workspaces.getSelected()
+      var outgoingTask = tasks.getSelected()
+      var releaseEvents = []
+      if (outgoingWs) {
+        releaseEvents.push(['workspace-updated', outgoingWs.id, 'selectedInWindow', null])
+      }
+      if (outgoingTask) {
+        releaseEvents.push(['task-updated', outgoingTask.id, 'selectedInWindow', null])
+      }
+      if (releaseEvents.length > 0) {
+        ipc.send('tab-state-change', releaseEvents)
+      }
     }
 
     ipc.on('read-tab-state', function (e) {
-      ipc.send('return-tab-state', tasks.getCopyableState())
+      ipc.send('return-tab-state', workspaces.getCopyableState())
     })
   }
 }

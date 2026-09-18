@@ -235,7 +235,9 @@ const tabColor = {
       }
     })
 
-    tasks.on('tab-selected', this.updateColors)
+    require('util/followTaskList.js').followTaskList(function (taskList) {
+      taskList.on('tab-selected', tabColor.updateColors)
+    })
   },
   updateFromThemeColor: function (color, tabId) {
     if (!color) {

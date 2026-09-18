@@ -113,7 +113,7 @@ function initialize () {
     icon: 'carbon:terminal',
     isAction: true,
     fn: function (text) {
-      const ws = tasks.getSelected()
+      const ws = workspaces.getSelected()
       const cwd = (ws && ws.path) || '~'
       const terminalURL = 'min://terminal?cwd=' + encodeURIComponent(cwd)
       browserUI.addTab(tabs.add({ url: terminalURL }), { enterEditMode: false })
@@ -384,7 +384,7 @@ function initialize () {
     showSuggestions: async function (text, input, inputFlags) {
       searchbarPlugins.reset('bangs')
 
-      const ws = tasks.getSelected()
+      const ws = workspaces.getSelected()
       const wsPath = ws && ws.path
       if (!wsPath) {
         return
@@ -459,7 +459,7 @@ function initialize () {
       })
     },
     fn: function (text) {
-      const ws = tasks.getSelected()
+      const ws = workspaces.getSelected()
       const wsPath = ws && ws.path
       if (!wsPath || !text.trim()) {
         return

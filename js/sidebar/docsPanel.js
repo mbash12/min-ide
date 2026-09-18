@@ -33,8 +33,8 @@ function normalizeId (value) {
 }
 
 function workspaceIdFromSelection () {
-  if (typeof tasks === 'undefined' || !tasks || typeof tasks.getSelected !== 'function') return null
-  const workspace = tasks.getSelected()
+  if (typeof workspaces === 'undefined' || !workspaces || typeof workspaces.getSelected !== 'function') return null
+  const workspace = workspaces.getSelected()
   return workspace ? normalizeId(workspace.id) : null
 }
 
@@ -506,9 +506,8 @@ const docsPanel = {
     docsView.initialize()
     render()
 
-    if (typeof tasks !== 'undefined' && tasks && typeof tasks.on === 'function') {
-      tasks.on('workspace-selected', onWorkspaceChange)
-      tasks.on('task-selected', onWorkspaceChange)
+    if (typeof workspaces !== 'undefined' && workspaces && typeof workspaces.on === 'function') {
+      workspaces.on('workspace-selected', onWorkspaceChange)
     }
 
     if (docsView && typeof docsView.onChanged === 'function') {

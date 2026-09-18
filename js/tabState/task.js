@@ -1,12 +1,11 @@
 const TabList = require('tabState/tab.js')
 const TabStack = require('tabRestore.js')
 
-// Upstream Min's TaskList, restored verbatim from upstream/master so that
-// merges from minbrowser/min apply cleanly to this file.
-//
-// Fork additions (profileId, path, archived, dual task-/workspace-* events,
-// workspace-name aliases) live in js/tabState/workspace.js, which subclasses
-// this base class. Do not add fork-specific code here.
+// Upstream Min's TaskList, kept close to upstream/master so that merges from
+// minbrowser/min apply cleanly. Fork divergence is limited to the marked
+// FORK blocks below (this-reference fix, reorder); everything else is
+// upstream. The Workspace level lives in js/tabState/workspace.js and owns
+// one TaskList per workspace.
 
 class TaskList {
   constructor () {
@@ -171,7 +170,18 @@ class TaskList {
 
   isCollapsed (id) {
     var task = this.get(id)
-    return task.collapsed || (task.collapsed === undefined && Date.now() - tasks.getLastActivity(task.id) > (7 * 24 * 60 * 60 * 1000))
+    // FORK: use this instead of the global tasks object so multiple TaskList
+    // instances (one per workspace) each resolve their own activity.
+    return task.collapsed || (task.collapsed === undefined && Date.now() - this.getLastActivity(task.id) > (7 * 24 * 60 * 60 * 1000))
+  }
+
+  // FORK: reorder tasks within this list (used by the task overlay drag
+  // reorder instead of mutating the internal array directly).
+  reorder (fromIndex, toIndex) {
+    if (fromIndex === toIndex) return
+    const moved = this.tasks.splice(fromIndex, 1)[0]
+    this.tasks.splice(toIndex, 0, moved)
+    this.emit('task-moved', moved.id, fromIndex, toIndex)
   }
 
   getLength () {

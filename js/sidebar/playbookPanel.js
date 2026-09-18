@@ -22,12 +22,12 @@ let refreshSeq = 0
 let panelWasActive = false
 
 function getWorkspacePath () {
-  const ws = tasks.getSelected()
+  const ws = workspaces.getSelected()
   return ws && ws.path
 }
 
 function getWorkspaceId () {
-  const ws = tasks.getSelected()
+  const ws = workspaces.getSelected()
   return ws && ws.id
 }
 
@@ -422,7 +422,7 @@ const playbookPanel = {
     render()
     refresh()
 
-    tasks.on('workspace-selected', function () {
+    workspaces.on('workspace-selected', function () {
       runningName = null
       runProgress = null
       expandedName = null
@@ -430,18 +430,9 @@ const playbookPanel = {
       detailPending = {}
       refresh()
     })
-    tasks.on('task-selected', function () {
-      const wsId = getWorkspaceId() || null
-      if (String(wsId || '') !== String(currentWorkspaceId || '')) {
-        runningName = null
-        runProgress = null
-        expandedName = null
-        detailCache = {}
-        detailPending = {}
-      }
-      refresh({ silent: true })
-    })
-    tasks.on('state-sync-change', function () {
+    // task switches within a workspace share the same playbook scope;
+    // workspace-selected above covers re-renders
+    workspaces.on('state-sync-change', function () {
       const wsPath = getWorkspacePath() || null
       const wsId = getWorkspaceId() || null
       if (wsPath !== currentWorkspacePath || String(wsId || '') !== String(currentWorkspaceId || '')) {

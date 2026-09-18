@@ -70,7 +70,7 @@ function openWorkspaceModal (workspaceId) {
     workspaceModalDelete.hidden = true
     workspaceModalSave.textContent = l('workspaceCreateAction')
   } else {
-    const ws = tasks.get(workspaceId)
+    const ws = workspaces.get(workspaceId)
     if (!ws) return
     workspaceModalTitle.textContent = l('workspaceEditTitle')
     workspaceModalNameInput.value = ws.name || ''
@@ -97,25 +97,25 @@ function saveWorkspaceModal () {
 
   if (modalIsCreate) {
     let index
-    if (tasks.getSelected()) {
-      index = tasks.getIndex(tasks.getSelected().id) + 1
+    if (workspaces.getSelected()) {
+      index = workspaces.getIndex(workspaces.getSelected().id) + 1
     }
-    const newId = tasks.add({ name: name, profileId: profileId, path: path }, index)
-    browserUI.switchToTask(newId)
+    const newId = workspaces.add({ name: name, profileId: profileId, path: path }, index)
+    browserUI.switchToWorkspace(newId)
   } else {
-    const ws = tasks.get(modalWorkspaceId)
+    const ws = workspaces.get(modalWorkspaceId)
     if (!ws) {
       closeWorkspaceModal()
       return
     }
     if (name !== ws.name) {
-      tasks.update(modalWorkspaceId, { name: name })
+      workspaces.update(modalWorkspaceId, { name: name })
     }
     if (profileId !== (ws.profileId || '')) {
       browserUI.setTaskProfile(modalWorkspaceId, profileId || null)
     }
     if (path !== (ws.path || '')) {
-      tasks.update(modalWorkspaceId, { path: path })
+      workspaces.update(modalWorkspaceId, { path: path })
     }
   }
 
@@ -146,7 +146,7 @@ function openProfilesPage () {
 function createWorkspaceRow (ws) {
   const row = document.createElement('div')
   row.className = 'ws-row'
-  if (tasks.getSelected() && ws.id === tasks.getSelected().id) {
+  if (workspaces.getSelected() && ws.id === workspaces.getSelected().id) {
     row.classList.add('selected')
   }
   row.setAttribute('data-workspace', ws.id)
@@ -158,7 +158,7 @@ function createWorkspaceRow (ws) {
   mainEl.className = 'ws-row-main'
   const nameEl = document.createElement('span')
   nameEl.className = 'ws-row-name'
-  nameEl.textContent = ws.name || l('defaultTaskName').replace('%n', tasks.getIndex(ws.id) + 1)
+  nameEl.textContent = ws.name || l('defaultTaskName').replace('%n', workspaces.getIndex(ws.id) + 1)
   mainEl.appendChild(nameEl)
 
   if (ws.path) {
@@ -172,7 +172,7 @@ function createWorkspaceRow (ws) {
 
   const badge = document.createElement('span')
   badge.className = 'ws-row-badge'
-  const count = ws.tabs ? ws.tabs.count() : 0
+  const count = ws.tasks ? ws.tasks.map(task => task.tabs.count()).reduce((a, b) => a + b, 0) : 0
   badge.textContent = String(count)
   badge.title = count === 1 ? '1 tab' : count + ' tabs'
   row.appendChild(badge)
@@ -198,7 +198,7 @@ function createWorkspaceRow (ws) {
 
   row.addEventListener('click', function (e) {
     if (e.target === settingsBtn || settingsBtn.contains(e.target)) return
-    browserUI.switchToTask(ws.id)
+    browserUI.switchToWorkspace(ws.id)
     workspaceDrawer.hide()
   })
 
@@ -217,7 +217,7 @@ function createArchivedWorkspaceRow (ws) {
   mainEl.className = 'ws-row-main'
   const nameEl = document.createElement('span')
   nameEl.className = 'ws-row-name'
-  nameEl.textContent = ws.name || l('defaultTaskName').replace('%n', tasks.getIndex(ws.id) + 1)
+  nameEl.textContent = ws.name || l('defaultTaskName').replace('%n', workspaces.getIndex(ws.id) + 1)
   mainEl.appendChild(nameEl)
 
   if (ws.path) {
@@ -231,7 +231,7 @@ function createArchivedWorkspaceRow (ws) {
 
   const badge = document.createElement('span')
   badge.className = 'ws-row-badge'
-  const count = ws.tabs ? ws.tabs.count() : 0
+  const count = ws.tasks ? ws.tasks.map(task => task.tabs.count()).reduce((a, b) => a + b, 0) : 0
   badge.textContent = String(count)
   badge.title = count === 1 ? '1 tab' : count + ' tabs'
   row.appendChild(badge)
@@ -269,11 +269,11 @@ var workspaceDrawer = {
 
   render: function () {
     empty(workspaceListEl)
-    tasks.getActive().forEach(function (ws) {
+    workspaces.getActive().forEach(function (ws) {
       workspaceListEl.appendChild(createWorkspaceRow(ws))
     })
 
-    const archivedWorkspaces = tasks.getArchived()
+    const archivedWorkspaces = workspaces.getArchived()
     if (archivedWorkspaces.length > 0) {
       const collapsed = settings.get('archivedWorkspacesCollapsed') === true
 
@@ -348,8 +348,11 @@ var workspaceDrawer = {
       if (mostRecent) browserUI.switchToTab(mostRecent.id)
     }
     try {
-      browserUI.switchToTask(tasks.getSelected().id)
-      browserUI.switchToTab(tabs.getSelected())
+      const selected = tasks.getSelected()
+      if (selected) {
+        browserUI.switchToTask(selected.id)
+        browserUI.switchToTab(tabs.getSelected())
+      }
     } catch (e) {}
   },
 
@@ -398,7 +401,7 @@ var workspaceDrawer = {
       const id = modalWorkspaceId
       closeWorkspaceModal()
       if (id) {
-        browserUI.closeTask(id)
+        browserUI.closeWorkspace(id)
         workspaceDrawer.render()
       }
     })
@@ -457,9 +460,11 @@ var workspaceDrawer = {
     if (manageProfilesButton) manageProfilesButton.title = l('taskProfileManage')
 
     const updateIndicator = function () {
-      const ws = tasks.getSelected()
+      const ws = workspaces.getSelected()
       if (!ws || !indicatorName || !indicatorIcon) return
-      const name = ws.name || l('defaultTaskName').replace('%n', tasks.getIndex(ws.id) + 1)
+      const task = tasks.getSelected()
+      const wsName = ws.name || l('defaultTaskName').replace('%n', workspaces.getIndex(ws.id) + 1)
+      const name = task && task.name ? wsName + ' › ' + task.name : wsName
       indicatorName.textContent = name
       indicator.title = name
       const profile = profiles.getProfile(ws.profileId)
@@ -476,17 +481,23 @@ var workspaceDrawer = {
       }
     }
 
-    tasks.on('task-selected', updateIndicator)
-    tasks.on('workspace-selected', updateIndicator)
-    tasks.on('task-updated', function (id, key) {
+    subscribeTaskIndicator()
+    workspaces.on('workspace-selected', function () {
+      subscribeTaskIndicator()
+      updateIndicator()
+      if (workspaceDrawer.isShown) workspaceDrawer.render()
+    })
+    function subscribeTaskIndicator () {
+      tasks.on('task-selected', updateIndicator)
+      tasks.on('task-updated', function (id, key) {
+        if (key === 'name') updateIndicator()
+      })
+    }
+    workspaces.on('workspace-updated', function (id, key) {
       if (key === 'name' || key === 'profileId') updateIndicator()
       if (key === 'archived' && workspaceDrawer.isShown) workspaceDrawer.render()
     })
-    tasks.on('workspace-updated', function (id, key) {
-      if (key === 'name' || key === 'profileId') updateIndicator()
-      if (key === 'archived' && workspaceDrawer.isShown) workspaceDrawer.render()
-    })
-    tasks.on('state-sync-change', function () {
+    workspaces.on('state-sync-change', function () {
       updateIndicator()
       if (workspaceDrawer.isShown) workspaceDrawer.render()
     })

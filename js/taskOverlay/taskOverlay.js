@@ -16,9 +16,8 @@ const createTaskContainer = require('taskOverlay/taskOverlayBuilder.js')
 const profiles = require('profiles.js')
 
 var taskContainer = document.getElementById('task-area')
-var workspaceIndicator = document.getElementById('workspace-indicator')
-var workspaceIndicatorName = workspaceIndicator.querySelector('.workspace-indicator-name')
-var workspaceIndicatorIcon = workspaceIndicator.querySelector('.workspace-indicator-icon')
+// The workspace indicator element is owned by the workspace drawer module;
+// the overlay only toggles its active class while shown.
 var addTaskButton = document.getElementById('add-task')
 var addTaskLabel = addTaskButton.querySelector('span')
 var taskOverlayNavbar = document.getElementById('task-overlay-navbar')
@@ -53,7 +52,7 @@ function deleteTabFromOverlay (item) {
 
   var tabId = item.getAttribute('data-tab')
 
-  var task = tasks.getTaskContainingTab(tabId)
+  var task = workspaces.findWorkspaceContainingTask(tabId).tasks.getTaskContainingTab(tabId)
 
   if (!editorView.confirmDiscard(tabId)) return
   editorView.allowDiscard(tabId)
@@ -61,7 +60,7 @@ function deleteTabFromOverlay (item) {
     splitView.handleTabDestroyed(tabId)
   }
 
-  tasks.get(task.id).tabs.destroy(tabId)
+  workspaces.findWorkspaceContainingTask(tabId).tasks.get(task.id).tabs.destroy(tabId)
   webviews.destroy(tabId)
 
   tabBar.updateAll()
@@ -78,6 +77,13 @@ function deleteTabFromOverlay (item) {
 
 var manageProfilesButton = document.getElementById('manage-profiles-button')
 var profilePopup = document.getElementById('profile-popup')
+// profile-popup is created lazily if the recovered overlay DOM predates it
+if (!profilePopup) {
+  profilePopup = document.createElement('div')
+  profilePopup.id = 'profile-popup'
+  profilePopup.hidden = true
+  document.body.appendChild(profilePopup)
+}
 
 manageProfilesButton.title = l('taskProfileManage')
 
@@ -137,7 +143,8 @@ function showTaskSettings (taskId, anchor) {
     })
     popup.appendChild(renameInput)
 
-    /* profile */
+    /* profile: tasks inherit their workspace's profile; change it in the
+    workspace drawer. Show it read-only here. */
     var profileLabel = document.createElement('div')
     profileLabel.className = 'profile-popup-section-label'
     profileLabel.textContent = l('taskProfileLabel')
@@ -158,12 +165,8 @@ function showTaskSettings (taskId, anchor) {
     var defaultSelect = document.createElement('button')
     defaultSelect.className = 'profile-popup-select i carbon:checkmark'
     defaultSelect.title = l('taskProfileSelect')
-    defaultSelect.classList.toggle('selected', !task.profileId)
-    defaultSelect.addEventListener('click', function () {
-      browserUI.setTaskProfile(task.id, null)
-      hideProfilePopup()
-      taskOverlay.render()
-    })
+    const wsProfileId = (workspaces.getSelected() || {}).profileId || null
+    defaultSelect.classList.toggle('selected', !wsProfileId)
     defaultRow.appendChild(defaultSelect)
 
     popup.appendChild(defaultRow)
@@ -186,12 +189,7 @@ function showTaskSettings (taskId, anchor) {
       var selectButton = document.createElement('button')
       selectButton.className = 'profile-popup-select i carbon:checkmark'
       selectButton.title = l('taskProfileSelect')
-      selectButton.classList.toggle('selected', task.profileId === profile.id)
-      selectButton.addEventListener('click', function () {
-        browserUI.setTaskProfile(task.id, profile.id)
-        hideProfilePopup()
-        taskOverlay.render()
-      })
+      selectButton.classList.toggle('selected', wsProfileId === profile.id)
       row.appendChild(selectButton)
 
       popup.appendChild(row)
@@ -201,9 +199,16 @@ function showTaskSettings (taskId, anchor) {
     manageButton.className = 'profile-popup-manage'
     manageButton.textContent = l('taskProfileManage')
     manageButton.addEventListener('click', function () {
-      showProfileManager(anchor)
+      hideProfilePopup()
+      taskOverlay.hide()
+      require('workspaceDrawer/workspaceDrawer.js').show()
     })
     popup.appendChild(manageButton)
+
+    var profileNote = document.createElement('div')
+    profileNote.className = 'profile-popup-section-label'
+    profileNote.textContent = l('taskProfileInherited') || ''
+    popup.appendChild(profileNote)
 
     /* delete */
     var deleteButton = document.createElement('button')
@@ -360,11 +365,8 @@ var taskOverlay = {
         var droppedTaskId = e.item.getAttribute('data-task')
         const insertionPoint = Array.from(taskContainer.children).indexOf(e.item)
 
-        // remove the task from the tasks list
-        var droppedTask = tasks.splice(tasks.getIndex(droppedTaskId), 1)[0]
-
-        // reinsert the task
-        tasks.splice(insertionPoint, 0, droppedTask)
+        // remove the task from the task list and reinsert it
+        tasks.reorder(tasks.getIndex(droppedTaskId), insertionPoint)
       }
     })
     taskOverlay.sortableInstances.push(sortable)
@@ -408,7 +410,8 @@ var taskOverlay = {
 
         sortedItems.forEach(function (item) {
           var tabId = item.getAttribute('data-tab')
-          var previousTask = tasks.getTaskContainingTab(tabId) // note: can't use e.from here, because it contains only a single element and items could be coming from multiple tasks
+          var previousHome = workspaces.findWorkspaceContainingTask(tabId)
+          var previousTask = previousHome.tasks.getTaskContainingTab(tabId) // note: can't use e.from here, because it contains only a single element and items could be coming from multiple tasks
 
           var oldTab = previousTask.tabs.splice(previousTask.tabs.getIndex(tabId), 1)[0]
 
@@ -465,7 +468,8 @@ var taskOverlay = {
     hideProfilePopup()
 
     this.isShown = true
-    workspaceIndicator.classList.add('active')
+    var indicatorEl = document.getElementById('workspace-indicator')
+    if (indicatorEl) indicatorEl.classList.add('active')
 
     taskOverlay.render()
 
@@ -488,7 +492,8 @@ var taskOverlay = {
     taskOverlay.addTabDragging(addTaskButton)
     taskOverlay.addTaskDragging()
 
-    // show the task elements
+    // show the active workspace's task elements (window.tasks is re-pointed
+    // to the selected workspace's TaskList on every workspace switch)
     tasks.forEach(function (task, index) {
       const el = createTaskContainer(task, index, {
         tabSelect: function () {
@@ -546,10 +551,15 @@ var taskOverlay = {
       }
 
       // force the UI to rerender
-      browserUI.switchToTask(tasks.getSelected().id)
-      browserUI.switchToTab(tabs.getSelected())
+      if (tasks.getSelected()) {
+        browserUI.switchToTask(tasks.getSelected().id)
+      }
+      if (tabs.getSelected()) {
+        browserUI.switchToTab(tabs.getSelected())
+      }
 
-      workspaceIndicator.classList.remove('active')
+      var indicatorEl = document.getElementById('workspace-indicator')
+      if (indicatorEl) indicatorEl.classList.remove('active')
     }
   },
 
@@ -575,7 +585,8 @@ var taskOverlay = {
       if (taskOverlay.overlayElement.contains(e.target)) {
         return
       }
-      if (workspaceIndicator.contains(e.target)) {
+      var indicatorEl = document.getElementById('workspace-indicator')
+      if (indicatorEl && indicatorEl.contains(e.target)) {
         return
       }
       taskOverlay.hide()
@@ -697,13 +708,7 @@ var taskOverlay = {
     keybindings.defineShortcut('addTask', addTaskFromMenu)
     ipcRenderer.on('addTask', addTaskFromMenu) // for menu item
 
-    workspaceIndicator.title = l('viewTasks')
     addTaskLabel.textContent = l('newTask')
-
-    workspaceIndicator.addEventListener('click', function (e) {
-      e.stopPropagation()
-      taskOverlay.toggle()
-    })
 
     addTaskButton.addEventListener('click', function (e) {
       browserUI.addTask()
@@ -718,39 +723,16 @@ var taskOverlay = {
       }
     })
 
-    function updateWorkspaceIndicator () {
-      const task = tasks.getSelected()
-      if (!task) {
-        return
-      }
-      const taskName = task.name || l('defaultTaskName').replace('%n', tasks.getIndex(task.id) + 1)
-      workspaceIndicatorName.textContent = taskName
-      workspaceIndicator.title = taskName
-
-      // identity: the assigned profile's initial, or a generic icon
-      const profile = profiles.getProfile(task.profileId)
-      if (profile) {
-        workspaceIndicatorIcon.classList.remove('i', 'carbon:user-multiple', 'carbon:user')
-        workspaceIndicatorIcon.textContent = (profile.name.trim()[0] || '?').toUpperCase()
-        workspaceIndicatorIcon.style.backgroundColor = profiles.getColor(profile.id)
-        workspaceIndicatorIcon.classList.add('profile-initial')
-      } else {
-        workspaceIndicatorIcon.classList.remove('profile-initial')
-        workspaceIndicatorIcon.textContent = ''
-        workspaceIndicatorIcon.style.backgroundColor = ''
-        workspaceIndicatorIcon.classList.add('i', 'carbon:user-multiple')
-      }
-    }
-
-    tasks.on('task-selected', updateWorkspaceIndicator)
-    tasks.on('task-updated', function (id, key) {
-      if (key === 'name' || key === 'profileId') {
-        updateWorkspaceIndicator()
+    // NOTE: the workspace indicator is owned by the workspace drawer module
+    // (workspaceDrawer.js updateIndicator shows Workspace › Task). The overlay
+    // re-renders on selection changes via state-sync-change below.
+    workspaces.on('workspace-selected', function () {
+      if (taskOverlay.isShown) {
+        taskOverlay.render()
       }
     })
 
-    tasks.on('state-sync-change', function () {
-      updateWorkspaceIndicator()
+    workspaces.on('state-sync-change', function () {
       if (taskOverlay.isShown) {
         taskOverlay.render()
       }

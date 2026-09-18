@@ -22,18 +22,31 @@ function confirmDiscardTabs (tabList) {
   })
 }
 
-/* creates a new task */
+/* creates a new workspace: one Workspace record owning one initial task */
+
+function addWorkspace (workspace) {
+  workspace = workspace || {}
+  const id = workspaces.add(workspace)
+  switchToWorkspace(id)
+  return id
+}
+
+/* creates a new task inside the selected workspace */
 
 function addTask () {
+  const ws = workspaces.getSelected()
+  if (!ws) {
+    return addWorkspace()
+  }
   // insert after current task
   let index
   if (tasks.getSelected()) {
     index = tasks.getIndex(tasks.getSelected().id) + 1
   }
-  tasks.setSelected(tasks.add({}, index))
+  const id = tasks.add({}, index)
+  switchToTask(id)
 
-  tabBar.updateAll()
-  addTab()
+  return id
 }
 
 /* creates a new tab */
@@ -132,10 +145,14 @@ function destroyTab (id, options) {
   return true
 }
 
-/* destroys a task, and either switches to the next most-recent task or creates a new one */
+/* destroys a task, and either switches to the next most-recent task or creates a new one.
+A workspace is never left taskless: closing the last task recreates an empty one. */
 
 function closeTask (taskId) {
-  var previousCurrentTask = tasks.getSelected().id
+  var previousCurrentTask = tasks.getSelected() && tasks.getSelected().id
+
+  // stop the task's agent session before tearing down its views
+  ipc.send('agent-destroy-task-session', { taskId: taskId })
 
   if (!destroyTask(taskId)) {
     return false
@@ -161,6 +178,69 @@ function closeTask (taskId) {
       return switchToTask(mostRecent.id)
     }
   }
+}
+
+/* destroys a workspace: all of its tasks, views and workspace-scoped state */
+
+function closeWorkspace (id) {
+  var ws = workspaces.get(id)
+  if (!ws) {
+    return false
+  }
+
+  const wasSelected = workspaces.getSelected() && workspaces.getSelected().id === id
+
+  // stop every task agent session in the workspace first
+  ws.tasks.forEach(function (task) {
+    ipc.send('agent-destroy-task-session', { taskId: task.id })
+  })
+
+  if (!confirmDiscardTabs(ws.tasks.map(task => task.tabs.get()).reduce((all, arr) => all.concat(arr), []))) {
+    return false
+  }
+
+  splitView.clearAll()
+
+  ws.tasks.forEach(function (task) {
+    task.tabs.get().forEach(function (tab) {
+      editorView.allowDiscard(tab.id)
+      webviews.destroy(tab.id)
+    })
+  })
+
+  var taskIds = ws.tasks.map(function (task) { return task.id })
+
+  workspaces.destroy(id)
+  removeWorkspaceState(id, taskIds)
+
+  if (wasSelected) {
+    const remaining = workspaces.getActive()
+    if (remaining.length > 0) {
+      const mostRecent = remaining.sort(function (a, b) {
+        return workspaces.getLastActivity(b.id) - workspaces.getLastActivity(a.id)
+      })[0]
+      return switchToWorkspace(mostRecent.id)
+    } else {
+      return addWorkspace()
+    }
+  }
+}
+
+/* removes workspace-scoped persisted state (sidebar, tree, git, docs, agents) */
+function removeWorkspaceState (id, taskIds) {
+  try {
+    var uiStateDB = require('util/uiStateDB.js')
+    if (uiStateDB.deleteWorkspaceState) {
+      uiStateDB.deleteWorkspaceState(id)
+    }
+  } catch (e) {}
+  try {
+    var customDataStore = require('util/customDataStore.js')
+    if (customDataStore.deleteWorkspaceDocuments) {
+      customDataStore.deleteWorkspaceDocuments(id)
+    }
+  } catch (e) {}
+  ipc.send('agent-destroy-workspace-sessions', { workspaceId: id, taskIds: taskIds || [] })
 }
 
 /* destroys a tab, and either switches to the next tab or creates a new one */
@@ -195,6 +275,9 @@ function closeTab (tabId, options) {
 
 function setWindowTitle () {
   const task = tasks.getSelected()
+  if (!task) {
+    return
+  }
   const tab = task.tabs.get(task.tabs.getSelected())
 
   const truncateString = (str, len) => {
@@ -217,36 +300,41 @@ function setWindowTitle () {
   }
 }
 
-/* changes the profile (session partition) used by a task. All existing views
-of the task are destroyed so they get recreated with the new partition. */
+/* changes the profile (session partition) used by a workspace. All existing
+views of the workspace's tasks are destroyed so they get recreated with the
+new partition. Kept under the old setTaskProfile name for callers; the id is
+a workspace id. */
 
-function setTaskProfile (taskId, profileId, options) {
+function setTaskProfile (workspaceId, profileId, options) {
   options = options || {}
-  var task = tasks.get(taskId)
-  if (!task) {
+  var ws = workspaces.get(workspaceId)
+  if (!ws) {
     return false
   }
 
-  if (task.profileId === profileId) {
+  if (ws.profileId === profileId) {
     return true
   }
 
-  if (!options.skipDirtyCheck && !confirmDiscardTabs(task.tabs.get())) {
+  const allTabs = ws.tasks.map(task => task.tabs.get()).reduce((all, arr) => all.concat(arr), [])
+  if (!options.skipDirtyCheck && !confirmDiscardTabs(allTabs)) {
     return false
   }
 
   // Drop every group, including paused groups, before replacing the views.
   splitView.clearAll()
 
-  task.tabs.get().forEach(function (tab) {
-    editorView.allowDiscard(tab.id)
-    webviews.destroy(tab.id)
+  ws.tasks.forEach(function (task) {
+    task.tabs.get().forEach(function (tab) {
+      editorView.allowDiscard(tab.id)
+      webviews.destroy(tab.id)
+    })
   })
 
-  tasks.update(taskId, { profileId: profileId })
+  workspaces.update(workspaceId, { profileId: profileId })
 
-  if (taskId === tasks.getSelected().id) {
-    var selectedTab = tasks.get(taskId).tabs.getSelected()
+  if (workspaceId === workspaces.getSelected().id) {
+    var selectedTab = tasks.getSelected() && tasks.getSelected().tabs.getSelected()
     if (selectedTab) {
       switchToTab(selectedTab, { focusWebview: true })
     } else {
@@ -260,16 +348,22 @@ function setTaskProfile (taskId, profileId, options) {
 assignment is updated first, and all old views are recreated lazily against
 the default partition instead of leaving the deleted profile id in memory. */
 function getProfileDeletionTasks (profileId) {
-  return tasks.filter(function (task) {
-    return task.profileId === profileId
+  const affected = []
+  workspaces.forEach(function (ws) {
+    if (ws.profileId === profileId) {
+      ws.tasks.forEach(function (task) {
+        affected.push({ workspace: ws, task: task })
+      })
+    }
   })
+  return affected
 }
 
 function confirmProfileDeletion (profileId) {
   const affectedTasks = getProfileDeletionTasks(profileId)
   const affectedTabs = []
-  affectedTasks.forEach(function (task) {
-    affectedTabs.push.apply(affectedTabs, task.tabs.get())
+  affectedTasks.forEach(function (entry) {
+    affectedTabs.push.apply(affectedTabs, entry.task.tabs.get())
   })
   return confirmDiscardTabs(affectedTabs)
 }
@@ -286,19 +380,19 @@ function applyProfileDeleted (profileId) {
   const selectedTabId = selectedTask && selectedTask.tabs.getSelected()
 
   splitView.clearAll()
-  affectedTasks.forEach(function (task) {
-    task.tabs.get().forEach(function (tab) {
+  affectedTasks.forEach(function (entry) {
+    entry.task.tabs.get().forEach(function (tab) {
       editorView.allowDiscard(tab.id)
       webviews.destroy(tab.id)
     })
-    tasks.update(task.id, { profileId: null })
+    workspaces.update(entry.workspace.id, { profileId: null })
   })
 
   // Recreate the selected tab immediately so the user does not see a blank
   // content area after deleting the profile. Other workspaces recreate views
   // when they are selected.
-  if (selectedTaskId && affectedTasks.some(function (task) { return task.id === selectedTaskId })) {
-    const task = tasks.get(selectedTaskId)
+  if (selectedTaskId && affectedTasks.some(function (entry) { return entry.task.id === selectedTaskId })) {
+    const task = workspaces.findTask(selectedTaskId)
     if (selectedTabId && task.tabs.has(selectedTabId)) {
       switchToTab(selectedTabId, { focusWebview: true })
     } else if (task.tabs.count() === 0) {
@@ -315,66 +409,75 @@ function handleProfileDeleted (profileId) {
   return applyProfileDeleted(profileId)
 }
 
-/* archives a task: switches away from it if it is open, destroys all of its
-webviews to free memory, and marks it as archived so it no longer appears in
-the regular workspace list. Its state is kept so it can be restored later. */
+/* archives a workspace: switches away from it if it is open, stops its agent
+sessions, destroys all of its views to free memory, and marks it as archived
+so it no longer appears in the regular workspace list. Its state (including
+activeTaskId) is kept so it can be restored later. */
 
-function archiveTask (id) {
-  var task = tasks.get(id)
-  if (!task || task.archived) {
+function archiveWorkspace (id) {
+  var ws = workspaces.get(id)
+  if (!ws || ws.archived) {
     return false
   }
 
-  if (!confirmDiscardTabs(task.tabs.get())) {
+  const allTabs = ws.tasks.map(task => task.tabs.get()).reduce((all, arr) => all.concat(arr), [])
+  if (!confirmDiscardTabs(allTabs)) {
     return false
   }
 
-  // Archived tasks must not retain paused groups or stale attached views.
+  // Archived workspaces must not retain paused groups or stale attached views.
   splitView.clearAll()
 
   // if this workspace is open in the current window, switch away from it first
 
-  if (tasks.getSelected() && tasks.getSelected().id === id) {
-    var remainingTasks = tasks.getActive().filter(function (t) {
-      return t.id !== id
+  if (workspaces.getSelected() && workspaces.getSelected().id === id) {
+    var remainingWorkspaces = workspaces.getActive().filter(function (w) {
+      return w.id !== id
     })
 
-    if (remainingTasks.length > 0) {
-      var mostRecent = remainingTasks.sort(function (a, b) {
-        return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
+    if (remainingWorkspaces.length > 0) {
+      var mostRecent = remainingWorkspaces.sort(function (a, b) {
+        return workspaces.getLastActivity(b.id) - workspaces.getLastActivity(a.id)
       })[0]
 
-      switchToTask(mostRecent.id)
+      switchToWorkspace(mostRecent.id)
     } else {
-      addTask()
+      addWorkspace()
     }
   }
 
-  tasks.update(id, { archived: true })
+  // stop every agent session in the workspace
+  ws.tasks.forEach(function (task) {
+    ipc.send('agent-destroy-task-session', { taskId: task.id })
+  })
 
-  // free the memory used by the task's views; they are recreated lazily when the task is restored
+  workspaces.update(id, { archived: true })
 
-  tasks.get(id).tabs.get().forEach(function (tab) {
-    editorView.allowDiscard(tab.id)
-    webviews.destroy(tab.id)
+  // free the memory used by the workspace's views; they are recreated lazily when the workspace is restored
+
+  workspaces.get(id).tasks.forEach(function (task) {
+    task.tabs.get().forEach(function (tab) {
+      editorView.allowDiscard(tab.id)
+      webviews.destroy(tab.id)
+    })
   })
   return true
 }
 
-/* restores an archived task and switches back to it, recreating its views */
+/* restores an archived workspace and switches back to its last active task */
 
-function restoreTask (id, options) {
-  var task = tasks.get(id)
-  if (!task || !task.archived) {
+function restoreWorkspace (id, options) {
+  var ws = workspaces.get(id)
+  if (!ws || !ws.archived) {
     return
   }
 
-  tasks.update(id, { archived: false })
+  workspaces.update(id, { archived: false })
 
-  switchToTask(id, options)
+  switchToWorkspace(id, options)
 }
 
-/* changes the currently-selected task and updates the UI */
+/* changes the currently-selected task inside the selected workspace and updates the UI */
 
 function switchToTask (id, options) {
   options = options || {}
@@ -387,6 +490,15 @@ function switchToTask (id, options) {
   tabBar.updateAll()
 
   var taskData = tasks.get(id)
+  if (!taskData) {
+    return
+  }
+
+  // remember the task on the workspace so workspace switches restore it
+  const ws = workspaces.getSelected()
+  if (ws) {
+    workspaces.update(ws.id, { activeTaskId: id }, false)
+  }
 
   if (taskData.tabs.count() > 0) {
     var selectedTab = taskData.tabs.getSelected()
@@ -407,20 +519,72 @@ function switchToTask (id, options) {
   setWindowTitle(taskData)
 }
 
-tasks.on('task-updated', function (id, key) {
-  if (key === 'name' && id === tasks.getSelected().id) {
-    setWindowTitle()
-  }
-})
+/* changes the currently-selected workspace, restoring its last active task */
 
-tasks.on('tab-selected', function () {
+function switchToWorkspace (id, options) {
+  options = options || {}
+  var ws = workspaces.get(id)
+  if (!ws) {
+    return
+  }
+
+  // switching workspaces destroys the visible and all paused split groups
+  splitView.clearAll()
+
+  workspaces.setSelected(id)
+
+  tabBar.updateAll()
+
+  var taskId = ws.activeTaskId && ws.tasks.get(ws.activeTaskId) ? ws.activeTaskId : null
+  if (!taskId) {
+    if (ws.tasks.getLength() === 0) {
+      taskId = tasks.add({})
+    } else {
+      taskId = ws.tasks.getSelected() ? ws.tasks.getSelected().id : ws.tasks.byIndex(0).id
+    }
+    workspaces.update(id, { activeTaskId: taskId }, false)
+  }
+
+  switchToTask(taskId, options)
+}
+
+workspaces.on('workspace-selected', function () {
   setWindowTitle()
 })
 
-tasks.on('tab-updated', function (id, key) {
-  if (key === 'title') {
+// Title subscriptions live on the WorkspaceStore (stable reference) and on
+// each TaskList at creation time. window.tasks is re-pointed on every
+// workspace switch, so task-level subscriptions must be attached per list.
+function subscribeTaskList (taskList) {
+  taskList.on('task-updated', function (id, key) {
+    if (key === 'name') {
+      const selected = window.tasks.getSelected()
+      if (selected && id === selected.id) {
+        setWindowTitle()
+      }
+    }
+  })
+
+  taskList.on('tab-selected', function () {
     setWindowTitle()
+  })
+
+  taskList.on('tab-updated', function (id, key) {
+    if (key === 'title') {
+      setWindowTitle()
+    }
+  })
+}
+
+workspaces.on('workspace-added', function (id) {
+  const ws = workspaces.get(id)
+  if (ws) {
+    subscribeTaskList(ws.tasks)
   }
+})
+
+workspaces.on('workspace-selected', function () {
+  setWindowTitle()
 })
 
 /* switches to a tab - update the webview, state, tabstrip, etc. */
@@ -554,13 +718,12 @@ tabBar.events.on('tab-closed', function (id) {
   closeTab(id)
 })
 
-const addWorkspace = addTask
+// Backwards-compatible aliases: task-level names kept for callers that
+// operate on the selected workspace's task list.
 const destroyWorkspace = destroyTask
-const closeWorkspace = closeTask
-const switchToWorkspace = switchToTask
 const setWorkspaceProfile = setTaskProfile
-const archiveWorkspace = archiveTask
-const restoreWorkspace = restoreTask
+const archiveTask = archiveWorkspace
+const restoreTask = restoreWorkspace
 
 module.exports = {
   addTask,
@@ -584,5 +747,6 @@ module.exports = {
   setWorkspaceProfile,
   archiveWorkspace,
   restoreWorkspace,
+  removeWorkspaceState,
   splitView
 }

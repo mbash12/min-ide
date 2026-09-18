@@ -31,12 +31,12 @@ let renderToken = 0 // invalidates stale async renders (diff loading)
 let currentWorkspaceId = null
 
 function getWorkspacePath () {
-  const ws = tasks.getSelected()
+  const ws = workspaces.getSelected()
   return ws && ws.path
 }
 
 function getWorkspaceId () {
-  const ws = tasks.getSelected()
+  const ws = workspaces.getSelected()
   return ws && ws.id != null ? String(ws.id) : null
 }
 
@@ -1407,9 +1407,10 @@ const gitPanel = {
     })
     // re-render on workspace change (both event names are retained for
     // compatibility; onWorkspaceSelected de-duplicates their pair)
-    tasks.on('workspace-selected', onWorkspaceSelected)
-    tasks.on('task-selected', onWorkspaceSelected)
-    tasks.on('state-sync-change', function () {
+    workspaces.on('workspace-selected', onWorkspaceSelected)
+    // task switches within a workspace share the same repo/state; the
+    // workspace-selected handler above covers re-renders
+    workspaces.on('state-sync-change', function () {
       const wsPath = getWorkspacePath()
       if (wsPath !== currentWorkspacePath) {
         currentStatus = null

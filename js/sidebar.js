@@ -67,7 +67,7 @@ const sidebar = {
   the selected workspace. Returns true when the active tab was hidden and the
   sidebar had to switch to another tab. */
   updatePathTabs: function () {
-    const ws = tasks.getSelected()
+    const ws = workspaces.getSelected()
     const hasPath = !!(ws && ws.path)
     let activeHidden = false
     sidebar.pathTabs.forEach(function (tabId) {
@@ -320,30 +320,27 @@ const sidebar = {
     }
 
     /* per-workspace state: save on switch, restore the new workspace's state.
-    'workspace-selected' fires whenever tasks.setSelected switches workspaces. */
-    tasks.on('workspace-selected', function (workspaceId) {
+    'workspace-selected' fires from WorkspaceStore.setSelected. */
+    workspaces.on('workspace-selected', function (workspaceId) {
       sidebar.switchToWorkspace(workspaceId)
       sidebar.updatePathTabs()
     })
-    tasks.on('task-selected', function (workspaceId) {
-      sidebar.switchToWorkspace(workspaceId)
-      sidebar.updatePathTabs()
-    })
-    tasks.on('state-sync-change', function () {
+    workspaces.on('state-sync-change', function () {
       // workspace path may have been added/removed (e.g. via the modal)
       sidebar.updatePathTabs()
     })
-    const onPathUpdated = function (id, key) {
-      if (key === 'path' && tasks.getSelected() && id === tasks.getSelected().id) {
-        sidebar.updatePathTabs()
+    workspaces.on('workspace-updated', function (id, key) {
+      if (key === 'path') {
+        const selected = workspaces.getSelected()
+        if (selected && id === selected.id) {
+          sidebar.updatePathTabs()
+        }
       }
-    }
-    tasks.on('task-updated', onPathUpdated)
-    tasks.on('workspace-updated', onPathUpdated)
+    })
 
     // initial load: bind to the workspace selected during session restore
     const bindInitialState = function () {
-      const selected = tasks.getSelected()
+      const selected = workspaces.getSelected()
       if (selected) {
         const id = selected.id
         sidebar.currentWorkspaceId = id

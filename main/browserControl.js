@@ -112,16 +112,17 @@ function browserControlRestrictedError () {
   return { ok: false, error: 'Browser tools cannot control settings or profile pages' }
 }
 
-async function browserControlTargetView (tabId, workspaceId, options) {
+async function browserControlTargetView (tabId, taskId, workspaceId, options) {
   options = options || {}
-  if (!workspaceId) {
-    return { error: 'workspaceId is required; browser tools are scoped to one workspace' }
+  if (!taskId && !workspaceId) {
+    return { error: 'taskId is required; browser tools are scoped to one task' }
   }
   let resolved
   try {
     resolved = await browserControlAskRenderer('resolveTab', {
       tabId: tabId || null,
-      workspaceId: workspaceId,
+      taskId: taskId || null,
+      workspaceId: workspaceId || null,
       ensureView: options.ensureView !== false,
       focus: false
     }, 8000)
@@ -129,7 +130,7 @@ async function browserControlTargetView (tabId, workspaceId, options) {
     return { error: (err && err.message) || String(err) }
   }
   if (!resolved || resolved.ok === false) {
-    return { error: (resolved && resolved.error) || 'Tab not found in this workspace' }
+    return { error: (resolved && resolved.error) || 'Tab not found in this task' }
   }
   const id = resolved.tabId
   let view = viewMap[id]
@@ -143,7 +144,7 @@ async function browserControlTargetView (tabId, workspaceId, options) {
   if (options.allowRestricted !== true && browserControlIsRestrictedUrl(url)) {
     return { error: 'Browser tools cannot control settings or profile pages' }
   }
-  return { id: id, view: view, workspaceId: workspaceId, url: url, keepChromeFocus: !!(resolved && resolved.keepChromeFocus) }
+  return { id: id, view: view, taskId: taskId || (resolved && resolved.taskId), workspaceId: workspaceId || (resolved && resolved.workspaceId), url: url, keepChromeFocus: !!(resolved && resolved.keepChromeFocus) }
 }
 
 function browserControlWaitIdle (view, timeoutMs) {
@@ -872,16 +873,17 @@ async function browserControlAfterPossibleNavigation (view) {
   }
 }
 
-async function browserControlListTabs (workspaceId) {
-  if (!workspaceId) {
-    return { ok: false, error: 'workspaceId is required; browser tools are scoped to one workspace' }
+async function browserControlListTabs (taskId, workspaceId) {
+  if (!taskId && !workspaceId) {
+    return { ok: false, error: 'taskId is required; browser tools are scoped to one task' }
   }
   try {
-    const listed = await browserControlAskRenderer('listTabs', { workspaceId: workspaceId }, 4000)
+    const listed = await browserControlAskRenderer('listTabs', { taskId: taskId || null, workspaceId: workspaceId || null }, 4000)
     if (listed && listed.ok === false) return listed
     if (listed && Array.isArray(listed.tabs)) {
       return {
         ok: true,
+        taskId: listed.taskId || taskId,
         workspaceId: listed.workspaceId || workspaceId,
         workspaceName: listed.workspaceName || null,
         tabs: listed.tabs,
@@ -891,13 +893,13 @@ async function browserControlListTabs (workspaceId) {
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) }
   }
-  return { ok: false, error: 'Could not list tabs for this workspace' }
+  return { ok: false, error: 'Could not list tabs for this task' }
 }
 
-async function browserControlNavigate (url, tabId, workspaceId) {
+async function browserControlNavigate (url, tabId, taskId, workspaceId) {
   if (!url || typeof url !== 'string') return { ok: false, error: 'url is required' }
   if (browserControlIsRestrictedUrl(url)) return browserControlRestrictedError()
-  const target = await browserControlTargetView(tabId, workspaceId, { allowRestricted: true })
+  const target = await browserControlTargetView(tabId, taskId, workspaceId, { allowRestricted: true })
   if (target.error) return { ok: false, error: target.error }
   const win = windows.getCurrent()
   try {
@@ -911,11 +913,11 @@ async function browserControlNavigate (url, tabId, workspaceId) {
   }
   await browserControlWaitIdle(target.view, 30000)
   browserControlRestoreChromeFocus(target.keepChromeFocus)
-  return Object.assign({ ok: true, workspaceId: workspaceId }, browserControlTabInfo(target.id))
+  return Object.assign({ ok: true, taskId: taskId || target.taskId, workspaceId: workspaceId || target.workspaceId }, browserControlTabInfo(target.id))
 }
 
-async function browserControlHistory (method, tabId, workspaceId) {
-  const target = await browserControlTargetView(tabId, workspaceId)
+async function browserControlHistory (method, tabId, taskId, workspaceId) {
+  const target = await browserControlTargetView(tabId, taskId, workspaceId)
   if (target.error) return { ok: false, error: target.error }
   try {
     if (method === 'back') target.view.webContents.goBack()
@@ -930,21 +932,22 @@ async function browserControlHistory (method, tabId, workspaceId) {
   return Object.assign({ ok: true }, browserControlTabInfo(target.id))
 }
 
-async function browserControlSnapshot (tabId, workspaceId) {
-  const target = await browserControlTargetView(tabId, workspaceId)
+async function browserControlSnapshot (tabId, taskId, workspaceId) {
+  const target = await browserControlTargetView(tabId, taskId, workspaceId)
   if (target.error) return { ok: false, error: target.error }
   const result = await browserControlRunInView(target.view, { op: 'snapshot' })
   browserControlRestoreChromeFocus(target.keepChromeFocus)
   if (!result || result.ok === false) return result || { ok: false, error: 'Snapshot failed' }
   result.tabId = target.id
-  result.workspaceId = workspaceId
+  result.taskId = taskId || target.taskId
+  result.workspaceId = workspaceId || target.workspaceId
   result.selected = true
   return result
 }
 
 async function browserControlAct (op, params) {
   params = params || {}
-  const target = await browserControlTargetView(params.tabId, params.workspaceId)
+  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
   const result = await browserControlRunInView(target.view, Object.assign({}, params, {
     op: op,
@@ -966,7 +969,7 @@ async function browserControlWait (params) {
     await browserControlSleep(Math.min(params.ms, 60000))
     return { ok: true, waited: params.ms }
   }
-  const target = await browserControlTargetView(params.tabId, params.workspaceId)
+  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
   if (params.load) {
     await browserControlWaitIdle(target.view, params.timeout || 20000)
@@ -985,26 +988,27 @@ async function browserControlWait (params) {
 
 async function browserControlTabs (operation, params) {
   params = params || {}
+  const taskId = params.taskId
   const workspaceId = params.workspaceId
-  if (!workspaceId) {
-    return { ok: false, error: 'workspaceId is required; browser tools are scoped to one workspace' }
+  if (!taskId && !workspaceId) {
+    return { ok: false, error: 'taskId is required; browser tools are scoped to one task' }
   }
+  const scope = { taskId: taskId || null, workspaceId: workspaceId || null }
   if (operation === 'list' || !operation) {
-    return browserControlListTabs(workspaceId)
+    return browserControlListTabs(taskId, workspaceId)
   }
   if (operation === 'new') {
     if (browserControlIsRestrictedUrl(params.url)) return browserControlRestrictedError()
     try {
-      const created = await browserControlAskRenderer('newTab', {
-        url: params.url || '',
-        workspaceId: workspaceId
-      }, 8000)
+      const created = await browserControlAskRenderer('newTab', Object.assign({
+        url: params.url || ''
+      }, scope), 8000)
       if (created && created.ok === false) return created
       if (created && created.id) {
         await browserControlWaitForView(created.id, 8000)
         if (params.url) await browserControlWaitIdle(viewMap[created.id], 30000)
         browserControlRestoreChromeFocus(created.keepChromeFocus)
-        return Object.assign({ ok: true, workspaceId: workspaceId }, created, browserControlTabInfo(created.id))
+        return Object.assign({ ok: true }, created, browserControlTabInfo(created.id))
       }
       return created || { ok: false, error: 'Could not create tab' }
     } catch (err) {
@@ -1013,11 +1017,10 @@ async function browserControlTabs (operation, params) {
   }
   if (operation === 'close') {
     try {
-      const closed = await browserControlAskRenderer('closeTab', {
-        tabId: params.tabId || null,
-        workspaceId: workspaceId
-      }, 8000)
-      return closed || { ok: true, workspaceId: workspaceId }
+      const closed = await browserControlAskRenderer('closeTab', Object.assign({
+        tabId: params.tabId || null
+      }, scope), 8000)
+      return closed || Object.assign({ ok: true }, scope)
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }
     }
@@ -1026,11 +1029,10 @@ async function browserControlTabs (operation, params) {
     const tabId = params.tabId
     if (!tabId) return { ok: false, error: 'tabId is required' }
     try {
-      const selected = await browserControlAskRenderer('selectTab', {
-        tabId: tabId,
-        workspaceId: workspaceId
-      }, 8000)
-      return selected || { ok: true, id: tabId, workspaceId: workspaceId }
+      const selected = await browserControlAskRenderer('selectTab', Object.assign({
+        tabId: tabId
+      }, scope), 8000)
+      return selected || Object.assign({ ok: true, id: tabId }, scope)
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) }
     }
@@ -1123,7 +1125,7 @@ function browserControlArmDialog (wc, options) {
 
 async function browserControlPointer (op, params) {
   params = params || {}
-  const target = await browserControlTargetView(params.tabId, params.workspaceId)
+  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
   const loc = await browserControlRunInView(target.view, Object.assign({}, params, { op: 'locate' }))
   if (!loc || loc.ok === false) return loc || { ok: false, error: 'Element not found' }
@@ -1177,7 +1179,7 @@ async function browserControlPointer (op, params) {
 
 async function browserControlDrag (params) {
   params = params || {}
-  const target = await browserControlTargetView(params.tabId, params.workspaceId)
+  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
   const from = await browserControlRunInView(target.view, Object.assign({}, params, { op: 'locate' }))
   if (!from || from.ok === false) return from || { ok: false, error: 'Drag source not found' }
@@ -1227,7 +1229,7 @@ async function browserControlDrag (params) {
 
 async function browserControlScreenshot (params) {
   params = params || {}
-  const target = await browserControlTargetView(params.tabId, params.workspaceId)
+  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
   try {
     const image = await target.view.webContents.capturePage()
@@ -1252,7 +1254,7 @@ async function browserControlUpload (params) {
   params = params || {}
   const files = browserControlParseFiles(params)
   if (!files.length) return { ok: false, error: 'upload needs an existing file path' }
-  const target = await browserControlTargetView(params.tabId, params.workspaceId)
+  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
   const marked = await browserControlRunInView(target.view, Object.assign({}, params, { op: 'markEl' }))
   if (!marked || marked.ok === false) return marked || { ok: false, error: 'File input not found' }
@@ -1288,7 +1290,7 @@ async function browserControlUpload (params) {
 
 async function browserControlDownload (params) {
   params = params || {}
-  const target = await browserControlTargetView(params.tabId, params.workspaceId)
+  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
   const dir = path.join(app.getPath('userData'), 'playbook-downloads')
   fs.mkdirSync(dir, { recursive: true })
@@ -1314,7 +1316,7 @@ async function browserControlDownload (params) {
 
 async function browserControlDialog (params) {
   params = params || {}
-  const target = await browserControlTargetView(params.tabId, params.workspaceId)
+  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
   const result = await browserControlArmDialog(target.view.webContents, {
     accept: params.accept !== false,
@@ -1328,11 +1330,11 @@ async function browserControlDialog (params) {
 async function browserControlRunStep (step) {
   if (!step || typeof step !== 'object') return { ok: false, error: 'Invalid step' }
   const action = step.action
-  if (action === 'navigate') return browserControlNavigate(step.url, step.tabId, step.workspaceId)
-  if (action === 'back') return browserControlHistory('back', step.tabId, step.workspaceId)
-  if (action === 'forward') return browserControlHistory('forward', step.tabId, step.workspaceId)
-  if (action === 'reload') return browserControlHistory('reload', step.tabId, step.workspaceId)
-  if (action === 'snapshot') return browserControlSnapshot(step.tabId, step.workspaceId)
+  if (action === 'navigate') return browserControlNavigate(step.url, step.tabId, step.taskId, step.workspaceId)
+  if (action === 'back') return browserControlHistory('back', step.tabId, step.taskId, step.workspaceId)
+  if (action === 'forward') return browserControlHistory('forward', step.tabId, step.taskId, step.workspaceId)
+  if (action === 'reload') return browserControlHistory('reload', step.tabId, step.taskId, step.workspaceId)
+  if (action === 'snapshot') return browserControlSnapshot(step.tabId, step.taskId, step.workspaceId)
   if (action === 'click') return browserControlPointer('click', step)
   if (action === 'dblclick') return browserControlPointer('dblclick', step)
   if (action === 'rightclick') return browserControlPointer('rightclick', step)

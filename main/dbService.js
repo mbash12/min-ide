@@ -644,6 +644,28 @@ ipc.handle('db:updateDocument', async (event, data) => {
 })
 ipc.handle('db:deleteDocument', async (event, data) => deleteDocument(data))
 
+/* Removes every row belonging to a deleted workspace: documents, designs,
+snapshots and tab activities. Workspace-scoped collections share the
+workspace_id key, so one sweep covers all of them. */
+function deleteWorkspaceData (workspaceId) {
+  const id = String(workspaceId)
+  const before = {
+    documents: dbState.documents.length,
+    designs: dbState.design_documents.length,
+    snapshots: dbState.workspace_snapshots.length,
+    activities: dbState.tab_activities.length
+  }
+  dbState.documents = dbState.documents.filter(document => String(document.workspace_id) !== id)
+  dbState.design_documents = dbState.design_documents.filter(design => String(design.workspace_id) !== id)
+  dbState.workspace_snapshots = dbState.workspace_snapshots.filter(snapshot => String(snapshot.workspace_id) !== id)
+  dbState.tab_activities = dbState.tab_activities.filter(activity => String(activity.workspace_id) !== id)
+  saveDatabase()
+  broadcastDocsChanged(id, null)
+  return { ok: true, removed: before }
+}
+
+ipc.handle('db:deleteWorkspaceData', async (event, workspaceId) => deleteWorkspaceData(workspaceId))
+
 ipc.handle('db:logTabActivity', async (event, activity) => logTabActivity(activity))
 ipc.handle('db:getTabActivities', async (event, data) => getTabActivities(data && data.workspaceId, data && data.limit))
 

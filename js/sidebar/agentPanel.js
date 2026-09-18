@@ -44,37 +44,39 @@ let slashItems = []
 let slashIndex = 0
 let slashMenuOpen = false
 
-/* per-workspace transcript + in-progress state, keyed by workspace id. The backend
+/* per-task transcript + in-progress state, keyed by task id. The backend
 keeps the authoritative session/messages; this map just caches what we've
-rendered so switching workspaces is instant. */
+rendered so switching tasks is instant. */
 const conversations = new Map()
-let activeWorkspaceId = null
+let activeTaskId = null
 
-function getWorkspaceInfo () {
-  const ws = tasks.getSelected()
+function getTaskInfo () {
+  const task = tasks.getSelected()
+  const ws = workspaces.getSelected()
   return {
+    taskId: task ? String(task.id) : 'default',
     workspaceId: ws ? String(ws.id) : 'default',
     cwd: (ws && ws.path) ? ws.path : null
   }
 }
 
-function getActiveWorkspaceId () {
-  return getWorkspaceInfo().workspaceId
+function getActiveTaskId () {
+  return getTaskInfo().taskId
 }
 
 function agentPayload (extra) {
-  const info = getWorkspaceInfo()
-  return Object.assign({ workspaceId: info.workspaceId, cwd: info.cwd }, extra || {})
+  const info = getTaskInfo()
+  return Object.assign({ taskId: info.taskId, workspaceId: info.workspaceId, cwd: info.cwd }, extra || {})
 }
 
-function convFor (workspaceId) {
-  const key = workspaceId || 'default'
+function convFor (taskId) {
+  const key = taskId || 'default'
   if (!conversations.has(key)) conversations.set(key, { messages: [], assistantMsg: null, thinking: '' })
   return conversations.get(key)
 }
 
 function currentConv () {
-  return convFor(getActiveWorkspaceId())
+  return convFor(getActiveTaskId())
 }
 
 function getModelLabel (modelId) {
@@ -1243,15 +1245,15 @@ function sendCurrentInput () {
 
 /* ----- event handling (from main/agent.js) ----- */
 
-/* applies a backend event to the right workspace's cached transcript. DOM is
-only touched when the event's workspace is the one currently shown. */
+/* applies a backend event to the right task's cached transcript. DOM is
+only touched when the event's task is the one currently shown. */
 function applyEvent (ev) {
   if (!els || !ev || !ev.type) return
-  const wsKey = (ev.workspaceId != null && ev.workspaceId !== '')
-    ? String(ev.workspaceId)
+  const taskKey = (ev.taskId != null && ev.taskId !== '')
+    ? String(ev.taskId)
     : 'default'
-  const conv = convFor(wsKey)
-  const active = wsKey === String(activeWorkspaceId)
+  const conv = convFor(taskKey)
+  const active = taskKey === String(activeTaskId)
   switch (ev.type) {
     case 'delta':
       if (ev.deltaType === 'thinking' && ev.delta) {
@@ -1386,18 +1388,18 @@ ipc.on('agent-event', function (e, ev) {
   applyEvent(ev)
 })
 
-/* pulls a workspace's persisted transcript + model/thinking/context from the
-backend and renders it if it's the active workspace. */
+/* pulls a task's persisted transcript + model/thinking/context from the
+backend and renders it if it's the active task. */
 async function refreshState () {
-  const wsInfo = getWorkspaceInfo()
-  activeWorkspaceId = wsInfo.workspaceId
+  const taskInfo = getTaskInfo()
+  activeTaskId = taskInfo.taskId
   try {
     const state = await ipc.invoke('agent-get-state', agentPayload({ restore: true }))
     if (!state) return
-    if (wsInfo.workspaceId === activeWorkspaceId) {
+    if (taskInfo.taskId === activeTaskId) {
       applyWorkspaceState(state)
     } else {
-      const conv = convFor(wsInfo.workspaceId)
+      const conv = convFor(taskInfo.taskId)
       conv.messages = state.messages || []
       conv.assistantMsg = null
       conv.thinking = ''
@@ -1405,21 +1407,20 @@ async function refreshState () {
   } catch (e) {}
 }
 
-/* WorkspaceList emits both names for compatibility with older task-aware
- * consumers. They describe one selection, so restore the session only once
- * for the pair. */
-function onWorkspaceChange (workspaceId) {
-  const selectedWorkspaceId = getActiveWorkspaceId()
-  const nextWorkspaceId = workspaceId != null && workspaceId !== ''
-    ? String(workspaceId)
-    : selectedWorkspaceId
-  // Ignore a queued compatibility event if another selection has already
-  // superseded it before the deferred event callback ran.
-  if (workspaceId != null && workspaceId !== '' && selectedWorkspaceId && nextWorkspaceId !== selectedWorkspaceId) return
-  if (nextWorkspaceId === activeWorkspaceId) return
+/* Re-scope the chat whenever the workspace or task changes. Workspace
+ * switches also change the task, so de-duplicate the pair. */
+function onTaskChange (taskId) {
+  const nextTaskId = taskId != null && taskId !== ''
+    ? String(taskId)
+    : getActiveTaskId()
+  if (nextTaskId === activeTaskId) return
 
   closeHistoryDrawer()
   hideSlashMenu()
+  refreshState()
+}
+
+function onWorkspaceChange () {
   refreshState()
 }
 
@@ -1429,10 +1430,12 @@ async function initialize () {
 
   /* re-scope the chat whenever the workspace/task changes, like the other
   sidebar panels (file tree, git) */
-  // Keep both event names for compatibility; onWorkspaceChange de-duplicates
-  // the pair emitted by WorkspaceList.setSelected().
-  tasks.on('workspace-selected', onWorkspaceChange)
-  tasks.on('task-selected', onWorkspaceChange)
+  workspaces.on('workspace-selected', onWorkspaceChange)
+  workspaces.on('workspace-updated', function (id, key) {
+    if (key === 'activeTaskId') {
+      onTaskChange(workspaces.get(id) && workspaces.get(id).activeTaskId)
+    }
+  })
 
   /* load the model catalog for the picker in the background */
   try {

@@ -9,7 +9,7 @@ const EDITOR_BASE = 'min://app/pages/editor/index.html'
 const editorView = {
   /* the URL for an editor tab showing filePath */
   getEditorURL: function (filePath) {
-    const ws = typeof tasks !== 'undefined' && tasks.getSelected ? tasks.getSelected() : null
+    const ws = typeof workspaces !== 'undefined' && workspaces.getSelected ? workspaces.getSelected() : null
     let url = EDITOR_BASE + '?path=' + encodeURIComponent(filePath)
     if (ws && ws.path) {
       url += '&workspace=' + encodeURIComponent(ws.path)

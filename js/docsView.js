@@ -39,15 +39,15 @@ function getDocsURL (workspaceId, documentId) {
 }
 
 function forEachWorkspace (callback) {
-  if (typeof tasks === 'undefined' || !tasks) return
+  if (typeof workspaces === 'undefined' || !workspaces) return
 
-  if (typeof tasks.forEach === 'function') {
-    tasks.forEach(callback)
+  if (typeof workspaces.forEach === 'function') {
+    workspaces.forEach(callback)
     return
   }
 
-  if (Array.isArray(tasks.workspaces)) {
-    tasks.workspaces.forEach(callback)
+  if (Array.isArray(workspaces.workspaces)) {
+    workspaces.workspaces.forEach(callback)
   }
 }
 
@@ -58,14 +58,17 @@ function getTabRecord (workspaceId, documentId) {
 
   let found = null
   forEachWorkspace(function (workspace) {
-    if (found || !workspace || normalizeId(workspace.id) !== ws || !workspace.tabs) return
-    const entries = typeof workspace.tabs.get === 'function' ? workspace.tabs.get() : []
-    entries.forEach(function (tab) {
-      if (found || !tab) return
-      const identity = getDocumentIdentity(tab.url)
-      if (identity && identity.workspaceId === ws && identity.documentId === doc) {
-        found = { id: tab.id, workspaceId: ws, documentId: doc, tab: tab, workspace: workspace }
-      }
+    if (found || !workspace || normalizeId(workspace.id) !== ws || !workspace.tasks) return
+    workspace.tasks.forEach(function (task) {
+      if (found || !task || !task.tabs) return
+      const entries = typeof task.tabs.get === 'function' ? task.tabs.get() : []
+      entries.forEach(function (tab) {
+        if (found || !tab) return
+        const identity = getDocumentIdentity(tab.url)
+        if (identity && identity.workspaceId === ws && identity.documentId === doc) {
+          found = { id: tab.id, workspaceId: ws, documentId: doc, tab: tab, workspace: workspace, task: task }
+        }
+      })
     })
   })
   return found
@@ -77,8 +80,8 @@ function findTab (workspaceId, documentId) {
 }
 
 function selectedWorkspaceId () {
-  if (typeof tasks === 'undefined' || !tasks || typeof tasks.getSelected !== 'function') return null
-  const workspace = tasks.getSelected()
+  if (typeof workspaces === 'undefined' || !workspaces || typeof workspaces.getSelected !== 'function') return null
+  const workspace = workspaces.getSelected()
   return workspace ? normalizeId(workspace.id) : null
 }
 
@@ -108,10 +111,11 @@ function handleTitleChanged (tabId, args) {
   if (title === undefined || title === null) return
 
   const nextTitle = String(title).trim()
-  if (record.workspace.tabs && typeof record.workspace.tabs.update === 'function') {
+  const taskTabs = record.task ? record.task.tabs : null
+  if (taskTabs && typeof taskTabs.update === 'function') {
     const currentTitle = record.tab && record.tab.title ? String(record.tab.title) : ''
     if (currentTitle !== nextTitle) {
-      record.workspace.tabs.update(record.id, { title: nextTitle })
+      taskTabs.update(record.id, { title: nextTitle })
     }
   }
 
@@ -140,21 +144,25 @@ function getTabRecordForId (tabId) {
 
   let found = null
   forEachWorkspace(function (workspace) {
-    if (found || !workspace || !workspace.tabs) return
-    const entries = typeof workspace.tabs.get === 'function' ? workspace.tabs.get() : []
-    entries.forEach(function (tab) {
-      if (!found && tab && String(tab.id) === String(tabId)) {
-        const identity = getDocumentIdentity(tab.url)
-        if (identity) {
-          found = {
-            id: tab.id,
-            workspaceId: identity.workspaceId,
-            documentId: identity.documentId,
-            tab: tab,
-            workspace: workspace
+    if (found || !workspace || !workspace.tasks) return
+    workspace.tasks.forEach(function (task) {
+      if (found || !task || !task.tabs) return
+      const entries = typeof task.tabs.get === 'function' ? task.tabs.get() : []
+      entries.forEach(function (tab) {
+        if (!found && tab && String(tab.id) === String(tabId)) {
+          const identity = getDocumentIdentity(tab.url)
+          if (identity) {
+            found = {
+              id: tab.id,
+              workspaceId: identity.workspaceId,
+              documentId: identity.documentId,
+              tab: tab,
+              workspace: workspace,
+              task: task
+            }
           }
         }
-      }
+      })
     })
   })
   return found
@@ -193,8 +201,11 @@ function focusTab (record) {
   }
 
   const selected = selectedWorkspaceId()
-  if (selected !== record.workspaceId && browserUI.switchToTask) {
-    browserUI.switchToTask(record.workspaceId, { focusWebview: true })
+  if (selected !== record.workspaceId && browserUI.switchToWorkspace) {
+    browserUI.switchToWorkspace(record.workspaceId, { focusWebview: true })
+  }
+  if (record.task && browserUI.switchToTask) {
+    browserUI.switchToTask(record.task.id, { focusWebview: false })
   }
   if (browserUI.switchToTab) {
     browserUI.switchToTab(record.id, { focusWebview: true })
@@ -211,15 +222,15 @@ function open (workspaceId, documentId, title) {
 
   const existing = getTabRecord(ws, doc)
   if (existing) {
-    if (title && existing.workspace.tabs && typeof existing.workspace.tabs.update === 'function') {
-      existing.workspace.tabs.update(existing.id, { title: String(title) })
+    if (title && existing.task && existing.task.tabs && typeof existing.task.tabs.update === 'function') {
+      existing.task.tabs.update(existing.id, { title: String(title) })
     }
     focusTab(existing)
     return existing.id
   }
 
-  if (typeof tasks === 'undefined' || !tasks || typeof tasks.get !== 'function') return null
-  const workspace = tasks.get(ws)
+  if (typeof workspaces === 'undefined' || !workspaces || typeof workspaces.get !== 'function') return null
+  const workspace = workspaces.get(ws)
   if (!workspace) return null
 
   let browserUI
@@ -229,19 +240,17 @@ function open (workspaceId, documentId, title) {
     browserUI = null
   }
 
-  // tabs is an alias for the selected workspace's TabList. Opening from the
-  // sidebar normally already targets the selected workspace, but explicitly
-  // switch first so a caller cannot accidentally put a Docs tab in another
-  // workspace.
+  // Switch to the workspace first (restores its active task), then open
+  // the doc tab in the active task.
   if (selectedWorkspaceId() !== ws) {
-    if (browserUI && browserUI.switchToTask) {
-      browserUI.switchToTask(ws, { focusWebview: false })
-    } else if (typeof tasks.setSelected === 'function') {
-      tasks.setSelected(ws)
+    if (browserUI && browserUI.switchToWorkspace) {
+      browserUI.switchToWorkspace(ws, { focusWebview: false })
+    } else if (typeof workspaces.setSelected === 'function') {
+      workspaces.setSelected(ws)
     }
   }
 
-  const selectedTabs = typeof tabs !== 'undefined' ? tabs : workspace.tabs
+  const selectedTabs = typeof tabs !== 'undefined' ? tabs : (tasks.getSelected() && tasks.getSelected().tabs)
   if (!selectedTabs || typeof selectedTabs.add !== 'function') return null
 
   const url = getDocsURL(ws, doc)
@@ -259,8 +268,9 @@ function open (workspaceId, documentId, title) {
 
 function updateTitle (workspaceId, documentId, title) {
   const record = getTabRecord(workspaceId, documentId)
-  if (!record || !record.workspace.tabs || typeof record.workspace.tabs.update !== 'function') return false
-  record.workspace.tabs.update(record.id, { title: String(title || '') })
+  const taskTabs = record.task ? record.task.tabs : null
+  if (!record || !taskTabs || typeof taskTabs.update !== 'function') return false
+  taskTabs.update(record.id, { title: String(title || '') })
   return true
 }
 

@@ -80,7 +80,7 @@ class TabList {
 
     const containingTask = this.parentTaskList.getTaskContainingTab(id).id
 
-    tasks.getTaskContainingTab(id).tabHistory.push(this.toPermanentState(this.tabs[index]))
+    this.parentTaskList.getTaskContainingTab(id).tabHistory.push(this.toPermanentState(this.tabs[index]))
     this.tabs.splice(index, 1)
 
     if (emit) {

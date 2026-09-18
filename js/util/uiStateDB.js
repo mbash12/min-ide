@@ -122,6 +122,27 @@ async function addRecentFileSearch (filePath) {
   }
 }
 
+// Removes all persisted UI rows for a deleted workspace (sidebar, git
+// panel, file tree). Keys are 'workspace:'/'git:'/'tree:' + workspace id.
+async function deleteWorkspaceState (workspaceId) {
+  const keys = ['workspace:' + workspaceId, 'git:' + workspaceId, 'tree:' + workspaceId]
+  try {
+    await uiStateDb.sidebarState.delete(keys[0])
+  } catch (e) {
+    console.warn('failed to delete sidebar state', e)
+  }
+  try {
+    await uiStateDb.gitPanelState.delete(keys[1])
+  } catch (e) {
+    console.warn('failed to delete git panel state', e)
+  }
+  try {
+    await uiStateDb.fileTreeState.delete(keys[2])
+  } catch (e) {
+    console.warn('failed to delete file tree state', e)
+  }
+}
+
 module.exports = {
   db: uiStateDb,
   getSidebarState,
@@ -131,5 +152,6 @@ module.exports = {
   getFileTreeState,
   setFileTreeState,
   getRecentFileSearches,
-  addRecentFileSearch
+  addRecentFileSearch,
+  deleteWorkspaceState
 }

@@ -15,7 +15,8 @@ function getFormattedTitle (tab) {
 function showRestoreTask () {
   searchbarPlugins.reset('restoreTask')
 
-  var lastTask = tasks.getActive().sort((a, b) => {
+  const allTasks = tasks.map(t => t)
+  var lastTask = allTasks.sort((a, b) => {
     return tasks.getLastActivity(b.id) - tasks.getLastActivity(a.id)
   })[1]
   var recentTabs = lastTask.tabs.get().sort((a, b) => b.lastActivity - a.lastActivity).slice(0, 3)

@@ -241,7 +241,7 @@ function selectedNode () {
 }
 
 function workspaceInfo () {
-  const ws = tasks && tasks.getSelected ? tasks.getSelected() : null
+  const ws = (typeof workspaces !== 'undefined' && workspaces.getSelected) ? workspaces.getSelected() : null
   return {
     workspaceId: ws && ws.id,
     workspacePath: ws && ws.path
@@ -738,41 +738,48 @@ const designPanel = {
       refreshStatus()
     })
 
-    tasks.on('tab-selected', function () {
-      lastParsed = null
-      lastParsedUrl = ''
-      lastParsedTabId = null
-      lastResult = null
-      lastError = null
-      render()
-      refreshStatus()
-    })
-    tasks.on('tab-updated', function (id, key, value) {
-      if (key !== 'url') return
-      ipc.invoke('figmaEngine:syncUrl', { tabId: id, url: value })
-      if (!tabs || !sameTab(id, tabs.getSelected())) return
-      render()
-      ipc.invoke('figmaEngine:parseUrl', value).then(function (parsed) {
-        const current = selectedTab()
-        if (
-          !current ||
-          !sameTab(id, current.id) ||
-          String(current.url || '') !== String(value || '')
-        ) return
-        rememberParsed(parsed, value, id)
+    // Tab/task events come from the active workspace's TaskList, which is
+    // re-pointed on workspace switch — (re)subscribe to the current list and
+    // to the stable workspace store.
+    function subscribeTaskEvents () {
+      tasks.on('tab-selected', function () {
+        lastParsed = null
+        lastParsedUrl = ''
+        lastParsedTabId = null
+        lastResult = null
+        lastError = null
         render()
-      })
-    })
-    tasks.on('tab-destroyed', function (id) {
-      ipc.invoke('figmaEngine:disconnect', { tabId: id }).then(function (result) {
-        if (result && result.ignored) return
         refreshStatus()
       })
-    })
-    tasks.on('task-selected', function () {
-      refreshStatus()
-    })
-    tasks.on('workspace-selected', function () {
+      tasks.on('tab-updated', function (id, key, value) {
+        if (key !== 'url') return
+        ipc.invoke('figmaEngine:syncUrl', { tabId: id, url: value })
+        if (!tabs || !sameTab(id, tabs.getSelected())) return
+        render()
+        ipc.invoke('figmaEngine:parseUrl', value).then(function (parsed) {
+          const current = selectedTab()
+          if (
+            !current ||
+            !sameTab(id, current.id) ||
+            String(current.url || '') !== String(value || '')
+          ) return
+          rememberParsed(parsed, value, id)
+          render()
+        })
+      })
+      tasks.on('tab-destroyed', function (id) {
+        ipc.invoke('figmaEngine:disconnect', { tabId: id }).then(function (result) {
+          if (result && result.ignored) return
+          refreshStatus()
+        })
+      })
+      tasks.on('task-selected', function () {
+        refreshStatus()
+      })
+    }
+    subscribeTaskEvents()
+    workspaces.on('workspace-selected', function () {
+      subscribeTaskEvents()
       refreshStatus()
     })
 

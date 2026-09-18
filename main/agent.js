@@ -18,7 +18,7 @@ let typeboxPromise = null // TypeBox lives under the pi SDK and is ESM-only
 let modelCatalogCache = null // cached model list (from the pi SDK catalog) for the picker
 /* one session per workspace, keyed by workspace id, so switching workspaces
 keeps each workspace's own conversation and context. */
-const agentSessions = new Map() // sessionKey -> { sessionKey, workspaceId, cwd, apiKey, modelId, provider, session, unsubscribe, modelRuntime, resolvedModel }
+const agentSessions = new Map() // sessionKey -> { sessionKey, taskId, cwd, apiKey, modelId, provider, session, unsubscribe, modelRuntime, resolvedModel }
 const prefsByCwd = new Map() // sessionKey -> { modelId, provider, thinkingLevel }
 const sessionInitPromises = new Map() // sessionKey -> { signature, promise }
 
@@ -81,16 +81,16 @@ function registerSender (sender) {
   })
 }
 
-function getClientWorkspaceId (workspaceId) {
-  if (workspaceId != null && workspaceId !== '') {
-    return String(workspaceId)
+function getClientTaskId (taskId) {
+  if (taskId != null && taskId !== '') {
+    return String(taskId)
   }
   return 'default'
 }
 
-function getSessionKey (workspaceId, cwd) {
-  if (workspaceId != null && workspaceId !== '') {
-    return 'ws-' + String(workspaceId)
+function getSessionKey (taskId, cwd) {
+  if (taskId != null && taskId !== '') {
+    return 'task-' + String(taskId)
   }
   if (cwd && fs.existsSync(cwd) && fs.statSync(cwd).isDirectory()) {
     return 'cwd-' + cwd
@@ -228,12 +228,12 @@ function getSessionsRoot () {
  * workspace may have no folder at all. Keep each workspace in its own stable
  * directory below Min's userData-backed sessions root. Hashing the key keeps
  * arbitrary imported workspace ids out of the filesystem path. */
-function getWorkspaceSessionDir (workspaceId, cwd) {
+function getTaskSessionDir (taskId, cwd) {
   const sessionsRoot = getSessionsRoot()
   if (!sessionsRoot) return null
-  const sessionKey = getSessionKey(workspaceId, cwd)
+  const sessionKey = getSessionKey(taskId, cwd)
   const digest = require('crypto').createHash('sha256').update(sessionKey).digest('hex')
-  return require('path').join(sessionsRoot, 'workspaces', 'ws-' + digest)
+  return require('path').join(sessionsRoot, 'tasks', 'task-' + digest)
 }
 
 function isAllowedSessionPath (sessionPath) {
@@ -289,7 +289,7 @@ async function destroySession (sessionKey) {
   agentSessions.delete(sessionKey)
 }
 
-async function listWorkspaceSessions (sdk, effectiveCwd, sessionDir) {
+async function listTaskSessions (sdk, effectiveCwd, sessionDir) {
   let listed = []
   try {
     listed = sessionDir
@@ -332,7 +332,7 @@ async function resolveSessionFile (sdk, effectiveCwd, sessionDir, options, prefs
   if (options.restoreRecent) {
     if (prefs.skipRestore) return { path: null, none: true }
     try {
-      const listed = await listWorkspaceSessions(sdk, effectiveCwd, sessionDir)
+      const listed = await listTaskSessions(sdk, effectiveCwd, sessionDir)
       if (listed && listed.length) {
         listed.sort(function (a, b) {
           return (+new Date(b.modified)) - (+new Date(a.modified))
@@ -347,9 +347,9 @@ async function resolveSessionFile (sdk, effectiveCwd, sessionDir, options, prefs
   return { path: null }
 }
 
-function broadcastAgentEvent (data, sessionKey, workspaceId) {
+function broadcastAgentEvent (data, sessionKey, taskId) {
   const payload = Object.assign({
-    workspaceId: workspaceId || 'default',
+    taskId: taskId || 'default',
     sessionKey: sessionKey
   }, data)
   agentSenders.forEach(function (sender) {
@@ -363,8 +363,8 @@ function broadcastAgentEvent (data, sessionKey, workspaceId) {
  * published after asynchronous setup completes, so without this guard two
  * rapid prompts or the compatibility selection events could both create and
  * replace AgentSession instances for one key. */
-function ensureSession (workspaceId, cwd, options) {
-  const sessionKey = getSessionKey(workspaceId, cwd)
+function ensureSession (taskId, cwd, options, toolWorkspaceId) {
+  const sessionKey = getSessionKey(taskId, cwd)
   const pending = sessionInitPromises.get(sessionKey)
   const signature = JSON.stringify(options || {})
   if (pending) {
@@ -373,11 +373,11 @@ function ensureSession (workspaceId, cwd, options) {
     // automatic restore. Serialize the distinct operation and re-evaluate the
     // live session/config when the first initialization finishes.
     return pending.promise.then(function () {
-      return ensureSession(workspaceId, cwd, options)
+      return ensureSession(taskId, cwd, options, toolWorkspaceId)
     })
   }
 
-  const promise = ensureSessionInternal(workspaceId, cwd, options)
+  const promise = ensureSessionInternal(taskId, cwd, options, toolWorkspaceId)
   const pendingEntry = { signature: signature, promise: promise }
   sessionInitPromises.set(sessionKey, pendingEntry)
   promise.then(function () {
@@ -392,12 +392,12 @@ function ensureSession (workspaceId, cwd, options) {
   return promise
 }
 
-async function ensureSessionInternal (workspaceId, cwd, options) {
+async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
   options = options || {}
-  const sessionKey = getSessionKey(workspaceId, cwd)
-  const clientWorkspaceId = getClientWorkspaceId(workspaceId)
+  const sessionKey = getSessionKey(taskId, cwd)
+  const clientTaskId = getClientTaskId(taskId)
   const effectiveCwd = getEffectiveCwd(cwd)
-  const sessionDir = getWorkspaceSessionDir(workspaceId, cwd)
+  const sessionDir = getTaskSessionDir(taskId, cwd)
   const prefs = prefsByCwd.get(sessionKey) || {}
   const apiKey = settings.get('openrouterApiKey') || null
   const modelId = prefs.modelId || settings.get('agentModel') || 'anthropic/claude-3.5-sonnet'
@@ -449,7 +449,7 @@ async function ensureSessionInternal (workspaceId, cwd, options) {
   let customTools = []
   try {
     const Type = await loadTypebox()
-    customTools = minAgentTools.create(sdk.defineTool, Type, cwd || null, clientWorkspaceId)
+    customTools = minAgentTools.create(sdk.defineTool, Type, cwd || null, clientTaskId, toolWorkspaceId)
   } catch (err) {
     console.warn('Min agent custom tools failed to load', err)
   }
@@ -467,7 +467,7 @@ async function ensureSessionInternal (workspaceId, cwd, options) {
 
   const entry = {
     sessionKey: sessionKey,
-    workspaceId: clientWorkspaceId,
+    taskId: clientTaskId,
     cwd: effectiveCwd,
     apiKey: apiKey,
     modelId: modelId,
@@ -477,7 +477,7 @@ async function ensureSessionInternal (workspaceId, cwd, options) {
     resolvedModel: model ? (model.provider + '/' + model.id) : null,
     unsubscribe: session.subscribe(function (event) {
       if (event.type === 'compaction_start') {
-        broadcastAgentEvent({ type: 'compaction_start' }, sessionKey, clientWorkspaceId)
+        broadcastAgentEvent({ type: 'compaction_start' }, sessionKey, clientTaskId)
         return
       }
       if (event.type === 'compaction_end') {
@@ -487,11 +487,11 @@ async function ensureSessionInternal (workspaceId, cwd, options) {
           aborted: !!event.aborted,
           errorMessage: event.errorMessage || null,
           messages: serializeMessages(session)
-        }, sessionKey, clientWorkspaceId)
+        }, sessionKey, clientTaskId)
         return
       }
       const serialized = serializeAgentEvent(event)
-      if (serialized) broadcastAgentEvent(serialized, sessionKey, clientWorkspaceId)
+      if (serialized) broadcastAgentEvent(serialized, sessionKey, clientTaskId)
       if (event.type === 'tool_execution_end' || event.type === 'agent_end') {
         broadcastContext(sessionKey)
       }
@@ -512,8 +512,8 @@ async function ensureSessionInternal (workspaceId, cwd, options) {
   return entry
 }
 
-function snapshotState (workspaceId, cwd) {
-  const sessionKey = getSessionKey(workspaceId, cwd)
+function snapshotState (taskId, cwd) {
+  const sessionKey = getSessionKey(taskId, cwd)
   const entry = agentSessions.get(sessionKey)
   const prefs = prefsByCwd.get(sessionKey) || {}
   let thinkingLevel = prefs.thinkingLevel || settings.get('agentThinkingLevel') || null
@@ -536,7 +536,7 @@ function snapshotState (workspaceId, cwd) {
     modelId: prefs.modelId || settings.get('agentModel') || 'anthropic/claude-3.5-sonnet',
     provider: prefs.provider || settings.get('agentProvider') || 'openrouter',
     hasApiKey: !!(settings.get('openrouterApiKey')),
-    workspaceId: workspaceId,
+    taskId: taskId,
     cwd: cwd,
     sessionPath: getLiveSessionFile(entry) || prefs.sessionPath || null,
     messages: entry ? serializeMessages(entry.session) : [],
@@ -560,7 +560,7 @@ function broadcastContext (sessionKey) {
         percent: usage.percent,
         tokens: usage.tokens,
         contextWindow: usage.contextWindow
-      }, sessionKey, entry.workspaceId)
+      }, sessionKey, entry.taskId)
     }
   } catch (e) {}
 }
@@ -570,25 +570,25 @@ function broadcastContext (sessionKey) {
 ipc.on('agent-prompt', function (e, data) {
   registerSender(e.sender)
   if (!data || typeof data.text !== 'string' || !data.text.trim()) return
-  const workspaceId = data.workspaceId
+  const taskId = data.taskId
   const cwd = data.cwd
-  const sessionKey = getSessionKey(workspaceId, cwd)
-  const clientWorkspaceId = getClientWorkspaceId(workspaceId)
-  ensureSession(workspaceId, cwd).then(function (state) {
+  const sessionKey = getSessionKey(taskId, cwd)
+  const clientTaskId = getClientTaskId(taskId)
+  ensureSession(taskId, cwd, undefined, data && data.workspaceId).then(function (state) {
     const options = state.session.isStreaming ? { streamingBehavior: 'steer' } : undefined
     return state.session.prompt(data.text, options).then(function () {
       const errorMessage = state.session.agent.state.errorMessage
       if (errorMessage) {
-        broadcastAgentEvent({ type: 'error', message: errorMessage }, sessionKey, clientWorkspaceId)
+        broadcastAgentEvent({ type: 'error', message: errorMessage }, sessionKey, clientTaskId)
       }
     })
   }).catch(function (err) {
-    broadcastAgentEvent({ type: 'error', message: (err && err.message) || String(err) }, sessionKey, clientWorkspaceId)
+    broadcastAgentEvent({ type: 'error', message: (err && err.message) || String(err) }, sessionKey, clientTaskId)
   })
 })
 
 ipc.on('agent-abort', function (e, data) {
-  const sessionKey = getSessionKey(data && data.workspaceId, data && data.cwd)
+  const sessionKey = getSessionKey(data && data.taskId, data && data.cwd)
   const entry = agentSessions.get(sessionKey)
   if (entry && entry.session) {
     entry.session.abort().catch(function () {})
@@ -597,19 +597,19 @@ ipc.on('agent-abort', function (e, data) {
 
 ipc.handle('agent-compact', async function (e, data) {
   registerSender(e.sender)
-  const workspaceId = data && data.workspaceId
+  const taskId = data && data.taskId
   const cwd = data && data.cwd
   try {
-    const entry = await ensureSession(workspaceId, cwd, { restoreRecent: true })
+    const entry = await ensureSession(taskId, cwd, { restoreRecent: true }, data && data.workspaceId)
     if (!entry || !entry.session) {
       return { ok: false, message: 'No chat to compact.' }
     }
     if (entry.session.isCompacting) {
-      return snapshotState(workspaceId, cwd)
+      return snapshotState(taskId, cwd)
     }
     await entry.session.compact(data && data.instructions ? String(data.instructions) : undefined)
-    broadcastContext(getSessionKey(workspaceId, cwd))
-    return snapshotState(workspaceId, cwd)
+    broadcastContext(getSessionKey(taskId, cwd))
+    return snapshotState(taskId, cwd)
   } catch (err) {
     return { ok: false, message: (err && err.message) || String(err) }
   }
@@ -620,7 +620,7 @@ ipc.handle('agent-set-name', async function (e, data) {
   const name = data && data.name ? String(data.name).trim() : ''
   if (!name) return { ok: false, message: 'Usage: /name <title>' }
   try {
-    const entry = await ensureSession(data && data.workspaceId, data && data.cwd, { restoreRecent: true })
+    const entry = await ensureSession(data && data.taskId, data && data.cwd, { restoreRecent: true }, data && data.workspaceId)
     if (!entry || !entry.session) return { ok: false, message: 'No chat to name.' }
     entry.session.setSessionName(name)
     return { ok: true, name: name }
@@ -631,25 +631,25 @@ ipc.handle('agent-set-name', async function (e, data) {
 
 ipc.on('agent-new-session', function (e, data) {
   registerSender(e.sender)
-  const workspaceId = data && data.workspaceId
+  const taskId = data && data.taskId
   const cwd = data && data.cwd
-  const sessionKey = getSessionKey(workspaceId, cwd)
-  const clientWorkspaceId = getClientWorkspaceId(workspaceId)
+  const sessionKey = getSessionKey(taskId, cwd)
+  const clientTaskId = getClientTaskId(taskId)
   const prefs = prefsByCwd.get(sessionKey) || {}
   prefs.sessionPath = null
   prefs.skipRestore = true
   prefsByCwd.set(sessionKey, prefs)
   destroySession(sessionKey).then(function () {
-    broadcastAgentEvent({ type: 'session_reset' }, sessionKey, clientWorkspaceId)
-    broadcastAgentEvent({ type: 'context_cleared' }, sessionKey, clientWorkspaceId)
+    broadcastAgentEvent({ type: 'session_reset' }, sessionKey, clientTaskId)
+    broadcastAgentEvent({ type: 'context_cleared' }, sessionKey, clientTaskId)
   })
 })
 
 ipc.on('agent-set-model', function (e, data) {
   registerSender(e.sender)
-  const workspaceId = data && data.workspaceId
+  const taskId = data && data.taskId
   const cwd = data && data.cwd
-  const sessionKey = getSessionKey(workspaceId, cwd)
+  const sessionKey = getSessionKey(taskId, cwd)
   const modelId = data && data.modelId
   const provider = (data && data.provider) || 'openrouter'
   const prefs = prefsByCwd.get(sessionKey) || {}
@@ -658,15 +658,15 @@ ipc.on('agent-set-model', function (e, data) {
   prefsByCwd.set(sessionKey, prefs)
   const existing = agentSessions.get(sessionKey)
   if (!existing) return
-  ensureSession(workspaceId, cwd).catch(function () {})
+  ensureSession(taskId, cwd, undefined, data && data.workspaceId).catch(function () {})
 })
 
 ipc.on('agent-set-thinking', function (e, data) {
   registerSender(e.sender)
   const level = data && data.level
   if (!level) return
-  const sessionKey = getSessionKey(data && data.workspaceId, data && data.cwd)
-  const clientWorkspaceId = getClientWorkspaceId(data && data.workspaceId)
+  const sessionKey = getSessionKey(data && data.taskId, data && data.cwd)
+  const clientTaskId = getClientTaskId(data && data.taskId)
   const prefs = prefsByCwd.get(sessionKey) || {}
   prefs.thinkingLevel = level
   prefsByCwd.set(sessionKey, prefs)
@@ -676,7 +676,7 @@ ipc.on('agent-set-thinking', function (e, data) {
       entry.session.setThinkingLevel(level)
     } catch (err) {}
   }
-  broadcastAgentEvent({ type: 'thinking_changed', level: level }, sessionKey, clientWorkspaceId)
+  broadcastAgentEvent({ type: 'thinking_changed', level: level }, sessionKey, clientTaskId)
 })
 
 /* settings-page helpers: verify an OpenRouter key against the account
@@ -731,27 +731,27 @@ ipc.handle('agent-fetch-models', async function () {
 
 ipc.handle('agent-get-state', async function (e, data) {
   registerSender(e.sender)
-  const workspaceId = data && data.workspaceId
+  const taskId = data && data.taskId
   const cwd = data && data.cwd
   if (data && data.restore) {
     try {
-      await ensureSession(workspaceId, cwd, { restoreRecent: true })
+      await ensureSession(taskId, cwd, { restoreRecent: true }, data && data.workspaceId)
     } catch (err) {}
   }
-  return snapshotState(workspaceId, cwd)
+  return snapshotState(taskId, cwd)
 })
 
 ipc.handle('agent-list-sessions', async function (e, data) {
   registerSender(e.sender)
-  const workspaceId = data && data.workspaceId
+  const taskId = data && data.taskId
   const cwd = data && data.cwd
   const query = (data && data.query) ? String(data.query).trim().toLowerCase() : ''
   try {
     const sdk = await loadPiSdk()
-    const listed = await listWorkspaceSessions(
+    const listed = await listTaskSessions(
       sdk,
       getEffectiveCwd(cwd),
-      getWorkspaceSessionDir(workspaceId, cwd)
+      getTaskSessionDir(taskId, cwd)
     )
     let items = listed || []
     if (query) {
@@ -765,7 +765,7 @@ ipc.handle('agent-list-sessions', async function (e, data) {
     items.sort(function (a, b) {
       return (+new Date(b.modified)) - (+new Date(a.modified))
     })
-    const snap = snapshotState(workspaceId, cwd)
+    const snap = snapshotState(taskId, cwd)
     return {
       ok: true,
       currentPath: snap.sessionPath,
@@ -778,31 +778,52 @@ ipc.handle('agent-list-sessions', async function (e, data) {
 
 ipc.handle('agent-open-session', async function (e, data) {
   registerSender(e.sender)
-  const workspaceId = data && data.workspaceId
+  const taskId = data && data.taskId
   const cwd = data && data.cwd
   const sessionPath = data && data.path
   if (!isAllowedSessionPath(sessionPath) || !fs.existsSync(sessionPath)) {
     return { ok: false, message: 'Session not found.' }
   }
   try {
-    const entry = await ensureSession(workspaceId, cwd, { openPath: sessionPath })
+    const entry = await ensureSession(taskId, cwd, { openPath: sessionPath }, data && data.workspaceId)
     if (!entry) return { ok: false, message: 'Could not open session.' }
-    return snapshotState(workspaceId, cwd)
+    return snapshotState(taskId, cwd)
   } catch (err) {
     return { ok: false, message: (err && err.message) || String(err) }
   }
 })
 
+/* Stops the live agent session for one task (task close/archive). History
+files on disk are kept; only the running session is disposed. */
+ipc.on('agent-destroy-task-session', function (e, data) {
+  try {
+    const taskId = data && data.taskId
+    const cwd = data && data.cwd
+    destroySession(getSessionKey(taskId, cwd || null))
+  } catch (err) {}
+})
+
+/* Safety net for workspace close: stops sessions for the given task ids in
+windows whose session keys may differ (different cwd fallback). */
+ipc.on('agent-destroy-workspace-sessions', function (e, data) {
+  try {
+    const taskIds = (data && data.taskIds) || []
+    taskIds.forEach(function (taskId) {
+      destroySession(getSessionKey(taskId, null))
+    })
+  } catch (err) {}
+})
+
 ipc.handle('agent-delete-session', async function (e, data) {
   registerSender(e.sender)
-  const workspaceId = data && data.workspaceId
+  const taskId = data && data.taskId
   const cwd = data && data.cwd
   const sessionPath = data && data.path
   if (!isAllowedSessionPath(sessionPath)) {
     return { ok: false, message: 'Session not found.' }
   }
-  const sessionKey = getSessionKey(workspaceId, cwd)
-  const snap = snapshotState(workspaceId, cwd)
+  const sessionKey = getSessionKey(taskId, cwd)
+  const snap = snapshotState(taskId, cwd)
   const pathMod = require('path')
   const deletingCurrent = !!(snap.sessionPath && pathMod.resolve(snap.sessionPath) === pathMod.resolve(sessionPath))
   if (deletingCurrent) {
@@ -820,6 +841,6 @@ ipc.handle('agent-delete-session', async function (e, data) {
   return {
     ok: true,
     deletedCurrent: deletingCurrent,
-    state: snapshotState(workspaceId, cwd)
+    state: snapshotState(taskId, cwd)
   }
 })

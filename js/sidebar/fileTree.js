@@ -30,12 +30,12 @@ let lastOpenedFilePath = null
 const rowHeight = 8 // px added per tree level
 
 function getWorkspacePath () {
-  const ws = tasks.getSelected()
+  const ws = workspaces.getSelected()
   return ws && ws.path
 }
 
 function getWorkspaceId () {
-  const ws = tasks.getSelected()
+  const ws = workspaces.getSelected()
   return ws && ws.id != null ? String(ws.id) : null
 }
 
@@ -592,9 +592,10 @@ const fileTree = {
     })
 
     // re-render when the selected workspace changes or its path is updated
-    tasks.on('workspace-selected', onWorkspaceSelected)
-    tasks.on('task-selected', onWorkspaceSelected)
-    tasks.on('state-sync-change', function () {
+    workspaces.on('workspace-selected', onWorkspaceSelected)
+    // task switches within a workspace share the same path/state; the
+    // workspace-selected handler above covers re-renders
+    workspaces.on('state-sync-change', function () {
       const wsPath = getWorkspacePath()
       if (wsPath !== lastRenderedPath) {
         render()
