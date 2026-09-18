@@ -46,6 +46,10 @@ class TaskList {
       collapsed: task.collapsed, // this property must stay undefined if it is already (since there is a difference between "explicitly uncollapsed" and "never collapsed")
       id: task.id || String(TaskList.getRandomId()),
       selectedInWindow: task.selectedInWindow || null,
+      // FORK: the task's tiled layout, written by js/splitView.js. It has to be
+      // listed here because this constructor is the restore whitelist: fields
+      // that are not copied over are dropped when the session is restored.
+      splitState: task.splitState || null,
     }
 
     if (index) {

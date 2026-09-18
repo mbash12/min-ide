@@ -1,6 +1,9 @@
 /*
 Implements split view: groups of two tabs that share the window side by side.
-The split state is session-only and window-local (not synced across windows, not persisted).
+The groups belong to the task they were created in and are persisted with it
+(the task record carries splitState, which session restore already saves), so
+switching tasks or workspaces and restarting the browser brings the layout
+back. Only one window shows a given task's layout at a time.
 
 Concept: each split is a *group* of two tabs.
 - Only one group is shown in the window at a time (two panes side by side);
@@ -9,8 +12,8 @@ Concept: each split is a *group* of two tabs.
 - Clicking a tab of a paused group shows that group instead.
 - Clicking a tab that belongs to no group pauses the shown group and shows the
   tab full-window; clicking a group member again resumes its group.
-- A group is destroyed when one of its tabs is closed or moved away, when
-  switching tasks, or when entering HTML fullscreen.
+- A group is destroyed when one of its tabs is closed or moved away, or when
+  entering HTML fullscreen.
 
 To avoid a circular dependency with webviews.js, this module receives a reference
 to the webviews module via initialize(), and webviews reads back the split state
@@ -38,6 +41,86 @@ const splitView = {
     if (splitView.onGroupsChange) {
       splitView.onGroupsChange()
     }
+  },
+  /* copies the layout onto the selected task record. The session restore data
+  is built from the task records, so this is all that is needed to persist it.
+  Assigned directly instead of through tasks.update() because this also runs on
+  every divider drag, and an update() call would emit an event each time. */
+  persist: function () {
+    const task = typeof tasks !== 'undefined' && tasks && tasks.getSelected ? tasks.getSelected() : null
+    if (!task) {
+      return
+    }
+    task.splitState = {
+      groups: splitView.groups.map(function (group) {
+        return {
+          paneTabIds: group.paneTabIds.slice(),
+          activePane: group.activePane,
+          splitRatio: group.splitRatio
+        }
+      }),
+      activeGroupIndex: splitView.activeGroupIndex
+    }
+  },
+  /* loads the layout saved on the selected task. Groups whose tabs no longer
+  exist (or that share a tab) are dropped, and the shown group is only restored
+  when the tab that was active in it is still the selected one, so the pane
+  layout and the tab bar can't disagree. */
+  restoreForSelectedTask: function () {
+    if (typeof tasks === 'undefined' || !tasks || !tasks.getSelected) {
+      return
+    }
+    if (typeof tabs === 'undefined' || !tabs) {
+      return
+    }
+    const task = tasks.getSelected()
+    const state = task && task.splitState
+    if (!state || !Array.isArray(state.groups)) {
+      return
+    }
+
+    const restored = []
+    let activeGroupIndex = null
+
+    state.groups.forEach(function (group, index) {
+      if (!group || !Array.isArray(group.paneTabIds) || group.paneTabIds.length !== 2) {
+        return
+      }
+      if (!group.paneTabIds.every(tabId => tabs.has(tabId))) {
+        return
+      }
+      // a tab may only belong to one group
+      if (restored.some(other => other.paneTabIds.some(tabId => group.paneTabIds.includes(tabId)))) {
+        return
+      }
+      restored.push({
+        paneTabIds: group.paneTabIds.slice(),
+        activePane: group.activePane === 1 ? 1 : 0,
+        splitRatio: typeof group.splitRatio === 'number' ? Math.min(1, Math.max(0, group.splitRatio)) : 0.5
+      })
+      if (index === state.activeGroupIndex) {
+        activeGroupIndex = restored.length - 1
+      }
+    })
+
+    splitView.groups = restored
+    splitView.activeGroupIndex = null
+
+    if (activeGroupIndex !== null) {
+      const group = restored[activeGroupIndex]
+      if (tabs.getSelected() === group.paneTabIds[group.activePane]) {
+        splitView.activeGroupIndex = activeGroupIndex
+        splitView.showSplit()
+      } else {
+        // the group comes back paused, with the pane of the restored tab active
+        const restoredPane = group.paneTabIds.indexOf(tabs.getSelected())
+        if (restoredPane >= 0) {
+          group.activePane = restoredPane
+        }
+      }
+    }
+
+    splitView.notifyGroupsChanged()
   },
   isSplit: function () {
     return splitView.activeGroupIndex !== null
@@ -83,6 +166,7 @@ const splitView = {
       splitView.activeGroupIndex = null
     }
     splitView.activeGroupIndex = groupIndex
+    splitView.persist()
     splitView.notifyGroupsChanged()
     splitView.showSplit()
   },
@@ -124,6 +208,7 @@ const splitView = {
     }
     group.splitRatio = 0.5
 
+    splitView.persist()
     splitView.notifyGroupsChanged()
     splitView.showGroup(splitView.groups.indexOf(group))
   },
@@ -160,6 +245,7 @@ const splitView = {
     const activeId = preferredActiveId || splitView.getActiveTabId()
 
     splitView.activeGroupIndex = null
+    splitView.persist()
 
     ipc.send('unsplitView', {
       activeId: activeId,
@@ -220,6 +306,7 @@ const splitView = {
         splitView.activeGroupIndex--
       }
     }
+    splitView.persist()
     splitView.notifyGroupsChanged()
   },
   /* destroys the shown group (or the group containing preferredActiveId) entirely */
@@ -321,6 +408,7 @@ const splitView = {
     if (splitView.isSplit()) {
       splitView.applyLayout()
     }
+    splitView.persist()
     splitView.notifyGroupsChanged()
   },
   /* sets the split ratio (0-1) of the shown group and updates the pane bounds.
@@ -333,6 +421,7 @@ const splitView = {
       return
     }
     group.splitRatio = Math.min(1, Math.max(0, ratio))
+    splitView.persist()
     if (liveResize) {
       splitView.webviews.resize()
     } else {
@@ -393,9 +482,11 @@ const splitView = {
     }
     return null
   },
-  /* removes both the visible split and all paused groups. Workspace/profile
-  lifecycle changes use this instead of destroy(), since paused groups are
-  otherwise left behind and can later point at unrelated tabs. */
+  /* removes both the visible split and all paused groups from the window.
+  Workspace/profile/task lifecycle changes use this instead of destroy(), since
+  paused groups are otherwise left behind and can later point at unrelated
+  tabs. The selected task keeps its saved layout: this only tears down what the
+  window is showing, so selecting the task again restores it. */
   clearAll: function (preferredActiveId) {
     const activeGroup = splitView.getActiveGroup()
     const hadActiveGroup = activeGroup !== null
@@ -430,10 +521,6 @@ const splitView = {
       }
     }
     splitView.notifyGroupsChanged()
-  },
-  /* destroys all groups when switching tasks */
-  handleTaskSwitch: function () {
-    splitView.clearAll()
   },
   /* destroys all groups when a pane enters HTML fullscreen (needs the whole window) */
   handleHtmlFullscreen: function () {

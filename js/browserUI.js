@@ -516,6 +516,9 @@ function switchToTask (id, options) {
   }
 
   setWindowTitle(taskData)
+
+  // bring back the layout the task was left in (see js/splitView.js)
+  splitView.restoreForSelectedTask()
 }
 
 /* changes the currently-selected workspace, restoring its last active task */

@@ -23,11 +23,11 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 
 | § | Topik | Gap |
 | --- | --- | --- |
-| 2 | Core hierarchy | DIFFERENT — model Task kurang 2 anggota |
+| 2 | Core hierarchy | DIFFERENT — task-scoped preferences |
 | 3 | Favicon | — bersih |
 | 4 | Workspace model | MISSING — `createdAt`/`updatedAt`; DIFFERENT — `sidebarState`, prefill nama |
-| 5 | Workspace switching | DIFFERENT — tile state tidak kembali |
-| 6 | Workspace persistence | MISSING — tile relationship, tile width, notes; DIFFERENT — AI reference |
+| 5 | Workspace switching | — bersih |
+| 6 | Workspace persistence | MISSING — notes; DIFFERENT — AI reference |
 | 7 | Archive Workspace | MISSING — auto-unpin |
 | 8 | Missing workspace path | DIFFERENT — deteksi path hilang tidak ada |
 | 9 | Profiles | MISSING — Clear Data; DIFFERENT — delete tidak diblokir |
@@ -42,14 +42,14 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 18 | Sidebar | MISSING — aktivitas Notes |
 | 19 | File Tree | — bersih |
 | 20 | Git | DIFFERENT — diff working tree tidak terjangkau dari UI |
-| 21 | Tile / Split View | DIFFERENT — maks 2 panel, tidak persisten |
+| 21 | Tile / Split View | DIFFERENT — maks 2 panel |
 | 22 | Pinned Tasks | MISSING — seluruh fitur |
 | 23 | Download preference | MISSING — tidak Task-scoped |
 | 24 | AI coding agent | DIFFERENT — hanya OpenRouter |
 | 25 | AI session model | DIFFERENT — history per Task, bukan per Workspace; MISSING — ownership |
 | 26 | Browser control | MISSING — baca teks halaman; DIFFERENT — internal tab tidak dikecualikan |
 | 27 | Extra settings page | MISSING — 4 seksi |
-| 28 | Startup behavior | DIFFERENT — tile set tidak direstore |
+| 28 | Startup behavior | — bersih |
 | 29 | Task deletion | MISSING — pinned task, download preference |
 | 30 | Workspace deletion | MISSING — pinned task; DIFFERENT — AI history |
 | 31 | Architecture guidelines | DIFFERENT — duplikasi store, global swap, tanpa `ide/` |
@@ -57,15 +57,15 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 33 | Implementation order | Sebagian fase belum lengkap |
 | 34 | Non-goals | — dipatuhi |
 | 35 | Coding-agent working rules | VIOLATION — 3 aturan |
-| 36 | Definition of success | 6 dari 15 langkah belum penuh |
+| 36 | Definition of success | 4 dari 14 langkah belum penuh |
 
-Tiga hal yang paling sering muncul sebagai akar gap: **tile/split view tidak dipersist**, **tab metadata tidak ada**, dan **AI session ownership tidak dimodelkan**.
+Dua hal yang paling sering muncul sebagai akar gap: **tab metadata tidak ada** (§13, §26, §31) dan **AI session ownership tidak dimodelkan** (§25, §29, §30).
 
 ---
 
 ## §2 Core hierarchy
 
-- **DIFFERENT** — Dua anggota model di level Task tidak ada di objek Task: **tiled tab relationships** dan **task-scoped preferences**. Field Task hanya `name/tabs/tabHistory/collapsed/id/selectedInWindow` (`js/tabState/task.js:41-49`). Tiling hidup sebagai satu array `splitView.groups` yang global per window dan session-only (`js/splitView.js:23-24`), dan tidak ada store task-scoped preferences sama sekali.
+- **DIFFERENT** — Satu anggota model di level Task masih belum ada: **task-scoped preferences**. Tidak ada store untuk preferensi per task. (Tiled relationships sudah terpenuhi: task membawa `splitState` — `js/tabState/task.js:49-52`, diisi oleh `js/splitView.js`.)
 
 Hierarki `Workspace → Task → Tab` itu sendiri **sudah nyata** (bukan lagi alias) dan tidak dicatat sebagai gap.
 
@@ -83,16 +83,12 @@ Kepemilikan nama default sudah dipisah dengan benar: task memakai `defaultTaskNa
 
 ## §5 Workspace switching
 
-- **DIFFERENT** — "tiled state kembali" tidak terjadi. `switchToWorkspace` memanggil `splitView.clearAll()` (`js/browserUI.js:550`) dan task switch juga membersihkannya (`js/splitView.js:434-437`). Split group dinyatakan eksplisit sebagai session-only dan window-local (`js/splitView.js:3`).
-
-Task terakhir, tab terakhir, sidebar state, dan runtime yang tetap hidup sudah sesuai.
+Task terakhir, tab terakhir, tiled state, sidebar state, dan runtime yang tetap hidup sudah sesuai.
 
 ---
 
 ## §6 Workspace persistence
 
-- **MISSING** — **Tiled relationships** tidak dipersist. Tidak ada collection tile di `js/util/uiStateDB.js:13-38`, dan blob session v3 hanya membawa workspaces → tasks → tabs (`js/sessionRestore.js:19-34`).
-- **MISSING** — **Tile width** tidak dipersist; `splitRatio` selalu di-reset ke `0.5` setiap kali pasangan dibuka (`js/splitView.js:115,125`).
 - **MISSING** — **Notes** tidak dipersist karena subsistemnya tidak ada sama sekali (lihat §17).
 - **DIFFERENT** — "AI-related references": pointer ke session aktif milik sebuah task adalah Map in-memory (`main/agent.js:22`) yang tidak pernah ditulis ke disk, sehingga setelah restart session mana yang terpasang tidak kembali dan dipilih ulang secara heuristik (`main/agent.js:329-333`).
 
@@ -205,10 +201,8 @@ Item §20 lainnya sudah ada, termasuk deteksi repo untuk workspace di subfolder 
 ## §21 Tile / Split View
 
 - **DIFFERENT** — **Maksimal 2 panel, bukan 3.** Modulnya didokumentasikan dan ditulis sebagai "groups of two tabs"; pasangan hanya dibuat lewat `enterWithPair(tabAId, tabBId)` (`js/splitView.js:2-5,23-24,92-128`). Tidak ada jalur untuk menile tab ketiga, sehingga skenario `A+B+C → A+C` tidak bisa dimodelkan.
-- **DIFFERENT** — **Tiled relationship tidak dipersist.** Header modul menyatakan state split "session-only and window-local … not persisted" (`js/splitView.js:3`); group hidup di array in-memory (`js/splitView.js:24,409`) dan dibersihkan saat task/workspace switch (`js/splitView.js:434-437`; `js/browserUI.js:202,324,381,485,550`).
-- **DIFFERENT** — **Width panel tidak dipersist**; `splitRatio` in-memory dan selalu kembali `0.5` (`js/splitView.js:115,125`).
 
-Yang sudah sesuai: columns only, semua tipe tab bisa ditile, divider resizable, association antar tab (bukan pane entity), satu tab hanya di satu association, dan auto-hapus saat tinggal satu.
+Yang sudah sesuai: columns only, semua tipe tab bisa ditile, divider resizable, width dan tiled relationship **dipersist per task** (`js/splitView.js` `persist`/`restoreForSelectedTask` + field `splitState` di `js/tabState/task.js:49-52`), association antar tab (bukan pane entity), satu tab hanya di satu association, dan auto-hapus saat tinggal satu.
 
 ---
 
@@ -262,9 +256,7 @@ Halaman settings internal hanya punya tab Provider (OpenRouter), Profiles, dan D
 
 ## §28 Startup behavior
 
-- **DIFFERENT** — Langkah "restore active tab/**tiled set**" tidak terpenuhi untuk bagian tile: state split tidak dipersist dan tidak direstore (`js/splitView.js:3`; `js/sessionRestore.js:19-64` tidak memuat state split).
-
-Sisanya sudah sesuai, termasuk lazy restore dan archived workspace yang tetap cold.
+Seluruh langkah sudah sesuai, termasuk restore active tab dan tiled set (layout split disimpan per task dan dipasang kembali saat task dipilih — `js/browserUI.js:520-521`), lazy restore, dan archived workspace yang tetap cold.
 
 ---
 
@@ -375,14 +367,21 @@ Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork
 | Agent kontrol web tab untuk testing | OK | `main/agentTools.js:77-168`; isolasi task di `js/browserControlRenderer.js:90-122` |
 | Create Task lain → AI session paralel | Sebagian | Session memang per-task dan independen, tapi panel hanya men-stream task terpilih (`js/sidebar/agentPanel.js:32`), tidak ada owner/lock, dan doc modul menyatakan tidak menjalankan chat paralel (`main/agent.js:9-11`) |
 | Switch Workspace → state sebelumnya hidup | OK | `js/tabState/workspace.js:5-8`; `js/browserUI.js:523-555` |
-| Return → layout & runtime sama | Sebagian | Runtime hidup, tapi tile hilang setiap task/workspace switch (`js/browserUI.js:485,550`; `js/splitView.js:2-3`) |
+| Return → layout & runtime sama | OK | Runtime hidup dan layout split kembali dari `splitState` task (`js/browserUI.js:520-521`) |
 | Archive Workspace → runtime dilepas | OK | `js/browserUI.js:448-462` |
-| Reopen → state restored lazily | Sebagian | Task/tab restore lazily (`js/sessionRestore.js:137-149`), tile tidak kembali |
-| Restart → Workspace/Task/layout kembali, load lazy | Sebagian | Restore workspace/task/tab dan lazy view creation jalan (`js/sessionRestore.js:137-165`), tile hilang |
+| Reopen → state restored lazily | OK | Task/tab restore lazily (`js/sessionRestore.js:137-149`), layout split ikut kembali |
+| Restart → Workspace/Task/layout kembali, load lazy | OK | Restore workspace/task/tab, lazy view creation, dan layout split (`js/sessionRestore.js:137-165`) |
 
-Yang menghalangi "cukup untuk dipakai harian": **tile 3 panel + persistensinya**. (Pintu masuk terminal sudah ditutup — lihat riwayat commit `42659d93`.)
+Yang menghalangi "cukup untuk dipakai harian" sekarang tinggal **tile 3 panel**. Pintu masuk terminal dan persistensi tile sudah ditutup — lihat **Sudah ditutup** di akhir dokumen.
 
 ---
+
+## Sudah ditutup
+
+Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung di atas:
+
+1. **§36 — pintu masuk terminal.** Terminal tab sebelumnya hanya bisa dibuat lewat bang `!term`. Sekarang ada `js/terminalView.js` (modul tunggal yang membuka terminal), item menu File > Open Terminal, dan keybinding default `addTerminal` (`ctrl+\``).
+2. **Tile / split view sekarang persisten** (§5, §6, §21, §28). Layout disimpan per task sebagai field `splitState` (`js/tabState/task.js:49-52`), ditulis oleh `splitView.persist()` pada setiap perubahan group/ratio (`js/splitView.js`) dan dipasang kembali oleh `splitView.restoreForSelectedTask()` saat task dipilih (`js/browserUI.js:520-521`). Karena state-nya menempel di record task, ia ikut format session v3 yang sudah ada tanpa perubahan format. `clearAll()` sengaja tidak menulis apa pun: ia hanya membongkar tampilan, sehingga layout task tetap utuh saat kembali.
 
 ## Catatan
 
