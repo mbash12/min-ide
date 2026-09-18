@@ -28,7 +28,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 4 | Workspace model | DIFFERENT — `sidebarState` |
 | 5 | Workspace switching | — bersih |
 | 6 | Workspace persistence | MISSING — notes; DIFFERENT — AI reference |
-| 7 | Archive Workspace | MISSING — auto-unpin |
+| 7 | Archive Workspace | DITUNDA — auto-unpin (§22) |
 | 8 | Missing workspace path | — bersih |
 | 9 | Profiles | MISSING — Clear Data; DIFFERENT — delete tidak diblokir |
 | 10 | Profile switching | DIFFERENT — semua view dibongkar, bukan hanya web tab |
@@ -43,15 +43,15 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 19 | File Tree | — bersih |
 | 20 | Git | — bersih |
 | 21 | Tile / Split View | — bersih |
-| 22 | Pinned Tasks | MISSING — seluruh fitur |
+| 22 | Pinned Tasks | DITUNDA — arah diubah ke pinned tab |
 | 23 | Download preference | MISSING — tidak Task-scoped |
 | 24 | AI coding agent | DIFFERENT — hanya OpenRouter |
 | 25 | AI session model | DIFFERENT — history per Task, bukan per Workspace; MISSING — ownership |
 | 26 | Browser control | — bersih |
 | 27 | Extra settings page | MISSING — 4 seksi |
 | 28 | Startup behavior | — bersih |
-| 29 | Task deletion | MISSING — pinned task, download preference |
-| 30 | Workspace deletion | MISSING — pinned task |
+| 29 | Task deletion | DITUNDA — pinned task (§22); MISSING — download preference |
+| 30 | Workspace deletion | DITUNDA — pinned task (§22) |
 | 31 | Architecture guidelines | DIFFERENT — duplikasi store, global swap, tanpa `ide/` |
 | 32 | Upstream compatibility | DIFFERENT — footprint core besar (remote sudah benar) |
 | 33 | Implementation order | Sebagian fase belum lengkap |
@@ -93,7 +93,7 @@ Task terakhir, tab terakhir, tiled state, sidebar state, dan runtime yang tetap 
 
 ## §7 Archive Workspace
 
-- **MISSING** — **Auto-unpin semua pinned Task** milik workspace yang di-archive tidak bisa terjadi karena tidak ada konsep pin sama sekali di codebase. Langkah archive lainnya sudah berjalan: halaman di-unload, terminal dihentikan, dan live agent session dibuang (`js/browserUI.js:416-464`).
+**DITUNDA (auto-unpin).** Langkah archive lainnya sudah berjalan: halaman di-unload, terminal dihentikan, dan live agent session dibuang (`js/browserUI.js:416-464`). Auto-unpin menunggu §22.
 
 ---
 
@@ -205,7 +205,9 @@ Seluruh requirement sudah sesuai: maksimal 3 panel, columns only, semua tipe tab
 
 ## §22 Pinned Tasks
 
-- **MISSING** — Seluruh fitur. Tidak ada API/persistensi pin di workspace maupun task (tidak ada field `pinned` di `js/tabState/workspace.js` / `js/tabState/task.js`), tidak ada UI quick-nav lintas workspace, dan tidak ada auto-unpin saat archive. Satu-satunya pemakaian kata "pin" di codebase adalah konsep *preview tab* editor yang tidak berhubungan (`js/editorView.js:74`).
+**DITUNDA — dan arahnya diubah.** Blueprint meminta *Pinned Task* (contoh: `Workspace A / Task Development`) dan menegaskan "Tidak ada pinned tab". Yang diinginkan justru sebaliknya: **pinned tab** — slot global maksimal 9 lintas workspace & task, indikator `x/9` di navbar, popup Ctrl+Space untuk quick switch, dan Alt+1..9 untuk lompat langsung ke slot.
+
+Implementasinya sudah pernah dibuat lengkap dan berfungsi, lalu dibatalkan atas permintaan dan tidak masuk commit mana pun. Detail keputusan dan kode yang disimpan: lihat **Ditunda** di akhir dokumen.
 
 ---
 
@@ -258,7 +260,7 @@ Seluruh langkah sudah sesuai, termasuk restore active tab dan tiled set (layout 
 
 ## §29 Task deletion
 
-- **MISSING** — **"remove pinned Task if pinned"** — tidak ada fitur maupun state pinned untuk dihapus (lihat §22).
+- **DITUNDA** — "remove pinned Task if pinned" menunggu §22.
 - **MISSING** — **"remove task-scoped download preference"** — preferensi itu belum ada (lihat §23).
 
 Item lain sudah berjalan: `closeTask` menghentikan agent session dan menghancurkan seluruh tab beserta view-nya (`js/browserUI.js:151-181`), dan PTY terminal mati saat `webContents`-nya dihancurkan (`main/terminal.js:81-84`).
@@ -267,7 +269,7 @@ Item lain sudah berjalan: `closeTask` menghentikan agent session dan menghancurk
 
 ## §30 Workspace deletion
 
-- **MISSING** — **"remove pinned Tasks"** — tidak ada fitur pinned (lihat §22).
+- **DITUNDA** — "remove pinned Tasks" menunggu §22.
 
 Document/design/snapshot/activity sudah tersapu benar lewat `db:deleteWorkspaceData` (`main/dbService.js:650-667`), berkas transkrip AI tiap task ikut dihapus (`main/agent.js` `deleteTaskSessionFiles`), dan Profile memang tidak dihapus sesuai blueprint.
 
@@ -381,6 +383,32 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 5. **Batch kecil**: autosave Monaco (§14), diff working tree di panel Git (§20), dan `createdAt`/`updatedAt` pada workspace (§4).
 6. **Batch cepat lanjutan**: `action=read` untuk membaca teks halaman (§26), penghapusan berkas transkrip AI saat workspace dihapus (§30), dan prefill nama default di modal workspace (§4).
 7. **Path workspace hilang** (§8). Folder yang sudah tidak ada membuat workspace jadi browser-only: Files/Git disembunyikan dan baris workspace menampilkan peringatan, tanpa menghapus path tersimpan.
+
+## Ditunda
+
+**§22 Pinned Tasks** — ditunda, dan arahnya diubah dari blueprint.
+
+Blueprint meminta *Pinned Task* (navigasi cepat ke `Workspace A / Task Development`) dan secara eksplisit menulis "Tidak ada pinned tab" (§22 dan §34). Keputusan yang diambil justru **pinned tab**, dengan bentuk:
+
+- slot global maksimal **9**, lintas workspace & task (bukan per workspace);
+- indikator **`x/9`** di navbar;
+- **Ctrl+Space** membuka popup daftar pinned tab untuk quick switch, dengan navigasi 1–9 / panah / Enter di dalamnya;
+- **Alt+1..9** untuk lompat langsung ke slot tanpa membuka popup;
+- pin/unpin dari context menu tab;
+- auto-unpin saat tab ditutup, task dihapus, workspace dihapus, atau workspace di-archive.
+
+Implementasinya sudah pernah dibuat utuh dan lulus uji (registry dengan persistensi localStorage + validasi entri mati, panel popup, indikator, keybinding, hook siklus hidup), **tetapi tidak masuk commit mana pun** dan sudah dikembalikan dari working tree atas permintaan. Kodenya disimpan di stash git lokal supaya tidak perlu dirancang ulang:
+
+```text
+git stash list
+stash@{0}: On master: experimental: pinned tabs (deferred, not for master)
+```
+
+Untuk melanjutkan: `git stash pop`. Kalau tidak diperlukan lagi: `git stash drop`.
+
+Dua hal yang sudah diketahui dan sebaiknya diingat kalau dilanjutkan: `ctrl+space` bisa bentrok dengan IME di Linux (gampang diganti karena lewat keymap), dan popup-nya wajib memanggil `webviews.requestPlaceholder` saat tampil — view native menggambar di atas DOM renderer, jadi tanpa itu popup-nya tidak terlihat.
+
+Karena §22 ditunda, tiga item yang bergantung padanya ikut ditunda: auto-unpin saat archive (§7), hapus pinned task saat task dihapus (§29), dan saat workspace dihapus (§30).
 
 ## Catatan
 
