@@ -4,6 +4,7 @@ var defaultKeyMap = {
   addPrivateTab: 'shift+mod+p',
   duplicateTab: 'shift+mod+d',
   addTask: 'mod+n',
+  addTerminal: 'ctrl+`',
   addWindow: 'shift+mod+n',
   toggleTasks: 'shift+mod+e',
   goBack: 'mod+left',

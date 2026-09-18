@@ -58,6 +58,16 @@ function buildAppMenu (options = {}) {
     }
   ]
 
+  /* No accelerator: the default binding is ctrl+` and the backtick is not a
+  documented Electron accelerator key code, so it is handled by the renderer
+  keybinding instead (js/defaultKeybindings.js). */
+  var openTerminalAction = {
+    label: l('openTerminal'),
+    click: function (item, window) {
+      sendIPCToWindow(window, 'addTerminal')
+    }
+  }
+
   var personalDataItems = [
     {
       label: l('appMenuBookmarks'),
@@ -152,6 +162,7 @@ function buildAppMenu (options = {}) {
       label: l('appMenuFile'),
       submenu: [
         ...(!options.secondary ? tabTaskActions : []),
+        ...(!options.secondary ? [openTerminalAction] : []),
         ...(!options.secondary ? [{ type: 'separator' }] : []),
         {
           label: l('appMenuSavePageAs'),

@@ -83,6 +83,21 @@ module.exports = {
       })
     })
 
+    ipc.on('addTerminal', function () {
+      /* new tabs can't be created in modal mode */
+      if (modalMode.enabled()) {
+        return
+      }
+
+      /* new tabs can't be created in focus mode */
+      if (focusMode.enabled()) {
+        focusMode.warn()
+        return
+      }
+
+      require('terminalView.js').open()
+    })
+
     ipc.on('saveCurrentPage', async function () {
       var currentTab = tabs.get(tabs.getSelected())
 

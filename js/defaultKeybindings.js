@@ -7,6 +7,7 @@ var tabEditor = require('navbar/tabEditor.js')
 var urlParser = require('util/urlParser.js')
 var keyMapModule = require('util/keyMap.js')
 var settings = require('util/settings/settings.js')
+var terminalView = require('terminalView.js')
 
 var keyMap = keyMapModule.userKeyMap(settings.get('keyMap'))
 
@@ -46,6 +47,21 @@ const defaultKeybindings = {
       browserUI.addTab(tabs.add({
         private: true
       }))
+    })
+
+    keybindings.defineShortcut('addTerminal', function () {
+      /* new tabs can't be created in modal mode */
+      if (modalMode.enabled()) {
+        return
+      }
+
+      /* new tabs can't be created in focus mode */
+      if (focusMode.enabled()) {
+        focusMode.warn()
+        return
+      }
+
+      terminalView.open()
     })
 
     keybindings.defineShortcut('duplicateTab', function () {

@@ -18,6 +18,7 @@ const searchbarPlugins = require('searchbar/searchbarPlugins.js')
 const tabEditor = require('navbar/tabEditor.js')
 const formatRelativeDate = require('util/relativeDate.js')
 const fileIcons = require('sidebar/fileIcons.js')
+const terminalView = require('terminalView.js')
 
 function moveToTaskCommand (taskId) {
   // remove the tab from the current task
@@ -113,10 +114,7 @@ function initialize () {
     icon: 'carbon:terminal',
     isAction: true,
     fn: function (text) {
-      const ws = workspaces.getSelected()
-      const cwd = (ws && ws.path) || '~'
-      const terminalURL = 'min://terminal?cwd=' + encodeURIComponent(cwd)
-      browserUI.addTab(tabs.add({ url: terminalURL }), { enterEditMode: false })
+      terminalView.open()
     }
   })
 
