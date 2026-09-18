@@ -528,15 +528,10 @@ function switchToWorkspace (id, options) {
     return
   }
 
-  // setSelected re-points window.tasks to this workspace's list; it must run
-  // before splitView.clearAll, which reads window.tabs (undefined until the
-  // first task is selected).
+  // setSelected re-points window.tasks to this workspace's list. Task
+  // selection (which sets window.tabs) must happen before anything that
+  // reads window.tabs: splitView.clearAll, tabBar.updateAll.
   workspaces.setSelected(id)
-
-  // switching workspaces destroys the visible and all paused split groups
-  splitView.clearAll()
-
-  tabBar.updateAll()
 
   var taskId = ws.activeTaskId && ws.tasks.get(ws.activeTaskId) ? ws.activeTaskId : null
   if (!taskId) {
@@ -547,6 +542,15 @@ function switchToWorkspace (id, options) {
     }
     workspaces.update(id, { activeTaskId: taskId }, false)
   }
+
+  // Select the task first so window.tabs exists, then clear splits and
+  // render the tab bar against the right list.
+  tasks.setSelected(taskId, false)
+
+  // switching workspaces destroys the visible and all paused split groups
+  splitView.clearAll()
+
+  tabBar.updateAll()
 
   switchToTask(taskId, options)
 }
