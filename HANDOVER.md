@@ -1,5 +1,9 @@
 # Min IDE Fork — Implementation Blueprint
 
+> **Status: RENCANA, BUKAN AS-BUILT.**
+> Dokumen ini adalah blueprint. Sebagian keputusan struktural di bawah belum diimplementasikan — terutama hierarki `Workspace → Task → Tab` (§2), yang di kode sekarang berupa alias (`Workspace` = Task Min yang lama), sehingga §22 (Pinned Tasks) dan §25 (AI session ownership) belum bisa dibangun.
+> Perbandingan lengkap rencana vs kode: **[docs/HANDOVER_AUDIT.md](docs/HANDOVER_AUDIT.md)**.
+
 ## 1. Goal
 
 Fork existing **Min Browser** dan tambahkan fitur IDE/development environment tanpa mengubah karakter utama Min sebagai browser minimal.
