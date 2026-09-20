@@ -1,3 +1,4 @@
+/* global ipc */
 const browserUI = require('browserUI.js')
 const webviews = require('webviews.js')
 const tabEditor = require('navbar/tabEditor.js')
@@ -5,6 +6,7 @@ const focusMode = require('focusMode.js')
 const profiles = require('profiles.js')
 const settings = require('util/settings/settings.js')
 const proSettingsPage = require('util/proSettingsPage.js')
+const editorView = require('editorView.js')
 
 const drawer = document.getElementById('workspace-drawer')
 const backdrop = document.getElementById('workspace-backdrop')
@@ -152,6 +154,17 @@ function createWorkspaceRow (ws) {
   }
   row.setAttribute('data-workspace', ws.id)
 
+  const collapsed = workspaces.isCollapsed(ws.id)
+  const collapseBtn = document.createElement('button')
+  collapseBtn.className = 'ws-row-collapse i carbon:chevron-' + (collapsed ? 'right' : 'down')
+  collapseBtn.setAttribute('aria-expanded', String(!collapsed))
+  collapseBtn.addEventListener('click', function (e) {
+    e.stopPropagation()
+    workspaces.update(ws.id, { collapsed: !collapsed })
+    workspaceDrawer.render()
+  })
+  row.appendChild(collapseBtn)
+
   const profile = profiles.getProfile(ws.profileId)
   row.appendChild(profile ? profileInitial(profile) : defaultInitial())
 
@@ -214,6 +227,125 @@ function createWorkspaceRow (ws) {
   })
 
   return row
+}
+
+/* tasks render as a sub-list under their workspace row. Clicking one switches
+to the workspace first when it isn't the open one, then to the task itself. */
+
+function switchToWorkspaceTask (ws, taskId) {
+  const selected = workspaces.getSelected()
+  if (!selected || selected.id !== ws.id) {
+    browserUI.switchToWorkspace(ws.id)
+  }
+  browserUI.switchToTask(taskId)
+  workspaceDrawer.hide()
+}
+
+/* browserUI.closeTask only knows the selected workspace's task list (the
+`tasks` facade). For a task in a background workspace, destroy it through the
+workspace's own list instead. */
+function closeTaskInWorkspace (ws, task) {
+  const selected = workspaces.getSelected()
+  if (selected && selected.id === ws.id) {
+    browserUI.closeTask(task.id)
+    return
+  }
+
+  // same unsaved-editor guard as destroyTask, but checked against the task's
+  // own tabs - the global `tabs` list only covers the selected workspace
+  const discardable = task.tabs.get().every(function (tab) {
+    if (editorView.isEditorTabData(tab) && webviews.isEditorDirty(tab.id)) {
+      return typeof confirm !== 'function' || confirm('Discard unsaved changes in "' + (tab.title || '') + '"?')
+    }
+    return true
+  })
+  if (!discardable) {
+    return
+  }
+
+  ipc.send('agent-destroy-task-session', { taskId: task.id })
+  task.tabs.get().forEach(function (tab) {
+    editorView.allowDiscard(tab.id)
+    webviews.destroy(tab.id)
+  })
+  ws.tasks.destroy(task.id)
+}
+
+function createTaskRow (ws, task, index) {
+  const row = document.createElement('div')
+  row.className = 'ws-task-row'
+  // the facade only resolves the active workspace's list, so background
+  // workspaces never highlight - their own getSelected() keeps a stale
+  // selectedInWindow from when they were last open
+  const selectedTask = tasks.getSelected()
+  if (selectedTask && task.id === selectedTask.id) {
+    row.classList.add('selected')
+  }
+  row.setAttribute('data-task', task.id)
+
+  const nameEl = document.createElement('span')
+  nameEl.className = 'ws-task-name'
+  nameEl.textContent = task.name || l('defaultTaskName').replace('%n', index + 1)
+  row.appendChild(nameEl)
+
+  const badge = document.createElement('span')
+  badge.className = 'ws-row-badge'
+  const count = task.tabs.count()
+  badge.textContent = String(count)
+  badge.title = count === 1 ? '1 tab' : count + ' tabs'
+  row.appendChild(badge)
+
+  const deleteBtn = document.createElement('button')
+  deleteBtn.className = 'ws-row-settings i carbon:trash-can'
+  deleteBtn.title = l('taskDelete')
+  deleteBtn.addEventListener('click', function (e) {
+    e.stopPropagation()
+    closeTaskInWorkspace(ws, task)
+    workspaceDrawer.render()
+  })
+  row.appendChild(deleteBtn)
+
+  row.addEventListener('click', function () {
+    switchToWorkspaceTask(ws, task.id)
+  })
+
+  return row
+}
+
+function createTaskList (ws) {
+  const list = document.createElement('div')
+  list.className = 'ws-task-list'
+
+  ws.tasks.forEach(function (task, index) {
+    list.appendChild(createTaskRow(ws, task, index))
+  })
+
+  const addButton = document.createElement('button')
+  addButton.className = 'ws-task-add'
+
+  const addIcon = document.createElement('i')
+  addIcon.className = 'i carbon:add'
+  addButton.appendChild(addIcon)
+
+  const addLabel = document.createElement('span')
+  addLabel.textContent = l('newTask')
+  addButton.appendChild(addLabel)
+
+  addButton.addEventListener('click', function (e) {
+    e.stopPropagation()
+    const selected = workspaces.getSelected()
+    if (selected && selected.id === ws.id) {
+      browserUI.addTask()
+    } else {
+      const taskId = ws.tasks.add({})
+      browserUI.switchToWorkspace(ws.id)
+      browserUI.switchToTask(taskId)
+    }
+    workspaceDrawer.hide()
+  })
+  list.appendChild(addButton)
+
+  return list
 }
 
 /* archived workspaces keep their tabs in the session data, but all of their
@@ -292,6 +424,9 @@ var workspaceDrawer = {
     empty(workspaceListEl)
     workspaces.getActive().forEach(function (ws) {
       workspaceListEl.appendChild(createWorkspaceRow(ws))
+      if (!workspaces.isCollapsed(ws.id)) {
+        workspaceListEl.appendChild(createTaskList(ws))
+      }
     })
 
     const archivedWorkspaces = workspaces.getArchived()
@@ -485,7 +620,9 @@ var workspaceDrawer = {
       if (!ws || !indicatorName || !indicatorIcon) return
       const task = tasks.getSelected()
       const wsName = ws.name || l('defaultWorkspaceName').replace('%n', workspaces.getIndex(ws.id) + 1)
-      const name = task && task.name ? wsName + ' › ' + task.name : wsName
+      // same fallback as the drawer rows: unnamed tasks show "Task %n"
+      const taskName = task ? (task.name || l('defaultTaskName').replace('%n', tasks.getIndex(task.id) + 1)) : null
+      const name = taskName ? wsName + ' › ' + taskName : wsName
       indicatorName.textContent = name
       indicator.title = name
       const profile = profiles.getProfile(ws.profileId)
@@ -506,6 +643,22 @@ var workspaceDrawer = {
     tasks.on('task-updated', function (id, key) {
       if (key === 'name') updateIndicator()
     })
+
+    /* keep the task sub-lists live while the drawer is open. `tasks.on` is the
+    facade over the WorkspaceStore, so these fire for every workspace's list,
+    not just the selected one. */
+    const renderIfShown = function () {
+      if (workspaceDrawer.isShown) workspaceDrawer.render()
+    }
+    tasks.on('task-added', renderIfShown)
+    tasks.on('task-destroyed', renderIfShown)
+    tasks.on('task-moved', renderIfShown)
+    tasks.on('task-selected', renderIfShown)
+    tasks.on('task-updated', function (id, key) {
+      if (key === 'name') renderIfShown()
+    })
+    tasks.on('tab-added', renderIfShown)
+    tasks.on('tab-destroyed', renderIfShown)
     workspaces.on('workspace-selected', function () {
       updateIndicator()
       if (workspaceDrawer.isShown) workspaceDrawer.render()
@@ -519,7 +672,7 @@ var workspaceDrawer = {
     })
     workspaces.on('workspace-updated', function (id, key) {
       if (key === 'name' || key === 'profileId') updateIndicator()
-      if (key === 'archived' && workspaceDrawer.isShown) workspaceDrawer.render()
+      if ((key === 'archived' || key === 'collapsed') && workspaceDrawer.isShown) workspaceDrawer.render()
     })
     workspaces.on('state-sync-change', function () {
       updateIndicator()

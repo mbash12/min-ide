@@ -32,7 +32,9 @@ body.dark-mode #sidebar {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  width: 44px;
+  /* 42px centers the icons under the navbar's 36px sidebar toggle, which sits
+  var(--control-space-left) in from the window edge */
+  width: 42px;
   flex-shrink: 0;
   padding-top: 0.25em;
   background: rgb(50, 52, 58);
@@ -54,7 +56,7 @@ body.dark-mode #activity-bar {
 
 .activity-bar-tab {
   position: relative;
-  width: 44px;
+  width: 42px;
   height: 44px;
   display: flex;
   align-items: center;
@@ -75,7 +77,20 @@ body.dark-mode #activity-bar {
 .activity-bar-tab.active {
   opacity: 1;
   color: #fff;
-  border-left-color: cornflowerblue;
+  /* keep the ::after box inside this tab's stacking context */
+  isolation: isolate;
+}
+/* filled box behind the icon instead of the border indicator (the icon glyph
+lives in ::before). z-index -1 puts it behind the glyph but above the tab's
+own background */
+.activity-bar-tab.active::after {
+  content: "";
+  position: absolute;
+  inset: 6px 5px; /* 32px square box inside the 42x44 tab */
+  background: cornflowerblue;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 4px rgba(100, 149, 237, 0.45);
+  z-index: -1;
 }
 
 /* panel that holds the content of the active tab */
@@ -2552,12 +2567,12 @@ body.dark-mode #sidebar {
 }
 #activity-bar,
 body.dark-mode #activity-bar {
-  width: 48px;
+  width: 42px;
   padding-top: 2px;
   background: var(--vsc-activity-bg);
 }
 .activity-bar-tab {
-  width: 48px;
+  width: 42px;
   height: 48px;
   border: 0;
   border-left: 2px solid transparent;
@@ -2567,10 +2582,18 @@ body.dark-mode #activity-bar {
 .activity-bar-tab.codicon { font-size: 22px !important; }
 .activity-bar-tab:hover { background: transparent; opacity: 0.9; }
 .activity-bar-tab.active {
-  border-left-color: var(--vsc-focus);
-  background: transparent;
   color: #fff;
   opacity: 1;
+  isolation: isolate;
+}
+.activity-bar-tab.active::after {
+  content: "";
+  position: absolute;
+  inset: 8px 5px; /* 32px square box inside the 42x48 tab */
+  background: var(--vsc-focus);
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 4px var(--vsc-focus);
+  z-index: -1;
 }
 #sidebar-panels,
 body.dark-mode #sidebar-panels {

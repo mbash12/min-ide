@@ -361,25 +361,9 @@ var taskOverlay = {
 
     keyboardNavigationHelper.addToGroup('taskOverlay', taskOverlay.overlayElement)
 
-    // swipe down on the tabstrip to show the task overlay
-    document.getElementById('navbar').addEventListener('wheel', function (e) {
-      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) {
-        // https://github.com/minbrowser/min/issues/698
-        return
-      }
-      if (e.deltaY < -30 && e.deltaX < 10) {
-        taskOverlay.show()
-        e.stopImmediatePropagation()
-      }
-    })
-
-    keybindings.defineShortcut('toggleTasks', function () {
-      if (taskOverlay.isShown) {
-        taskOverlay.hide()
-      } else {
-        taskOverlay.show()
-      }
-    })
+    /* FORK: the overlay's triggers are retired - the navbar button is hidden
+    and the toggleTasks shortcut is owned by the workspace drawer (which
+    menuRenderer's toggleTaskOverlay IPC already routes to). */
 
     keybindings.defineShortcut({ keys: 'esc' }, function (e) {
       taskOverlay.hide()
