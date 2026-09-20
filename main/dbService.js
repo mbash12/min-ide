@@ -924,12 +924,21 @@ function kvGet (scope, key) {
 function kvSet (scope, key, value) {
   if (!validScope(scope) || !key) return false
   kvSetStmt.run(scope, String(key), JSON.stringify(value === undefined ? null : value), Date.now())
+  /* provider keys changing means the agent's model catalog is stale and the
+  SDK auth file needs re-syncing; onProviderConfigChanged is declared in
+  main/agent.js (same bundle) */
+  if (scope === 'provider_config' && typeof onProviderConfigChanged === 'function') {
+    onProviderConfigChanged()
+  }
   return true
 }
 
 function kvDelete (scope, key) {
   if (!validScope(scope) || !key) return false
   kvDelStmt.run(scope, String(key))
+  if (scope === 'provider_config' && typeof onProviderConfigChanged === 'function') {
+    onProviderConfigChanged()
+  }
   return true
 }
 

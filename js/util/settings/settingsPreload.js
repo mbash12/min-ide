@@ -30,8 +30,14 @@ window.addEventListener('message', function (e) {
   isolation, so they can't call ipc directly — relay these requests and send
   the results back as postMessage events */
   if (e.data && e.data.message === 'agentTestKey') {
-    ipc.invoke('agent-test-key', e.data.key).then(function (result) {
+    ipc.invoke('agent-test-key', { provider: e.data.provider, key: e.data.key }).then(function (result) {
       window.postMessage({ message: 'agentTestKeyResult', result: result }, window.location.toString())
+    })
+  }
+
+  if (e.data && e.data.message === 'agentListProviders') {
+    ipc.invoke('agent-list-providers').then(function (providers) {
+      window.postMessage({ message: 'agentListProvidersResult', result: providers }, window.location.toString())
     })
   }
 

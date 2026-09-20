@@ -43,15 +43,8 @@ if (new URLSearchParams(window.location.search).get('tab')) {
 }
 
 /* =====================================================================
-   Provider tab (OpenRouter)
+   Provider tab (multi-provider API keys)
    ===================================================================== */
-
-var keyInput = document.getElementById('input-openrouter-key')
-var toggleVisibilityButton = document.getElementById('toggle-key-visibility')
-var testButton = document.getElementById('test-key-button')
-var testResult = document.getElementById('test-result')
-var statusPill = document.getElementById('status-pill')
-var statusText = document.getElementById('status-text')
 
 function agentCall (message, data, callback) {
   const resultMessage = message + 'Result'
@@ -84,65 +77,223 @@ function dbInvoke (action, payload, callback) {
   window.postMessage({ message: 'dbInvoke', callId: callId, action: action, payload: payload }, window.location.toString())
 }
 
-/* status pill */
+/* CRUD list of configured providers: rows show the masked key with
+test/remove actions, and an add row offers every provider the installed SDK
+knows (probed live via agentListProviders). Keys live in the central DB under
+provider_config as '<id>ApiKey'. */
+var providersList = document.getElementById('providers-list')
+var providerKeys = {} // providerId -> api key (from kv provider_config)
+var knownProviders = [] // {id, label, models} — probed from the SDK
 
-function updateStatusPill () {
-  var hasKey = !!(keyInput.value && keyInput.value.trim())
-  statusPill.classList.toggle('configured', hasKey)
-  statusText.textContent = hasKey ? 'Configured' : 'Not configured'
+var PROVIDER_LINKS = {
+  openrouter: 'https://openrouter.ai/settings/keys',
+  anthropic: 'https://console.anthropic.com/settings/keys',
+  openai: 'https://platform.openai.com/api-keys',
+  google: 'https://aistudio.google.com/apikey',
+  xai: 'https://console.x.ai',
+  groq: 'https://console.groq.com/keys',
+  mistral: 'https://console.mistral.ai',
+  deepseek: 'https://platform.deepseek.com',
+  cerebras: 'https://cloud.cerebras.ai',
+  together: 'https://api.together.ai',
+  fireworks: 'https://fireworks.ai',
+  baseten: 'https://baseten.co',
+  nvidia: 'https://build.nvidia.com',
+  huggingface: 'https://huggingface.co/settings/tokens',
+  'kimi-coding': 'https://platform.moonshot.ai',
+  minimax: 'https://platform.minimaxi.com',
+  zai: 'https://z.ai',
+  opencode: 'https://opencode.ai',
+  'vercel-ai-gateway': 'https://vercel.com',
+  'amazon-bedrock': 'https://console.aws.amazon.com/bedrock',
+  'azure-openai-responses': 'https://portal.azure.com',
+  'qwen-token-plan': 'https://qwen.ai'
 }
 
-/* api key */
+function providerLabel (id) {
+  var known = knownProviders.find(function (p) { return p.id === id })
+  return (known && known.label) || id
+}
 
-toggleVisibilityButton.addEventListener('click', function () {
-  var show = keyInput.type === 'password'
-  keyInput.type = show ? 'text' : 'password'
-  toggleVisibilityButton.title = show ? 'Hide key' : 'Show key'
-  toggleVisibilityButton.firstElementChild.className = show ? 'i carbon:view--off' : 'i carbon:view'
-})
+function maskKey (key) {
+  if (!key || key.length < 10) return '••••••'
+  return key.slice(0, 6) + '…' + key.slice(-4)
+}
 
-keyInput.addEventListener('input', function () {
-  var value = this.value.trim() || null
-  /* the central DB is the source of truth; settings stay as a mirror so the
-  agent's catalog cache invalidation listener keeps firing */
-  dbInvoke('db:kvSet', { scope: 'provider_config', key: 'openrouterApiKey', value: value })
-  settings.set('openrouterApiKey', value)
-  testResult.hidden = true
-  updateStatusPill()
-})
-
-testButton.addEventListener('click', function () {
-  var key = keyInput.value.trim()
-  testResult.hidden = false
-  testResult.className = 'pro-test-result'
-  testResult.textContent = '…'
-  testButton.disabled = true
-  agentCall('agentTestKey', { key: key }, function (result) {
-    testButton.disabled = false
-    if (result && result.ok) {
-      testResult.classList.add('ok')
-      statusPill.classList.remove('error')
-    } else {
-      testResult.classList.add('fail')
-      statusPill.classList.toggle('error', !!key)
-    }
-    testResult.textContent = result ? result.message : 'Unknown error'
-  })
-})
-
-dbInvoke('db:kvGet', { scope: 'provider_config', key: 'openrouterApiKey' }, function (value) {
-  if (value) {
-    keyInput.value = value
-    updateStatusPill()
-    return
+function setProviderKey (id, key) {
+  providerKeys[id] = key
+  dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'ApiKey', value: key || null })
+  /* keep the legacy settings mirror for openrouter so the catalog cache
+  invalidation listener keeps firing */
+  if (id === 'openrouter') {
+    settings.set('openrouterApiKey', key)
   }
-  settings.get('openrouterApiKey', function (value) {
-    if (value) keyInput.value = value
-    updateStatusPill()
+  if (!key) delete providerKeys[id]
+}
+
+function renderProviders () {
+  providersList.textContent = ''
+
+  var configured = Object.keys(providerKeys).filter(function (id) { return !!providerKeys[id] })
+
+  if (!configured.length) {
+    var empty = document.createElement('p')
+    empty.className = 'pro-description'
+    empty.textContent = l('proSettingsNoProviders')
+    providersList.appendChild(empty)
+  }
+
+  configured.forEach(function (id) {
+    var row = document.createElement('div')
+    row.className = 'pro-provider-row'
+
+    var name = document.createElement('span')
+    name.className = 'pro-provider-name'
+    name.textContent = providerLabel(id)
+
+    var masked = document.createElement('span')
+    masked.className = 'pro-provider-key'
+    masked.textContent = maskKey(providerKeys[id])
+
+    var spacer = document.createElement('span')
+    spacer.className = 'pro-provider-spacer'
+
+    var status = document.createElement('span')
+    status.className = 'pro-test-result'
+    status.hidden = true
+
+    var testBtn = document.createElement('button')
+    testBtn.className = 'pro-icon-button'
+    testBtn.title = l('proSettingsTestKey')
+    var testIcon = document.createElement('i')
+    testIcon.className = 'i carbon:checkmark-outline'
+    testBtn.appendChild(testIcon)
+
+    var removeBtn = document.createElement('button')
+    removeBtn.className = 'pro-icon-button'
+    removeBtn.title = l('proSettingsRemoveProvider')
+    var removeIcon = document.createElement('i')
+    removeIcon.className = 'i carbon:trash-can'
+    removeBtn.appendChild(removeIcon)
+
+    testBtn.addEventListener('click', function () {
+      status.hidden = false
+      status.className = 'pro-test-result'
+      status.textContent = '…'
+      testBtn.disabled = true
+      agentCall('agentTestKey', { provider: id, key: providerKeys[id] }, function (res) {
+        testBtn.disabled = false
+        status.classList.add(res && res.ok ? 'ok' : 'fail')
+        status.textContent = res ? res.message : 'Unknown error'
+      })
+    })
+
+    removeBtn.addEventListener('click', function () {
+      setProviderKey(id, null)
+      renderProviders()
+    })
+
+    row.appendChild(name)
+    row.appendChild(masked)
+    row.appendChild(spacer)
+    row.appendChild(status)
+    row.appendChild(testBtn)
+    row.appendChild(removeBtn)
+    providersList.appendChild(row)
+  })
+
+  /* add row */
+  var unconfigured = knownProviders.filter(function (p) {
+    return configured.indexOf(p.id) === -1
+  })
+
+  var addRow = document.createElement('div')
+  addRow.className = 'pro-provider-row pro-provider-add'
+
+  var select = document.createElement('select')
+  select.className = 'pro-provider-select'
+  unconfigured.forEach(function (p) {
+    var opt = document.createElement('option')
+    opt.value = p.id
+    opt.textContent = p.label + (p.models ? ' (' + p.models + ')' : '')
+    select.appendChild(opt)
+  })
+
+  var keyInput = document.createElement('input')
+  keyInput.type = 'password'
+  keyInput.className = 'pro-provider-key-input'
+  keyInput.autocomplete = 'off'
+  keyInput.spellcheck = false
+  keyInput.placeholder = l('proSettingsApiKeyPlaceholder')
+
+  var addBtn = document.createElement('button')
+  addBtn.className = 'pro-button'
+  var addIcon = document.createElement('i')
+  addIcon.className = 'i carbon:add'
+  addBtn.appendChild(addIcon)
+  var addLabel = document.createElement('span')
+  addLabel.textContent = l('proSettingsAddProvider')
+  addBtn.appendChild(addLabel)
+
+  var linkNote = document.createElement('a')
+  linkNote.className = 'pro-provider-link'
+  linkNote.target = '_blank'
+  linkNote.rel = 'noopener'
+  function updateLink () {
+    var link = PROVIDER_LINKS[select.value]
+    linkNote.href = link || '#'
+    linkNote.textContent = link ? link.replace('https://', '') : ''
+    linkNote.style.visibility = link ? 'visible' : 'hidden'
+  }
+  select.addEventListener('change', updateLink)
+  updateLink()
+
+  addBtn.addEventListener('click', function () {
+    var key = keyInput.value.trim()
+    if (!key || !select.value) return
+    setProviderKey(select.value, key)
+    keyInput.value = ''
+    renderProviders()
+  })
+
+  if (!unconfigured.length) {
+    select.disabled = true
+    keyInput.disabled = true
+    addBtn.disabled = true
+  }
+
+  addRow.appendChild(select)
+  addRow.appendChild(keyInput)
+  addRow.appendChild(addBtn)
+  providersList.appendChild(addRow)
+
+  var linkWrap = document.createElement('p')
+  linkWrap.className = 'pro-description'
+  linkWrap.appendChild(linkNote)
+  providersList.appendChild(linkWrap)
+}
+
+/* load: providers the SDK knows + keys already stored */
+agentCall('agentListProviders', {}, function (providers) {
+  knownProviders = providers || []
+  dbInvoke('db:kvList', 'provider_config', function (result) {
+    providerKeys = {}
+    Object.keys(result || {}).forEach(function (kvKey) {
+      if (kvKey.endsWith('ApiKey') && result[kvKey]) {
+        providerKeys[kvKey.slice(0, -'ApiKey'.length)] = result[kvKey]
+      }
+    })
+    /* legacy: an openrouter key may still live in settings.json */
+    if (!providerKeys.openrouter) {
+      settings.get('openrouterApiKey', function (value) {
+        if (value) providerKeys.openrouter = value
+        renderProviders()
+      })
+      return
+    }
+    renderProviders()
   })
 })
-
-updateStatusPill()
 
 /* =====================================================================
    Profiles tab (moved from pages/profiles/profiles.js)

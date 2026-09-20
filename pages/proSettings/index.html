@@ -30,43 +30,11 @@
         <section class="pro-section">
           <div class="pro-section-header">
             <span class="pro-section-title" data-string="proSettingsProviderHeading"></span>
-            <span class="pro-provider-badge">OpenRouter</span>
           </div>
           <p class="pro-description" data-string="proSettingsProviderDescription"></p>
         </section>
 
-        <section class="pro-section">
-          <div class="pro-section-header">
-            <span class="pro-section-title" data-string="proSettingsKeyHeading"></span>
-            <span class="pro-status-pill" id="status-pill">
-              <span class="pro-status-dot"></span>
-              <span id="status-text"></span>
-            </span>
-          </div>
-          <p class="pro-description">
-            <span data-string="proSettingsKeyDescription"></span>
-            <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener">openrouter.ai/settings/keys</a>
-          </p>
-          <div class="pro-key-row">
-            <input
-              type="password"
-              id="input-openrouter-key"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="sk-or-…"
-            />
-            <button id="toggle-key-visibility" title="Show key">
-              <i class="i carbon:view"></i>
-            </button>
-          </div>
-          <div class="pro-actions-row">
-            <button id="test-key-button" class="pro-button">
-              <i class="i carbon:checkmark-outline"></i>
-              <span data-string="proSettingsTestKey"></span>
-            </button>
-            <span id="test-result" class="pro-test-result" hidden></span>
-          </div>
-        </section>
+        <div id="providers-list"></div>
 
         <footer class="pro-footer" data-string="proSettingsFooterNote"></footer>
       </section>
