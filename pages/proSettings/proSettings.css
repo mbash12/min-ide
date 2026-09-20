@@ -565,3 +565,93 @@ body.dark-mode #profiles-add-button {
     padding-top: 14px;
   }
 }
+
+/* profile notices + clear-data dialog */
+
+.profiles-notice {
+  font-size: 13px;
+  padding: 0.5em 0.75em;
+  margin-bottom: 0.6em;
+  border-radius: 6px;
+  border: 1px solid rgba(5, 150, 105, 0.35);
+  background: rgba(5, 150, 105, 0.08);
+}
+.profiles-notice.error {
+  border-color: rgba(220, 38, 38, 0.35);
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
+}
+body.dark-mode .profiles-notice.error {
+  color: #fca5a5;
+}
+
+.profiles-default-row button {
+  background: none;
+  border: 0;
+  padding: 0.3em 0.45em;
+  border-radius: 6px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 14px;
+}
+.profiles-default-row button:hover {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.pro-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.pro-dialog {
+  width: 340px;
+  max-width: calc(100vw - 48px);
+  background: #fff;
+  color: #222;
+  border-radius: 10px;
+  padding: 20px 22px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+body.dark-mode .pro-dialog {
+  background: #2b2b2d;
+  color: #e5e5e5;
+}
+
+.pro-dialog h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.pro-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.pro-dialog-actions {
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.pro-button-danger {
+  border-color: rgba(198, 40, 40, 0.5);
+  color: #c62828;
+}
+.pro-button-danger:hover {
+  background: rgba(198, 40, 40, 0.1);
+}
+body.dark-mode .pro-button-danger {
+  color: #ef9a9a;
+  border-color: rgba(239, 154, 154, 0.4);
+}

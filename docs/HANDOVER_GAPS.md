@@ -30,9 +30,9 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 6 | Workspace persistence | — bersih |
 | 7 | Archive Workspace | DITUNDA — auto-unpin (§22) |
 | 8 | Missing workspace path | — bersih |
-| 9 | Profiles | MISSING — Clear Data; DIFFERENT — delete tidak diblokir |
+| 9 | Profiles | — bersih |
 | 10 | Profile switching | DIFFERENT — semua view dibongkar, bukan hanya web tab |
-| 11 | Clear Profile Data | MISSING — seluruh fitur |
+| 11 | Clear Profile Data | — bersih |
 | 12 | Central database | MISSING — sebagian besar tabel; DIFFERENT — JSON, bukan DB |
 | 13 | Tabs | — bersih |
 | 14 | Monaco editor | — bersih |
@@ -107,8 +107,9 @@ Dua keputusan yang sengaja diambil: selama pemeriksaan belum selesai statusnya d
 
 ## §9 Profiles
 
-- **MISSING** — Profile manager tidak punya **Clear Data**. Tab Profiles hanya menyediakan create/rename/delete (`pages/proSettings/proSettings.js:211-349`; markup `pages/proSettings/index.html:71-83`).
-- **DIFFERENT** — Aturan "profile tidak boleh dihapus selama masih digunakan Workspace" tidak ditegakkan. Penghapusan diizinkan; workspace terdampak diam-diam dipindah ke default. `confirmProfileDeletion` hanya memeriksa editor yang belum disimpan (`js/browserUI.js:361-368`), lalu `applyProfileDeleted` menulis `profileId: null` (`js/browserUI.js:370-402`), dan halaman settings ikut menulis ulang `profileId` tersimpan (`pages/proSettings/proSettings.js:305-331`).
+Seluruh requirement sudah sesuai. Profile manager menyediakan Create, Rename, **Clear Data**, dan Delete (Duplicate bersifat opsional di blueprint dan tidak dibuat). Default Profile selalu tampil, tidak bisa dihapus, tapi datanya bisa di-clear — baris Default punya tombol Clear Data sendiri.
+
+Delete kini **diblokir** selama profile masih dipakai workspace — termasuk workspace archived, karena assignment-nya masih hidup. `profileDeleteRequested` memeriksa `getProfileUsageWorkspaces` di `js/browserUI.js`; bila terpakai, halaman menerima `reason: 'in-use'` beserta daftar nama workspace dan menampilkannya sebagai notice. Jalur `applyProfileDeleted` (pindah ke default + recreate views) tetap ada sebagai jaring pengaman untuk race antara cek dan penghapusan.
 
 ---
 
@@ -120,8 +121,9 @@ Dua keputusan yang sengaja diambil: selama pemeriksaan belum selesai statusnya d
 
 ## §11 Clear Profile Data
 
-- **MISSING** — Tidak ada UI clear-data per profile sama sekali, baik di Pro Settings maupun di tempat lain. Yang ada hanya bang global `!clearhistory`, yang sekaligus menghapus DB history dan membersihkan **semua** partisi profile tanpa pilihan per-profile maupun per-jenis data (`js/searchbar/customBangs.js:153-165`; `main/remoteActions.js:48-85`).
-- **MISSING** — Tidak ada cascade "berlaku untuk semua live workspace yang memakai profile itu", dan tidak ada reload/logout web tab terdampak.
+Seluruh requirement sudah sesuai. UI ala Chrome ada di Pro Settings > Profiles: tiap baris (termasuk Default) punya tombol Clear Data yang membuka dialog pemilihan jenis data — **cookies & site data** (localStorage/IndexedDB/service workers ikut, situs logout) dan **cached images & files** (`clearCache` + auth/host-resolver cache). Request melewati relay `profileClearDataRequested` → `js/browserUI.js` `clearProfileData` → IPC `clearProfileData` di `main/remoteActions.js`, yang memvalidasi partition (`persist:webcontent` atau `persist:profile-*`) sebelum membersihkan.
+
+Cascade ke live workspace terpenuhi: setelah partition dibersihkan, setiap **web tab** yang hidup di semua workspace pemakai profile itu di-`reload` (`webviews.callAsync(id, 'reload')`), sehingga logout langsung terlihat. Tab internal (editor/terminal/docs/notes) tidak disentuh, dan tab yang belum punya view otomatis memakai partition bersih saat dibuka. Bang global `!clearhistory` tetap ada dan tidak berubah.
 
 ---
 
@@ -381,6 +383,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 8. **Notes** (§6, §12, §17, §18, §33, §34). Fitur lengkap: collection `notes` global di `dbService` + IPC `db:*Note*` (`main/dbService.js`), klien `customDataStore`, halaman editor `pages/notes/` (Toast UI yang sama, source mode aktif, autosave), bridge `js/preload/notes.js` (channel `notes-invoke`), tab `kind: 'note'` + `resource` via `minViewResource` dengan dedupe global lintas workspace (`js/notesView.js`), dan aktivitas `notes` di sidebar (`js/sidebar/notesPanel.js`, `index.html`, `css/sidebar.css`). AI tidak punya jalur ke notes secara konstruksi (lihat §17).
 9. **Source mode Documents** (§16, §33). `hideModeSwitch` dilepas dari editor Docs, jadi tombol switch WYSIWYG ↔ Markdown kini tampil — editor Notes memakai konfigurasi yang sama.
 10. **Mermaid** (§16, §33 Phase 5). `mermaid@11` terintegrasi di kedua surface editor: swap `pre` → `.mermaid` di preview Markdown, dan `Decoration.widget` ProseMirror di bawah code block WYSIWYG (kode tetap editable). Render lewat `mermaid.render` terserialisasi, guard pane tersembunyi, key widget = hash source untuk reuse DOM. Diverifikasi headless: render awal + re-render setelah edit source.
+11. **Profile Clear Data + delete-blocking** (§9, §11). Dialog Clear Data per profile (termasuk Default) dengan pilihan jenis data; IPC `clearProfileData` memvalidasi partition dan membersihkan `clearStorageData`/`clearCache` sesuai pilihan; web tab hidup di workspace pemakai di-reload. Delete profile diblokir bila masih dipakai workspace (`in-use` + daftar nama). Diverifikasi headless: partition invalid/no-types ditolak, cookie nyata terhapus setelah clear.
 
 ## Ditunda
 

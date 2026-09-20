@@ -12,6 +12,7 @@ var tabEditor = require('navbar/tabEditor.js')
 var searchbar = require('searchbar/searchbar.js')
 var splitView = require('splitView.js')
 var editorView = require('editorView.js')
+var profiles = require('profiles.js')
 
 /* Ask before throwing away any editor content that only exists in a view.
 The check is intentionally renderer-side: closeTab and workspace actions are
@@ -408,6 +409,53 @@ function handleProfileDeleted (profileId) {
   return applyProfileDeleted(profileId)
 }
 
+/* Workspace names that currently use a profile (archived ones count - the
+profile is still assigned to them). Deletion is blocked while this is
+non-empty, per the blueprint's "profile tidak boleh dihapus selama masih
+digunakan Workspace". */
+function getProfileUsageWorkspaces (profileId) {
+  const names = []
+  workspaces.forEach(function (ws) {
+    if (ws.profileId === profileId) {
+      names.push(ws.name || ws.id)
+    }
+  })
+  return names
+}
+
+/* Clears selected data types on a profile's session partition, then reloads
+the live web tabs of every workspace that uses it so the effect (e.g. being
+logged out) is visible immediately. Non-web tabs are left alone - editors,
+terminals, documents and notes do not depend on site storage. Tabs whose
+views were never created just pick up the cleared partition when they are
+opened. `profileId` null means the default profile (persist:webcontent). */
+function clearProfileData (profileId, types) {
+  const partition = profiles.getPartition(profileId) || 'persist:webcontent'
+  return ipc.invoke('clearProfileData', { partition: partition, types: types }).then(function (ok) {
+    if (!ok) {
+      return { ok: false }
+    }
+    var reloaded = 0
+    workspaces.forEach(function (ws) {
+      if ((ws.profileId || null) !== (profileId || null)) {
+        return
+      }
+      ws.tasks.forEach(function (task) {
+        task.tabs.get().forEach(function (tab) {
+          if ((tab.kind || 'web') !== 'web' || !webviews.hasViewForTab(tab.id)) {
+            return
+          }
+          webviews.callAsync(tab.id, 'reload')
+          reloaded++
+        })
+      })
+    })
+    return { ok: true, reloaded: reloaded }
+  }, function () {
+    return { ok: false }
+  })
+}
+
 /* archives a workspace: switches away from it if it is open, stops its agent
 sessions, destroys all of its views to free memory, and marks it as archived
 so it no longer appears in the regular workspace list. Its state (including
@@ -674,22 +722,41 @@ webviews.bindIPC('profileDeleted', function (tabId, args) {
   applyProfileDeleted(args && args[0])
 })
 
-/* Request/response form used by Pro Settings. Confirm before the page removes
-the profile from localStorage; this avoids leaving live tasks pointing at a
-profile that was deleted after an unsaved-editor prompt was canceled. */
+/* Request/response form used by Pro Settings. A profile that is still
+assigned to a workspace cannot be deleted - the page is told which workspaces
+block it. Unused profiles delete right away; the profileDeleted/applyDeleted
+path stays as a safety net for races between the check and the removal. */
 webviews.bindIPC('profileDeleteRequested', function (tabId, args) {
   const profileId = args && args[0]
-  const allowed = !!profileId && confirmProfileDeletion(profileId)
-  if (!allowed) {
-    if (webviews.hasViewForTab(tabId)) {
-      webviews.callAsync(tabId, 'send', ['profileDeleteResult', { profileId: profileId, ok: false }])
+  const result = { profileId: profileId, ok: false }
+  if (profileId) {
+    const usedBy = getProfileUsageWorkspaces(profileId)
+    if (usedBy.length) {
+      result.reason = 'in-use'
+      result.workspaces = usedBy
+    } else {
+      result.ok = true
     }
+  }
+  if (webviews.hasViewForTab(tabId)) {
+    webviews.callAsync(tabId, 'send', ['profileDeleteResult', result])
+  }
+})
+
+/* Clear Data for a profile's session partition; live web tabs on every
+workspace using it are reloaded afterwards so logout/cache effects show. */
+webviews.bindIPC('profileClearDataRequested', function (tabId, args) {
+  const request = (args && args[0]) || {}
+  const finish = function (result) {
+    if (webviews.hasViewForTab(tabId)) {
+      webviews.callAsync(tabId, 'send', ['profileClearDataResult', Object.assign({ profileId: request.profileId }, result)])
+    }
+  }
+  if (request.profileId === undefined || !request.types || (!request.types.siteData && !request.types.cache)) {
+    finish({ ok: false })
     return
   }
-
-  if (webviews.hasViewForTab(tabId)) {
-    webviews.callAsync(tabId, 'send', ['profileDeleteResult', { profileId: profileId, ok: true }])
-  }
+  clearProfileData(request.profileId || null, request.types).then(finish)
 })
 
 ipc.on('set-file-view', function (e, data) {

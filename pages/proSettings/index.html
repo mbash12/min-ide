@@ -74,6 +74,7 @@
             <span class="pro-section-title" data-string="profilesListHeading"></span>
           </div>
           <p class="pro-description" data-string="profilesSubheading"></p>
+          <div id="profiles-notice" class="profiles-notice" hidden></div>
           <div id="profiles-list"></div>
           <div class="pro-add-row" id="profiles-add-section">
             <input type="text" id="profiles-add-input" spellcheck="false" />
@@ -106,6 +107,26 @@
         </section>
       </section>
       </main>
+    </div>
+
+    <div id="profile-clear-overlay" class="pro-overlay" hidden>
+      <div class="pro-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-clear-title">
+        <h2 id="profile-clear-title"></h2>
+        <p class="pro-description" data-string="profileClearDataDescription"></p>
+        <label class="pro-check-row">
+          <input type="checkbox" id="profile-clear-site-data" checked />
+          <span data-string="profileClearSiteData"></span>
+        </label>
+        <label class="pro-check-row">
+          <input type="checkbox" id="profile-clear-cache" checked />
+          <span data-string="profileClearCache"></span>
+        </label>
+        <p id="profile-clear-usage" class="pro-description"></p>
+        <div class="pro-actions-row pro-dialog-actions">
+          <button id="profile-clear-cancel" class="pro-button" data-string="profileClearCancel"></button>
+          <button id="profile-clear-confirm" class="pro-button pro-button-danger" data-string="profileClearConfirm"></button>
+        </div>
+      </div>
     </div>
 
     <script src="../../js/util/settings/settingsContent.js"></script>

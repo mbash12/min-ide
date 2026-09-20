@@ -21,6 +21,9 @@ window.addEventListener('message', function (e) {
   if (e.data && e.data.message === 'profileDeleted' && e.data.profileId) {
     ipc.send('profileDeleted', e.data.profileId)
   }
+  if (e.data && e.data.message === 'profileClearDataRequested' && e.data.profileId !== undefined) {
+    ipc.send('profileClearDataRequested', { profileId: e.data.profileId, types: e.data.types })
+  }
 
   /* AI provider tab of the Pro Settings page (min://proSettings): pages run
   with context
@@ -88,5 +91,11 @@ ipc.on('receiveSettingsData', function (e, data) {
 ipc.on('profileDeleteResult', function (e, data) {
   if (window.location.toString().startsWith('min://')) {
     window.postMessage({ message: 'profileDeleteResult', result: data }, window.location.toString())
+  }
+})
+
+ipc.on('profileClearDataResult', function (e, data) {
+  if (window.location.toString().startsWith('min://')) {
+    window.postMessage({ message: 'profileClearDataResult', result: data }, window.location.toString())
   }
 })

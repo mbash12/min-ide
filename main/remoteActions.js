@@ -84,6 +84,39 @@ ipc.handle('clearStorageData', function (e, partitions = []) {
     })
 })
 
+/* Per-profile data clearing (Pro Settings > Profiles > Clear Data). The
+renderer picks the partition - 'persist:webcontent' for the default profile,
+'persist:profile-<id>' otherwise - and which data types to wipe. Only session
+partitions are accepted; internal UI storage is never a target. */
+ipc.handle('clearProfileData', function (e, args) {
+  const partition = args && args.partition
+  const types = (args && args.types) || {}
+  if (partition !== 'persist:webcontent' && !/^persist:profile-[\w-]+$/.test(String(partition))) {
+    return Promise.resolve(false)
+  }
+  const ses = session.fromPartition(partition)
+  const tasks = []
+  if (types.siteData) {
+    // cookies, localStorage, IndexedDB, service workers, cache storage, etc.
+    tasks.push(ses.clearStorageData())
+    if (partition === 'persist:webcontent') {
+      /* same leftover handling as clearStorageData: http(s) data for the
+      default profile also lives in the default session */
+      tasks.push(session.defaultSession.clearStorageData({ origin: 'http://' }))
+      tasks.push(session.defaultSession.clearStorageData({ origin: 'https://' }))
+    }
+  }
+  if (types.cache) {
+    tasks.push(ses.clearCache())
+    tasks.push(ses.clearHostResolverCache())
+    tasks.push(ses.clearAuthCache())
+  }
+  if (!tasks.length) {
+    return Promise.resolve(false)
+  }
+  return Promise.all(tasks).then(function () { return true })
+})
+
 /* window actions */
 
 ipc.handle('minimize', function (e) {

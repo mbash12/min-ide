@@ -118,19 +118,35 @@ updateStatusPill()
 const STORAGE_KEY = 'workspaceProfiles'
 const profileColors = ['#5b8def', '#43a047', '#f4511e', '#8e24aa', '#00897b', '#d81b60', '#6d4c41', '#546e7a']
 var pendingProfileDeletes = {}
+var pendingProfileClears = {}
 
 window.addEventListener('message', function (e) {
-  if (!e.origin.startsWith('min://') || !e.data || e.data.message !== 'profileDeleteResult') return
-  const result = e.data.result || {}
-  const onResult = pendingProfileDeletes[result.profileId]
-  if (!onResult) return
-  delete pendingProfileDeletes[result.profileId]
-  onResult(result.ok === true)
+  if (!e.origin.startsWith('min://') || !e.data) return
+  if (e.data.message === 'profileDeleteResult') {
+    const result = e.data.result || {}
+    const onResult = pendingProfileDeletes[result.profileId]
+    if (!onResult) return
+    delete pendingProfileDeletes[result.profileId]
+    onResult(result)
+  }
+  if (e.data.message === 'profileClearDataResult') {
+    const result = e.data.result || {}
+    const key = result.profileId || ''
+    const onClear = pendingProfileClears[key]
+    if (!onClear) return
+    delete pendingProfileClears[key]
+    onClear(result)
+  }
 })
 
 function requestProfileDelete (profileId, onResult) {
   pendingProfileDeletes[profileId] = onResult
   window.postMessage({ message: 'profileDeleteRequested', profileId: profileId }, window.location.toString())
+}
+
+function requestProfileClear (profileId, types, onResult) {
+  pendingProfileClears[profileId || ''] = onResult
+  window.postMessage({ message: 'profileClearDataRequested', profileId: profileId, types: types }, window.location.toString())
 }
 
 function getProfiles () {
@@ -205,11 +221,93 @@ function getWorkspaceUsage () {
 var listEl = document.getElementById('profiles-list')
 var addInput = document.getElementById('profiles-add-input')
 var addButton = document.getElementById('profiles-add-button')
+var noticeEl = document.getElementById('profiles-notice')
 
 addInput.placeholder = l('taskProfileAddPlaceholder')
 
+function showProfilesNotice (text, isError) {
+  noticeEl.hidden = false
+  noticeEl.textContent = text
+  noticeEl.classList.toggle('error', !!isError)
+}
+
+function clearProfilesNotice () {
+  noticeEl.hidden = true
+  noticeEl.textContent = ''
+}
+
+/* ----- Clear Data dialog (Chrome-style data type picker) ----- */
+
+var clearOverlay = document.getElementById('profile-clear-overlay')
+var clearTitle = document.getElementById('profile-clear-title')
+var clearUsage = document.getElementById('profile-clear-usage')
+var clearSiteData = document.getElementById('profile-clear-site-data')
+var clearCache = document.getElementById('profile-clear-cache')
+var clearCancelBtn = document.getElementById('profile-clear-cancel')
+var clearConfirmBtn = document.getElementById('profile-clear-confirm')
+var clearTarget = null
+
+function openClearDialog (profileId, name) {
+  clearTarget = profileId || null
+  clearTitle.textContent = l('profileClearData') + ' — ' + name
+  var usage = getWorkspaceUsage()
+  var count = profileId ? (usage[profileId] || 0) : (usage.__default || 0)
+  clearUsage.textContent = count
+    ? l('profileClearUsage').replace('%s', count === 1 ? '1 workspace' : count + ' workspaces')
+    : ''
+  clearOverlay.hidden = false
+}
+
+function closeClearDialog () {
+  clearOverlay.hidden = true
+  clearTarget = null
+  clearConfirmBtn.disabled = false
+}
+
+function updateClearConfirm () {
+  clearConfirmBtn.disabled = !clearSiteData.checked && !clearCache.checked
+}
+
+clearCancelBtn.addEventListener('click', closeClearDialog)
+clearOverlay.addEventListener('click', function (e) {
+  if (e.target === clearOverlay) closeClearDialog()
+})
+clearSiteData.addEventListener('change', updateClearConfirm)
+clearCache.addEventListener('change', updateClearConfirm)
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape' && !clearOverlay.hidden) closeClearDialog()
+})
+
+clearConfirmBtn.addEventListener('click', function () {
+  var types = { siteData: clearSiteData.checked, cache: clearCache.checked }
+  if (!types.siteData && !types.cache) return
+  clearConfirmBtn.disabled = true
+  var target = clearTarget
+  requestProfileClear(target, types, function (result) {
+    closeClearDialog()
+    if (result && result.ok) {
+      showProfilesNotice(result.reloaded
+        ? l('profileClearDoneReloaded').replace('%s', result.reloaded)
+        : l('profileClearDone'))
+    } else {
+      showProfilesNotice(l('profileClearFailed'), true)
+    }
+  })
+})
+
+function makeClearButton (profileId, name) {
+  const btn = document.createElement('button')
+  btn.className = 'i carbon:erase'
+  btn.title = l('profileClearData')
+  btn.addEventListener('click', function () {
+    openClearDialog(profileId, name)
+  })
+  return btn
+}
+
 function renderProfiles () {
   listEl.textContent = ''
+  clearProfilesNotice()
 
   const usage = getWorkspaceUsage()
 
@@ -230,6 +328,8 @@ function renderProfiles () {
     u.textContent = n === 1 ? '1 workspace' : n + ' workspaces'
     defaultRow.appendChild(u)
   }
+  // the default profile cannot be deleted, but its data can be cleared
+  defaultRow.appendChild(makeClearButton(null, l('taskProfileDefault')))
   listEl.appendChild(defaultRow)
 
   const profiles = getProfiles()
@@ -299,12 +399,19 @@ function renderProfiles () {
     })
     row.appendChild(renameBtn)
 
+    row.appendChild(makeClearButton(profile.id, profile.name))
+
     const deleteBtn = document.createElement('button')
     deleteBtn.className = 'profile-delete i carbon:trash-can'
     deleteBtn.title = l('taskProfileDelete')
     deleteBtn.addEventListener('click', function () {
-      requestProfileDelete(profile.id, function (allowed) {
-        if (!allowed) return
+      requestProfileDelete(profile.id, function (result) {
+        if (!result || !result.ok) {
+          if (result && result.reason === 'in-use') {
+            showProfilesNotice(l('profileDeleteInUse').replace('%s', (result.workspaces || []).join(', ')), true)
+          }
+          return
+        }
         const all = getProfiles().filter(function (p) { return p.id !== profile.id })
         saveProfiles(all)
         try {
