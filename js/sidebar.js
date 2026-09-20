@@ -7,6 +7,7 @@ const playbookPanel = require('sidebar/playbookPanel.js')
 const agentPanel = require('sidebar/agentPanel.js')
 const designPanel = require('sidebar/designPanel.js')
 const docsPanel = require('sidebar/docsPanel.js')
+const notesPanel = require('sidebar/notesPanel.js')
 const proSettingsPage = require('util/proSettingsPage.js')
 
 /*
@@ -22,9 +23,10 @@ holds the content of the active tab.
   selected workspace and persisted in IndexedDB, so each workspace remembers
   its own layout across restarts.
 
-Files, Source Control, Playbook, AI, Design, and Docs are populated by their own
-modules. Docs is workspace-scoped and remains available even when a workspace
-does not have a folder path.
+Files, Source Control, Playbook, AI, Design, Docs, and Notes are populated by
+their own modules. Docs is workspace-scoped and remains available even when a
+workspace does not have a folder path. Notes is global, so it is also always
+available and its content never changes with the selected workspace.
 */
 
 const sidebarMinPanelWidth = 180
@@ -53,7 +55,7 @@ function applyPanelWidthToDom () {
 
 const sidebar = {
   isVisible: false, // whether the whole sidebar (activity bar + panel) is shown
-  activeTab: null, // 'ai' | 'files' | 'git' | 'playbook' | 'design' | 'docs'
+  activeTab: null, // 'ai' | 'files' | 'git' | 'playbook' | 'design' | 'docs' | 'notes'
   panelVisible: false, // whether the panel is expanded next to the activity bar
   currentShift: 0, // webview left margin currently applied
   currentWorkspaceId: null, // workspace the current state belongs to
@@ -245,8 +247,8 @@ const sidebar = {
   },
 
   initialize: function () {
-    // files, git, playbook, AI, design, and Docs panels are populated by their
-    // own modules. Docs is intentionally not path-dependent.
+    // files, git, playbook, AI, design, Docs, and Notes panels are populated by
+    // their own modules. Docs and Notes are intentionally not path-dependent.
 
     if (toggleButton) {
       toggleButton.addEventListener('click', function (e) {
@@ -385,6 +387,7 @@ const sidebar = {
     agentPanel.initialize()
     designPanel.initialize()
     docsPanel.initialize()
+    notesPanel.initialize()
 
     window.sidebar = sidebar
   }

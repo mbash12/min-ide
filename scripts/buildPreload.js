@@ -13,7 +13,8 @@ const modules = [
   'js/preload/translate.js',
   'js/preload/terminal.js',
   'js/preload/editor.js',
-  'js/preload/docs.js'
+  'js/preload/docs.js',
+  'js/preload/notes.js'
 ]
 
 function buildPreload () {

@@ -27,7 +27,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 3 | Favicon | — bersih |
 | 4 | Workspace model | DITUNDA — `sidebarState` |
 | 5 | Workspace switching | — bersih |
-| 6 | Workspace persistence | MISSING — notes |
+| 6 | Workspace persistence | — bersih |
 | 7 | Archive Workspace | DITUNDA — auto-unpin (§22) |
 | 8 | Missing workspace path | — bersih |
 | 9 | Profiles | MISSING — Clear Data; DIFFERENT — delete tidak diblokir |
@@ -37,9 +37,9 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 13 | Tabs | — bersih |
 | 14 | Monaco editor | — bersih |
 | 15 | Terminal | DIFFERENT — cwd/scrollback tidak dipersist |
-| 16 | Documents | MISSING — source mode, Mermaid; DIFFERENT — bentuk tool AI |
-| 17 | Notes | MISSING — seluruh fitur |
-| 18 | Sidebar | MISSING — aktivitas Notes |
+| 16 | Documents | DIFFERENT — bentuk tool AI |
+| 17 | Notes | — bersih |
+| 18 | Sidebar | — bersih |
 | 19 | File Tree | — bersih |
 | 20 | Git | — bersih |
 | 21 | Tile / Split View | — bersih |
@@ -86,7 +86,7 @@ Task terakhir, tab terakhir, tiled state, sidebar state, dan runtime yang tetap 
 
 ## §6 Workspace persistence
 
-- **MISSING** — **Notes** tidak dipersist karena subsistemnya tidak ada sama sekali (lihat §17).
+Notes kini dipersist — di collection `notes` milik `dbService`, yang memang global sesuai blueprint (bukan per workspace).
 Pointer session aktif kini persisten (`main/agent.js`): `prefsByCwd` ditulis ke `<userData>/pi-agent/agent-prefs.json` dan dibaca lagi saat dipakai, jadi setelah restart sebuah task kembali ke percakapan yang tadi terbuka, bukan ke yang terakhir dimodifikasi (`resolveSessionFile` memeriksa `prefs.sessionPath` sebelum jalur heuristik `restoreRecent`). `skipRestore` ikut bertahan, sehingga pilihan "session baru" tidak berubah jadi restore otomatis. Entry dibuang saat workspace dihapus; archive tidak menghapusnya karena task-nya masih ada.
 
 ---
@@ -128,10 +128,10 @@ Dua keputusan yang sengaja diambil: selama pemeriksaan belum selesai statusnya d
 ## §12 Central database
 
 - **DIFFERENT** — Yang ada bukan database melainkan **satu file JSON**. `main/dbService.js` menyimpan seluruh state di objek in-memory dan menuliskannya atomik sebagai `custom_app_data.db` (`main/dbService.js:22-31,150-158`). `CENTRALIZED_SQLITE_PLAN.md` belum dijalankan.
-- **MISSING** — `workspaces`, `workspace_state`, `task_extra_state`, dan `tab_extra_metadata` tidak ada di DB. State workspace/task/tab ditulis ke `sessionRestore.json` + `localStorage['taskRestoreData']` (`js/sessionRestore.js:19-61`). Permukaan IPC DB hanya mencakup preferences/profiles/snapshots/designs/documents/activities (`main/dbService.js:618-670`).
+- **MISSING** — `workspaces`, `workspace_state`, `task_extra_state`, dan `tab_extra_metadata` tidak ada di DB. State workspace/task/tab ditulis ke `sessionRestore.json` + `localStorage['taskRestoreData']` (`js/sessionRestore.js:19-61`). Permukaan IPC DB hanya mencakup preferences/profiles/snapshots/designs/documents/notes/activities (`main/dbService.js`).
 - **DIFFERENT** — `profiles` disimpan utama di `localStorage['workspaceProfiles']`; DB hanya mirror sekunder (`js/profiles.js:11-44`; `pages/proSettings/proSettings.js:147-164`).
 - **DIFFERENT** — `sidebar_state` tidak di DB melainkan di IndexedDB Dexie (`js/util/uiStateDB.js:13-29,44-60`).
-- **MISSING** — `notes` dan `tile_state` tidak punya storage sama sekali.
+- **MISSING** — `tile_state` tidak punya storage sama sekali. (`notes` kini ada sebagai collection tersendiri — lihat §17.)
 - **DIFFERENT** — AI config/provider tidak di DB melainkan di `settings.json` dan Map in-memory (`main/agent.js:22,402-404`; `js/util/settings/settings.js:16-44`).
 - **DIFFERENT** — Empat collection di `dbService` adalah **dead code** (nol pemanggil di luar layer DB): `user_preferences`, `workspace_snapshots`, `design_documents`, `tab_activities` (`main/dbService.js:23-31`; wrapper IPC-nya masih ada di `js/util/customDataStore.js:52-79`).
 
@@ -167,25 +167,27 @@ PTY nyata, session per tab, default cwd, dan berhenti saat tab/task/workspace di
 
 ## §16 Documents
 
-- **MISSING** — **Tombol switch ke Source.** Editor dibuat dengan `hideModeSwitch: true` dan tidak ada penggantinya; header halaman hanya berisi title, checkbox private, dan status save (`pages/docs/docs.js:137-157`; `pages/docs/index.html:14-24`).
-- **MISSING** — **Render Mermaid.** Tidak ada dependency mermaid maupun integrasi renderer kustom; bundle editor adalah Toast UI polos (`pages/docs/editorBundle.js:1`; `pages/docs/docs.js:137-157`).
 - **DIFFERENT** — Tool AI tidak diekspos sebagai `listDocuments` / `readDocument` / `editDocument`, melainkan satu tool `docs` dengan operasi `list|search|get|create|update` (`main/agentTools.js:277-338`). Secara fungsi setara, jadi ini gap bentuk antarmuka saja.
+
+Mermaid kini terverifikasi jalan di kedua mode. `mermaid@11` dimuat halaman editor sebagai script polos (`mermaid.min.js`, CSP `script-src 'self'` lolos); glue dibagi lewat `window.MinMermaid`/`MinMermaidPlugin` di `dist/docs-editor.js` (`pages/docs/editorBundle.js`). Mode Markdown: blok ` ```mermaid ` di preview kanan di-swap jadi container `.mermaid`. Mode WYSIWYG: plugin PM menyisipkan `Decoration.widget` tepat setelah code block — diagram tampil di bawah kode yang tetap editable, DOM widget dikelola ProseMirror sehingga tidak disapu rebuild nodeView (penyebab hilangnya render sebelumnya), dan key widget membawa hash source sehingga svg di-reuse selama source tidak berubah. Render memakai `mermaid.render(id, text)` (temp element di `document.body`, kebal detach Toast UI) yang terserialisasi per window; pane tersembunyi di-skip karena `getBBox` dagre gagal di situ.
 
 ---
 
 ## §17 Notes
 
-- **MISSING** — Seluruh fitur. Tidak ada page, panel, store, maupun reuse editor: daftar panel sidebar hanya `ai/files/git/playbook/design/docs` (`index.html:289-294`), tidak ada collection notes di `dbService` (`main/dbService.js:23-31`), dan tidak ada file sumber notes.
+Seluruh requirement sudah sesuai. Notes **global** — collection `notes` di `dbService` tidak membawa `workspace_id`, sehingga tidak ikut tersapu `db:deleteWorkspaceData` dan daftarnya sama di semua workspace (`main/dbService.js` seksi `--- Global Notes ---`; klien `js/util/customDataStore.js`). Editor-nya Toast UI yang sama dengan Documents — `pages/notes/` memakai `dist/docs-editor.js`, markdown WYSIWYG dengan tombol switch ke source, dan autosave berjalan lewat jalur yang sama.
 
-Aturan "AI tidak boleh punya akses ke Notes" terpenuhi secara trivial justru karena Notes belum ada.
+Tab notes adalah tab Min biasa dengan `kind: 'note'` dan `resource` = note id; URL-nya generik (`min://app/pages/notes/index.html`, tampil sebagai `min://notes`) dan id sampai ke halaman lewat `minViewResource` (`js/notesView.js`, `pages/notes/notes.js`). Satu note paling banyak satu tab di seluruh workspace — membuka note yang sudah terbuka memfokuskan tabnya (pindah workspace/task bila perlu); menghapus note menutup tabnya di mana pun ia berada, termasuk membersihkan `splitState` task yang memuatnya.
+
+Aturan "AI tidak boleh punya akses ke Notes" kini terpenuhi **secara struktural**, bukan trivial: collection notes tidak punya helper `*ForAI`, tidak masuk `minDocumentStore`, tidak ada tool agent untuknya, allowlist `dbInvoke` di `settingsPreload` tidak mencakup channel notes, tab `kind: 'note'` tidak memenuhi filter `isWebTab` browser control, dan browser control tidak punya aksi eval-JS yang bisa menyuntik `notes-invoke`. Broadcast `notes-changed` hanya membawa `noteId`, tanpa judul/konten.
 
 ---
 
 ## §18 Sidebar
 
-- **MISSING** — Aktivitas **Notes** tidak ada di activity bar. Blueprint mencantumkan aktivitas `AI Chat, Files, Git, Documents, Notes`; yang terpasang hanya `ai`, `files`, `git`, `playbook`, `design`, `docs` (`index.html:237-294`; registry panel di `js/sidebar.js:56`). Sebagai gantinya ada dua aktivitas di luar blueprint (`playbook`, `design`) — itu kelebihan, bukan gap.
+Seluruh requirement sudah sesuai. Aktivitas `notes` kini ada di activity bar (`index.html:278-284`, panel `index.html:302`) dan tidak masuk `pathTabs`, jadi tetap tampil untuk workspace tanpa path — sesuai daftar blueprint (`AI, Documents, Notes` tetap tampil). Dua aktivitas di luar blueprint (`playbook`, `design`) tetap ada sebagai kelebihan, bukan gap.
 
-Yang sudah sesuai: Files/Git disembunyikan saat tanpa path, Docs tetap tampil tanpa filesystem, panel mendorong konten lewat margin (bukan overlay), dan state persisten per workspace.
+Yang sudah sesuai: Files/Git disembunyikan saat tanpa path, Docs/Notes tetap tampil tanpa filesystem, panel mendorong konten lewat margin (bukan overlay), dan state persisten per workspace.
 
 ---
 
@@ -315,29 +317,22 @@ Yang sudah benar dan terverifikasi: `origin` = `github.com/mbash12/min-ide`, `up
 
 **Phase 3 — IDE surfaces** — seluruh item selesai (Activity Bar, Sidebar, File Tree, Monaco, Terminal, dan editor/terminal hidup sebagai tab Min biasa).
 
-**Phase 4 — Development UX**
-- autosave — **belum**: hanya ada di editor Docs (`pages/docs/docs.js:54-114`), Monaco manual (`pages/editor/editor.js:113,262`).
-- tile/split view — **sebagian**: ada tapi maks 2 panel dan tidak persisten.
-- temporary editor tabs dan Git sidebar selesai.
+**Phase 4 — Development UX** — seluruh item selesai (autosave di Monaco dan Docs, tile/split view sampai 3 panel dan persisten per task, temporary editor tabs, Git sidebar).
 
-**Phase 5 — Documents**
-- Notes — **belum ada**.
-- source mode — **belum ada**.
-- Mermaid — **belum ada**.
-- Documents dan WYSIWYG Markdown selesai.
+**Phase 5 — Documents** — seluruh item selesai: Documents, WYSIWYG Markdown, source mode, Mermaid (preview + widget WYSIWYG, `mermaid.render` terserialisasi), dan Notes.
 
 **Phase 6 — AI**
 - providers (jamak) — **belum**: hanya OpenRouter (`main/agent.js:30-32,426,689`).
 - workspace history — **belum**: history per Task (`main/agent.js:91-99,231-237`).
 - AI sessions, task/session ownership, filesystem/shell agent, dan document tools selesai.
 
-**Phase 7 — Browser control** — action lengkap dan isolasi per task ditegakkan, tetapi pembatasan "web tabs only" belum (lihat §26).
+**Phase 7 — Browser control** — seluruh item selesai: action lengkap, isolasi per task, dan pembatasan "web tabs only" lewat `kind` (lihat §26).
 
 ---
 
 ## §34 Important non-goals
 
-Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork (`selectedInWindow` adalah upstream), tidak ada grid/nested tiling (maks 2 panel), workspace single-root (satu field `path`), tidak ada Notes sehingga tidak ada akses AI ke Notes, dan tidak ada cloud sync / account / marketplace / remote dev / mobile. `main/keychainService.js` adalah password manager bawaan Min (upstream), dan `main/permissionManager.js:58-80` adalah permission website (media/notifikasi/pointer lock), bukan permission enterprise.
+Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork (`selectedInWindow` adalah upstream), tidak ada grid/nested tiling (columns only, maks 3 panel), workspace single-root (satu field `path`), Notes kini ada tetapi tidak ada code path AI ke Notes sama sekali (lihat §17), dan tidak ada cloud sync / account / marketplace / remote dev / mobile. `main/keychainService.js` adalah password manager bawaan Min (upstream), dan `main/permissionManager.js:58-80` adalah permission website (media/notifikasi/pointer lock), bukan permission enterprise.
 
 ---
 
@@ -383,6 +378,9 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 5. **Batch kecil**: autosave Monaco (§14), diff working tree di panel Git (§20), dan `createdAt`/`updatedAt` pada workspace (§4).
 6. **Batch cepat lanjutan**: `action=read` untuk membaca teks halaman (§26), penghapusan berkas transkrip AI saat workspace dihapus (§30), dan prefill nama default di modal workspace (§4).
 7. **Path workspace hilang** (§8). Folder yang sudah tidak ada membuat workspace jadi browser-only: Files/Git disembunyikan dan baris workspace menampilkan peringatan, tanpa menghapus path tersimpan.
+8. **Notes** (§6, §12, §17, §18, §33, §34). Fitur lengkap: collection `notes` global di `dbService` + IPC `db:*Note*` (`main/dbService.js`), klien `customDataStore`, halaman editor `pages/notes/` (Toast UI yang sama, source mode aktif, autosave), bridge `js/preload/notes.js` (channel `notes-invoke`), tab `kind: 'note'` + `resource` via `minViewResource` dengan dedupe global lintas workspace (`js/notesView.js`), dan aktivitas `notes` di sidebar (`js/sidebar/notesPanel.js`, `index.html`, `css/sidebar.css`). AI tidak punya jalur ke notes secara konstruksi (lihat §17).
+9. **Source mode Documents** (§16, §33). `hideModeSwitch` dilepas dari editor Docs, jadi tombol switch WYSIWYG ↔ Markdown kini tampil — editor Notes memakai konfigurasi yang sama.
+10. **Mermaid** (§16, §33 Phase 5). `mermaid@11` terintegrasi di kedua surface editor: swap `pre` → `.mermaid` di preview Markdown, dan `Decoration.widget` ProseMirror di bawah code block WYSIWYG (kode tetap editable). Render lewat `mermaid.render` terserialisasi, guard pane tersembunyi, key widget = hash source untuk reuse DOM. Diverifikasi headless: render awal + re-render setelah edit source.
 
 ## Ditunda
 

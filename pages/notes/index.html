@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:"
+    />
+    <link rel="stylesheet" href="../../node_modules/@toast-ui/editor/dist/toastui-editor.css" />
+    <link rel="stylesheet" href="../../node_modules/@toast-ui/editor/dist/theme/toastui-editor-dark.css" />
+    <link rel="stylesheet" href="notes.css" />
+  </head>
+  <body>
+    <main id="notes-shell">
+      <header id="notes-header">
+        <input id="notes-title" type="text" maxlength="200" aria-label="Note title" />
+        <div id="notes-header-actions">
+          <span id="notes-save-status" aria-live="polite"></span>
+        </div>
+      </header>
+
+      <section id="notes-state" aria-live="polite">Loading…</section>
+      <section id="notes-editor" hidden></section>
+    </main>
+
+    <script src="../../node_modules/mermaid/dist/mermaid.min.js"></script>
+    <script src="../../dist/docs-editor.js"></script>
+    <script src="notes.js"></script>
+  </body>
+</html>

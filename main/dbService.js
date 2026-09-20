@@ -27,6 +27,7 @@ let dbState = {
   workspace_snapshots: [],
   design_documents: [],
   documents: [],
+  notes: [],
   tab_activities: []
 }
 
@@ -112,6 +113,40 @@ function normalizeDocumentState () {
   })
 }
 
+function normalizeStoredNote (value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const id = validateDocumentId(value.id)
+  if (!id.ok) return null
+
+  const title = typeof value.title === 'string' && value.title.trim()
+    ? value.title.trim().slice(0, DOCUMENT_TITLE_MAX_LENGTH)
+    : 'Untitled'
+  const markdown = typeof value.markdown === 'string'
+    ? value.markdown.slice(0, DOCUMENT_MARKDOWN_MAX_LENGTH)
+    : ''
+  const createdAt = typeof value.created_at === 'number' && isFinite(value.created_at)
+    ? value.created_at
+    : 0
+  const updatedAt = typeof value.updated_at === 'number' && isFinite(value.updated_at)
+    ? value.updated_at
+    : createdAt
+
+  return {
+    id: id.value,
+    title: title,
+    markdown: markdown,
+    created_at: createdAt,
+    updated_at: updatedAt
+  }
+}
+
+function normalizeNoteState () {
+  const stored = Array.isArray(dbState.notes) ? dbState.notes : []
+  dbState.notes = stored.map(normalizeStoredNote).filter(function (note) {
+    return !!note
+  })
+}
+
 function loadDatabase () {
   try {
     if (fs.existsSync(dbFilePath)) {
@@ -120,6 +155,7 @@ function loadDatabase () {
         const parsed = JSON.parse(raw)
         dbState = Object.assign({}, dbState, parsed)
         normalizeDocumentState()
+        normalizeNoteState()
       }
     } else {
       // Legacy auto-migration from sessionRestore.json if exists
@@ -140,10 +176,12 @@ function loadDatabase () {
         } catch (e2) {}
       }
       normalizeDocumentState()
+      normalizeNoteState()
     }
   } catch (e) {
     console.warn('dbService: failed to load database file, starting clean', e)
     normalizeDocumentState()
+    normalizeNoteState()
   }
 }
 
@@ -582,6 +620,170 @@ function updateDocumentForAI (workspaceId, id, changes) {
   return { ok: true, document: documentMetadata(updated.document) }
 }
 
+/* --- Global Notes --- */
+
+/* Notes are global: they carry no workspace_id, so workspace deletion never
+ * touches them, and the workspace switch does not change the list. They are
+ * also user-only on purpose - this section deliberately has no ForAI helpers
+ * and the collection is never exposed through minDocumentStore or the agent
+ * tools, so there is no code path an AI session could use to read one. */
+
+function noteMetadata (note) {
+  return {
+    id: note.id,
+    title: note.title,
+    created_at: note.created_at,
+    updated_at: note.updated_at
+  }
+}
+
+function cloneNote (note) {
+  return Object.assign({}, note)
+}
+
+function findNoteIndex (id) {
+  return dbState.notes.findIndex(function (note) {
+    return note.id === id
+  })
+}
+
+function newNoteId () {
+  let id
+  do {
+    id = 'note-' + Date.now() + '-' + Math.floor(Math.random() * 1000000000).toString(36)
+  } while (dbState.notes.some(function (note) { return note.id === id }))
+  return id
+}
+
+/* The event contains only an identity, never title or markdown: it exists so
+ * open note lists can refresh, not to move note content between processes. */
+function broadcastNotesChanged (noteId) {
+  try {
+    if (typeof windows === 'undefined' || !windows || typeof windows.getAll !== 'function') return
+    const payload = { noteId: noteId || null }
+    const allWindows = windows.getAll()
+    if (!Array.isArray(allWindows)) return
+    allWindows.forEach(function (win) {
+      try {
+        const contents = typeof getWindowWebContents === 'function'
+          ? getWindowWebContents(win)
+          : (win && win.webContents)
+        if (contents && typeof contents.send === 'function') {
+          contents.send('notes-changed', payload)
+        }
+      } catch (e) {}
+    })
+  } catch (e) {}
+}
+
+function noteIdFromArg (value, id) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value.id
+  }
+  return value !== undefined ? value : id
+}
+
+function listNotes () {
+  const notes = dbState.notes.map(noteMetadata)
+  notes.sort(function (a, b) {
+    return (b.updated_at - a.updated_at) || (b.created_at - a.created_at) || a.title.localeCompare(b.title)
+  })
+  return { ok: true, notes: notes }
+}
+
+function getNote (value, id) {
+  const noteId = validateDocumentId(noteIdFromArg(value, id))
+  if (!noteId.ok) return noteId
+  const index = findNoteIndex(noteId.value)
+  if (index < 0) return documentError('Note not found')
+  return { ok: true, note: cloneNote(dbState.notes[index]) }
+}
+
+function createNote (value, markdown) {
+  let title = value
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    title = value.title
+    markdown = value.markdown
+  }
+  const validatedTitle = validateDocumentTitle(title, true)
+  if (!validatedTitle.ok) return validatedTitle
+  const validatedMarkdown = markdown === undefined
+    ? { ok: true, value: '' }
+    : validateDocumentMarkdown(markdown)
+  if (!validatedMarkdown.ok) return validatedMarkdown
+
+  const now = Date.now()
+  const note = {
+    id: newNoteId(),
+    title: validatedTitle.value,
+    markdown: validatedMarkdown.value,
+    created_at: now,
+    updated_at: now
+  }
+  dbState.notes.push(note)
+  if (!saveDatabase()) {
+    dbState.notes.pop()
+    return documentError('Could not save note')
+  }
+  broadcastNotesChanged(note.id)
+  return { ok: true, note: cloneNote(note) }
+}
+
+function updateNote (value, id, changes) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const payload = value
+    id = payload.id
+    changes = payload
+  } else if (id && typeof id === 'object' && !Array.isArray(id)) {
+    changes = id
+    id = value
+  }
+  const noteId = validateDocumentId(id)
+  if (!noteId.ok) return noteId
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+    return documentError('note changes must be an object')
+  }
+
+  const hasTitle = Object.prototype.hasOwnProperty.call(changes, 'title')
+  const hasMarkdown = Object.prototype.hasOwnProperty.call(changes, 'markdown')
+  if (!hasTitle && !hasMarkdown) {
+    return documentError('At least one note field is required')
+  }
+  const validatedTitle = hasTitle ? validateDocumentTitle(changes.title, false) : null
+  if (validatedTitle && !validatedTitle.ok) return validatedTitle
+  const validatedMarkdown = hasMarkdown ? validateDocumentMarkdown(changes.markdown) : null
+  if (validatedMarkdown && !validatedMarkdown.ok) return validatedMarkdown
+
+  const index = findNoteIndex(noteId.value)
+  if (index < 0) return documentError('Note not found')
+  const note = dbState.notes[index]
+  const previous = Object.assign({}, note)
+  if (validatedTitle) note.title = validatedTitle.value
+  if (validatedMarkdown) note.markdown = validatedMarkdown.value
+  note.updated_at = Date.now()
+
+  if (!saveDatabase()) {
+    dbState.notes[index] = previous
+    return documentError('Could not save note')
+  }
+  broadcastNotesChanged(note.id)
+  return { ok: true, note: cloneNote(note) }
+}
+
+function deleteNote (value, id) {
+  const noteId = validateDocumentId(noteIdFromArg(value, id))
+  if (!noteId.ok) return noteId
+  const index = findNoteIndex(noteId.value)
+  if (index < 0) return documentError('Note not found')
+  const removed = dbState.notes.splice(index, 1)[0]
+  if (!saveDatabase()) {
+    dbState.notes.splice(index, 0, removed)
+    return documentError('Could not delete note')
+  }
+  broadcastNotesChanged(removed.id)
+  return { ok: true }
+}
+
 /* --- Tab Activity Logs --- */
 function logTabActivity (activity) {
   if (!activity || !activity.url) return null
@@ -643,6 +845,17 @@ ipc.handle('db:updateDocument', async (event, data) => {
   return updateDocument(data && data.workspaceId, data && data.id, data)
 })
 ipc.handle('db:deleteDocument', async (event, data) => deleteDocument(data))
+
+/* Global Notes are user-only by design. There are intentionally no AI-facing
+ * accessors for this collection anywhere in the bundle, so the only callers
+ * these handlers can ever have are the notes page and the notes panel. */
+ipc.handle('db:listNotes', async () => listNotes())
+ipc.handle('db:getNote', async (event, data) => getNote(data))
+ipc.handle('db:createNote', async (event, data) => {
+  return createNote(data && data.title, data && data.markdown)
+})
+ipc.handle('db:updateNote', async (event, data) => updateNote(data))
+ipc.handle('db:deleteNote', async (event, data) => deleteNote(data))
 
 /* Removes every row belonging to a deleted workspace: documents, designs,
 snapshots and tab activities. Workspace-scoped collections share the

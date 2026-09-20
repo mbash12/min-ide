@@ -280,7 +280,20 @@ body.dark-mode #app-prompt-ok:hover {
   display: flex;
   overflow: hidden;
 }
-.docs-body {
+
+/* Notes panel: global list, so it is always available and never keyed to a
+   workspace. Its rows share the docs list styling. */
+#sidebar-panel-notes {
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+#sidebar-panel-notes.active {
+  display: flex;
+  overflow: hidden;
+}
+.docs-body,
+.notes-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -301,13 +314,15 @@ body.dark-mode #app-prompt-ok:hover {
   font-size: 12px;
   opacity: 0.62;
 }
-.docs-loading {
+.docs-loading,
+.notes-loading {
   padding: 18px 12px;
   font-size: 12px;
   opacity: 0.62;
   text-align: center;
 }
-.docs-error {
+.docs-error,
+.notes-error {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -318,12 +333,14 @@ body.dark-mode #app-prompt-ok:hover {
   color: #a52a2a;
   font-size: 11px;
 }
-body.dark-mode .docs-error {
+body.dark-mode .docs-error,
+body.dark-mode .notes-error {
   color: #f29b9b;
   background: rgba(255, 100, 100, 0.12);
 }
 .docs-retry-button,
-.docs-action-button {
+.docs-action-button,
+.notes-retry-button {
   padding: 5px 10px;
   border: 1px solid rgba(127, 127, 127, 0.32);
   border-radius: 4px;
@@ -333,7 +350,8 @@ body.dark-mode .docs-error {
   font-size: 11px;
 }
 .docs-retry-button:hover,
-.docs-action-button:hover {
+.docs-action-button:hover,
+.notes-retry-button:hover {
   background: rgba(127, 127, 127, 0.2);
 }
 .docs-action-button.primary {
@@ -345,11 +363,13 @@ body.dark-mode .docs-error {
   background: #2f6fe0;
 }
 .docs-action-button:disabled,
-.docs-retry-button:disabled {
+.docs-retry-button:disabled,
+.notes-retry-button:disabled {
   cursor: default;
   opacity: 0.5;
 }
-.docs-row {
+.docs-row,
+.notes-row {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -360,31 +380,39 @@ body.dark-mode .docs-error {
   outline: none;
 }
 .docs-row:hover,
-.docs-row:focus-visible {
+.docs-row:focus-visible,
+.notes-row:hover,
+.notes-row:focus-visible {
   background: rgba(0, 0, 0, 0.06);
 }
 body.dark-mode .docs-row:hover,
-body.dark-mode .docs-row:focus-visible {
+body.dark-mode .docs-row:focus-visible,
+body.dark-mode .notes-row:hover,
+body.dark-mode .notes-row:focus-visible {
   background: rgba(255, 255, 255, 0.08);
 }
-.docs-row-icon {
+.docs-row-icon,
+.notes-row-icon {
   flex-shrink: 0;
   width: 18px;
   text-align: center;
   opacity: 0.7;
 }
-.docs-row-content {
+.docs-row-content,
+.notes-row-content {
   flex: 1;
   min-width: 0;
 }
-.docs-row-title {
+.docs-row-title,
+.notes-row-title {
   overflow: hidden;
   font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.docs-row-meta {
+.docs-row-meta,
+.notes-row-meta {
   margin-top: 1px;
   overflow: hidden;
   font-size: 10px;
@@ -418,7 +446,8 @@ body.dark-mode .docs-row:focus-visible {
 .docs-lock-icon {
   font-size: 15px !important;
 }
-.docs-row-actions {
+.docs-row-actions,
+.notes-row-actions {
   display: flex;
   align-items: center;
   flex-shrink: 0;
@@ -426,10 +455,13 @@ body.dark-mode .docs-row:focus-visible {
   opacity: 0;
 }
 .docs-row:hover .docs-row-actions,
-.docs-row:focus-within .docs-row-actions {
+.docs-row:focus-within .docs-row-actions,
+.notes-row:hover .notes-row-actions,
+.notes-row:focus-within .notes-row-actions {
   opacity: 1;
 }
-.docs-row-actions .git-icon-button {
+.docs-row-actions .git-icon-button,
+.notes-row-actions .git-icon-button {
   width: 22px;
   height: 22px;
   font-size: 15px !important;
@@ -2428,11 +2460,13 @@ body.dark-mode #sidebar {
 /* List actions overlay the trailing edge. Hidden actions therefore no longer
    consume horizontal space or push titles toward the center. */
 .docs-row,
+.notes-row,
 .git-file-row,
 .playbook-row-main {
   position: relative;
 }
 .docs-row-actions,
+.notes-row-actions,
 .git-file-actions,
 .playbook-row-actions {
   display: none;
@@ -2449,6 +2483,8 @@ body.dark-mode #sidebar {
 .docs-row-actions { right: 34px; }
 .docs-row:hover .docs-row-actions,
 .docs-row:focus-within .docs-row-actions,
+.notes-row:hover .notes-row-actions,
+.notes-row:focus-within .notes-row-actions,
 .git-file-row:hover .git-file-actions,
 .git-file-row:focus-within .git-file-actions,
 .playbook-row:hover .playbook-row-actions,
@@ -2457,12 +2493,15 @@ body.dark-mode #sidebar {
   display: flex;
 }
 .docs-row:focus-within .docs-row-actions,
+.notes-row:focus-within .notes-row-actions,
 .git-file-row:focus-within .git-file-actions,
 .playbook-row:focus-within .playbook-row-actions {
   opacity: 1;
 }
 .docs-row:hover,
 .docs-row:focus-visible,
+.notes-row:hover,
+.notes-row:focus-visible,
 .git-file-row:hover,
 .playbook-row:hover {
   background-color: var(--sidebar-hover);
@@ -2529,7 +2568,7 @@ body.dark-mode #sidebar-panels {
   background: var(--vsc-sidebar-bg);
 }
 
-:is(#sidebar-panel-files, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-panel-header, .file-tree-header) {
+:is(#sidebar-panel-files, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs, #sidebar-panel-notes) :is(.sidebar-panel-header, .file-tree-header) {
   min-height: 35px;
   height: 35px;
   padding: 0 8px 0 12px;
@@ -2537,7 +2576,7 @@ body.dark-mode #sidebar-panels {
   background: transparent;
   gap: 6px;
 }
-:is(#sidebar-panel-files, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-panel-title, .file-tree-title) {
+:is(#sidebar-panel-files, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs, #sidebar-panel-notes) :is(.sidebar-panel-title, .file-tree-title) {
   font-size: 11px !important;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -2545,7 +2584,7 @@ body.dark-mode #sidebar-panels {
   opacity: 0.9;
 }
 
-:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-icon-button, .git-icon-button, .git-file-action-btn) {
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs, #sidebar-panel-notes) :is(.sidebar-icon-button, .git-icon-button, .git-file-action-btn) {
   width: 22px;
   height: 22px;
   min-width: 22px;
@@ -2557,11 +2596,11 @@ body.dark-mode #sidebar-panels {
   font-size: 14px !important;
   opacity: 0.72;
 }
-:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-icon-button, .git-icon-button, .git-file-action-btn):hover {
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs, #sidebar-panel-notes) :is(.sidebar-icon-button, .git-icon-button, .git-file-action-btn):hover {
   background: var(--vsc-hover-bg);
   opacity: 1;
 }
-:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-icon-button, .git-icon-button, .git-file-action-btn):focus-visible {
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs, #sidebar-panel-notes) :is(.sidebar-icon-button, .git-icon-button, .git-file-action-btn):focus-visible {
   outline: 1px solid var(--vsc-focus);
   outline-offset: -1px;
 }
@@ -2574,7 +2613,8 @@ body.dark-mode #sidebar-panels {
   gap: 6px;
   font-size: 13px;
 }
-#sidebar-panel-docs .docs-row {
+#sidebar-panel-docs .docs-row,
+#sidebar-panel-notes .notes-row {
   min-height: 38px;
   padding: 4px 8px 4px 10px;
   gap: 7px;
@@ -2583,7 +2623,7 @@ body.dark-mode #sidebar-panels {
   padding: 7px 8px 7px 10px;
   border-bottom-color: var(--vsc-border);
 }
-:is(#sidebar-panel-files .file-tree-row, #sidebar-panel-git .git-file-row, #sidebar-panel-git .git-branch-item, #sidebar-panel-docs .docs-row, #sidebar-panel-playbook .playbook-row):hover {
+:is(#sidebar-panel-files .file-tree-row, #sidebar-panel-git .git-file-row, #sidebar-panel-git .git-branch-item, #sidebar-panel-docs .docs-row, #sidebar-panel-notes .notes-row, #sidebar-panel-playbook .playbook-row):hover {
   background: var(--vsc-hover-bg);
 }
 #sidebar-panel-files .file-tree-row.selected,
@@ -2600,7 +2640,7 @@ body.dark-mode #sidebar-panels {
 }
 #sidebar-panel-docs .docs-lock-icon { font-size: 14px !important; }
 #sidebar-panel-docs .docs-row-actions { right: 32px; gap: 2px; }
-:is(#sidebar-panel-docs .docs-row-actions, #sidebar-panel-git .git-file-actions, #sidebar-panel-playbook .playbook-row-actions) {
+:is(#sidebar-panel-docs .docs-row-actions, #sidebar-panel-notes .notes-row-actions, #sidebar-panel-git .git-file-actions, #sidebar-panel-playbook .playbook-row-actions) {
   right: 6px;
   gap: 2px;
   padding-left: 10px;
@@ -2621,7 +2661,7 @@ body.dark-mode #sidebar-panels {
   font-size: 11px;
 }
 
-:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-button, .git-action-button, .git-commit-button, .design-connect-btn) {
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs, #sidebar-panel-notes) :is(.sidebar-button, .git-action-button, .git-commit-button, .design-connect-btn) {
   min-height: 28px;
   height: 28px;
   padding: 0 10px;
@@ -2629,7 +2669,7 @@ body.dark-mode #sidebar-panels {
   font-size: 12px;
   font-weight: 400;
 }
-:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs) :is(.sidebar-button.primary, .git-action-button.primary, .git-commit-button:not(.secondary), .design-connect-btn) {
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs, #sidebar-panel-notes) :is(.sidebar-button.primary, .git-action-button.primary, .git-commit-button:not(.secondary), .design-connect-btn) {
   border-color: #0078d4;
   background: #0078d4;
   color: #fff;

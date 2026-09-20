@@ -77,6 +77,13 @@ const customDataStore = {
   updateDocument: (workspaceId, id, changes) => invokeDB('db:updateDocument', Object.assign({ workspaceId, id }, changes || {})),
   deleteDocument: (workspaceId, id) => invokeDB('db:deleteDocument', { workspaceId, id }),
 
+  // Global Notes - not scoped to a workspace, and never exposed to AI tools
+  listNotes: () => invokeDB('db:listNotes'),
+  getNote: (id) => invokeDB('db:getNote', { id }),
+  createNote: (title, markdown) => invokeDB('db:createNote', { title, markdown }),
+  updateNote: (id, changes) => invokeDB('db:updateNote', Object.assign({ id }, changes || {})),
+  deleteNote: (id) => invokeDB('db:deleteNote', { id }),
+
   // Tab Activity Logs
   logTabActivity: (activity) => invokeDB('db:logTabActivity', activity),
   getTabActivities: (workspaceId, limit) => invokeDB('db:getTabActivities', { workspaceId, limit })
