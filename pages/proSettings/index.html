@@ -3,7 +3,6 @@
   <head>
     <meta charset="UTF-8" />
     <title>Pro Settings</title>
-    <link rel="stylesheet" href="../../css/base.css" />
     <link rel="stylesheet" href="../../ext/icons/iconfont.css" />
     <link rel="stylesheet" href="proSettings.css" />
   </head>
@@ -15,13 +14,13 @@
 
     <div class="pro-layout">
       <nav class="pro-tabs">
-        <button class="pro-tab active" data-tab="provider" data-string="proSettingsTabProvider"></button>
-        <button class="pro-tab" data-tab="profiles" data-string="proSettingsTabProfiles"></button>
-        <button class="pro-tab" data-tab="editor" data-string="proSettingsTabEditor"></button>
-        <button class="pro-tab" data-tab="terminal" data-string="proSettingsTabTerminal"></button>
-        <button class="pro-tab" data-tab="workspace" data-string="proSettingsTabWorkspace"></button>
-        <button class="pro-tab" data-tab="documents" data-string="proSettingsTabDocuments"></button>
-        <button class="pro-tab" data-tab="design" data-string="proSettingsTabDesign"></button>
+        <button class="pro-tab active" data-tab="provider"><i class="i carbon:api"></i><span data-string="proSettingsTabProvider"></span></button>
+        <button class="pro-tab" data-tab="profiles"><i class="i carbon:user-multiple"></i><span data-string="proSettingsTabProfiles"></span></button>
+        <button class="pro-tab" data-tab="editor"><i class="i carbon:code"></i><span data-string="proSettingsTabEditor"></span></button>
+        <button class="pro-tab" data-tab="terminal"><i class="i carbon:terminal"></i><span data-string="proSettingsTabTerminal"></span></button>
+        <button class="pro-tab" data-tab="workspace"><i class="i carbon:workspace"></i><span data-string="proSettingsTabWorkspace"></span></button>
+        <button class="pro-tab" data-tab="documents"><i class="i carbon:document"></i><span data-string="proSettingsTabDocuments"></span></button>
+        <button class="pro-tab" data-tab="design"><i class="i carbon:paint-brush"></i><span data-string="proSettingsTabDesign"></span></button>
       </nav>
 
       <main class="pro-container">
@@ -36,6 +35,13 @@
 
         <div id="providers-list"></div>
 
+        <div class="pro-actions-row">
+          <button id="provider-add-open" class="pro-button">
+            <i class="i carbon:add"></i>
+            <span data-string="proSettingsAddProviderTitle"></span>
+          </button>
+        </div>
+
         <footer class="pro-footer" data-string="proSettingsFooterNote"></footer>
       </section>
 
@@ -48,9 +54,11 @@
           <p class="pro-description" data-string="profilesSubheading"></p>
           <div id="profiles-notice" class="profiles-notice" hidden></div>
           <div id="profiles-list"></div>
-          <div class="pro-add-row" id="profiles-add-section">
-            <input type="text" id="profiles-add-input" spellcheck="false" />
-            <button id="profiles-add-button" data-string="taskProfileAdd"></button>
+          <div class="pro-actions-row">
+            <button id="profiles-add-button" class="pro-button">
+              <i class="i carbon:add"></i>
+              <span data-string="taskProfileAdd"></span>
+            </button>
           </div>
         </section>
       </section>
@@ -62,17 +70,19 @@
             <span class="pro-section-title" data-string="proSettingsEditorHeading"></span>
           </div>
           <p class="pro-description" data-string="proSettingsPrefsNote"></p>
-          <div class="pro-field-row">
-            <label class="pro-field-label" for="editor-font-size" data-string="proSettingsFontSizeLabel"></label>
-            <input type="number" id="editor-font-size" min="8" max="40" step="1" />
-          </div>
-          <div class="pro-field-row">
-            <label class="pro-field-label" for="editor-tab-size" data-string="proSettingsTabSizeLabel"></label>
-            <input type="number" id="editor-tab-size" min="1" max="8" step="1" />
-          </div>
-          <div class="pro-field-row">
-            <label class="pro-field-label" for="editor-word-wrap" data-string="proSettingsWordWrapLabel"></label>
-            <input type="checkbox" id="editor-word-wrap" />
+          <div class="pro-field-card">
+            <div class="pro-field-row">
+              <label class="pro-field-label" for="editor-font-size" data-string="proSettingsFontSizeLabel"></label>
+              <input type="number" id="editor-font-size" class="pro-input pro-input-number" min="8" max="40" step="1" />
+            </div>
+            <div class="pro-field-row">
+              <label class="pro-field-label" for="editor-tab-size" data-string="proSettingsTabSizeLabel"></label>
+              <input type="number" id="editor-tab-size" class="pro-input pro-input-number" min="1" max="8" step="1" />
+            </div>
+            <div class="pro-field-row">
+              <label class="pro-field-label" for="editor-word-wrap" data-string="proSettingsWordWrapLabel"></label>
+              <input type="checkbox" id="editor-word-wrap" class="pro-switch" role="switch" />
+            </div>
           </div>
         </section>
       </section>
@@ -84,13 +94,15 @@
             <span class="pro-section-title" data-string="proSettingsTerminalHeading"></span>
           </div>
           <p class="pro-description" data-string="proSettingsPrefsNote"></p>
-          <div class="pro-field-row">
-            <label class="pro-field-label" for="terminal-font-size" data-string="proSettingsFontSizeLabel"></label>
-            <input type="number" id="terminal-font-size" min="8" max="40" step="1" />
-          </div>
-          <div class="pro-field-row">
-            <label class="pro-field-label" for="terminal-shell" data-string="proSettingsShellLabel"></label>
-            <input type="text" id="terminal-shell" spellcheck="false" placeholder="/bin/bash" />
+          <div class="pro-field-card">
+            <div class="pro-field-row">
+              <label class="pro-field-label" for="terminal-font-size" data-string="proSettingsFontSizeLabel"></label>
+              <input type="number" id="terminal-font-size" class="pro-input pro-input-number" min="8" max="40" step="1" />
+            </div>
+            <div class="pro-field-row">
+              <label class="pro-field-label" for="terminal-shell" data-string="proSettingsShellLabel"></label>
+              <input type="text" id="terminal-shell" class="pro-input" spellcheck="false" placeholder="/bin/bash" />
+            </div>
           </div>
           <p class="pro-description" data-string="proSettingsShellHint"></p>
         </section>
@@ -103,9 +115,11 @@
             <span class="pro-section-title" data-string="proSettingsWorkspaceHeading"></span>
           </div>
           <p class="pro-description" data-string="proSettingsWorkspaceDescription"></p>
-          <div class="pro-field-row">
-            <label class="pro-field-label" for="workspace-default-profile" data-string="proSettingsDefaultProfileLabel"></label>
-            <select id="workspace-default-profile"></select>
+          <div class="pro-field-card">
+            <div class="pro-field-row">
+              <label class="pro-field-label" for="workspace-default-profile" data-string="proSettingsDefaultProfileLabel"></label>
+              <select id="workspace-default-profile" class="pro-input pro-select"></select>
+            </div>
           </div>
         </section>
       </section>
@@ -117,12 +131,14 @@
             <span class="pro-section-title" data-string="proSettingsDocumentsHeading"></span>
           </div>
           <p class="pro-description" data-string="proSettingsPrefsNote"></p>
-          <div class="pro-field-row">
-            <label class="pro-field-label" for="docs-default-mode" data-string="proSettingsDocsModeLabel"></label>
-            <select id="docs-default-mode">
-              <option value="wysiwyg" data-string="proSettingsModeWysiwyg"></option>
-              <option value="markdown" data-string="proSettingsModeMarkdown"></option>
-            </select>
+          <div class="pro-field-card">
+            <div class="pro-field-row">
+              <label class="pro-field-label" for="docs-default-mode" data-string="proSettingsDocsModeLabel"></label>
+              <select id="docs-default-mode" class="pro-input pro-select">
+                <option value="wysiwyg" data-string="proSettingsModeWysiwyg"></option>
+                <option value="markdown" data-string="proSettingsModeMarkdown"></option>
+              </select>
+            </div>
           </div>
         </section>
       </section>
@@ -153,16 +169,51 @@
       </main>
     </div>
 
+    <div id="provider-add-overlay" class="pro-overlay" hidden>
+      <div class="pro-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-add-title">
+        <h2 id="provider-add-title" data-string="proSettingsAddProviderTitle"></h2>
+        <div class="pro-dialog-field">
+          <label class="pro-field-label" for="provider-add-select" data-string="proSettingsProviderLabel"></label>
+          <select id="provider-add-select" class="pro-input pro-select"></select>
+          <a id="provider-add-link" class="pro-provider-link" target="_blank" rel="noopener"></a>
+        </div>
+        <div class="pro-dialog-field">
+          <label class="pro-field-label" for="provider-add-key" data-string="proSettingsKeyHeading"></label>
+          <input type="password" id="provider-add-key" class="pro-input" autocomplete="off" spellcheck="false" />
+        </div>
+        <p id="provider-add-error" class="pro-test-result fail" hidden></p>
+        <div class="pro-actions-row pro-dialog-actions">
+          <button id="provider-add-cancel" class="pro-button" data-string="profileClearCancel"></button>
+          <button id="provider-add-confirm" class="pro-button pro-button-primary" data-string="proSettingsAddProvider"></button>
+        </div>
+      </div>
+    </div>
+
+    <div id="profile-add-overlay" class="pro-overlay" hidden>
+      <div class="pro-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-add-title">
+        <h2 id="profile-add-title" data-string="profileAddTitle"></h2>
+        <div class="pro-dialog-field">
+          <label class="pro-field-label" for="profile-add-input" data-string="taskProfileLabel"></label>
+          <input type="text" id="profile-add-input" class="pro-input" autocomplete="off" spellcheck="false" />
+        </div>
+        <p id="profile-add-error" class="pro-test-result fail" hidden></p>
+        <div class="pro-actions-row pro-dialog-actions">
+          <button id="profile-add-cancel" class="pro-button" data-string="profileClearCancel"></button>
+          <button id="profile-add-confirm" class="pro-button pro-button-primary" data-string="taskProfileAdd"></button>
+        </div>
+      </div>
+    </div>
+
     <div id="profile-clear-overlay" class="pro-overlay" hidden>
       <div class="pro-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-clear-title">
         <h2 id="profile-clear-title"></h2>
         <p class="pro-description" data-string="profileClearDataDescription"></p>
         <label class="pro-check-row">
-          <input type="checkbox" id="profile-clear-site-data" checked />
+          <input type="checkbox" id="profile-clear-site-data" class="pro-switch" role="switch" checked />
           <span data-string="profileClearSiteData"></span>
         </label>
         <label class="pro-check-row">
-          <input type="checkbox" id="profile-clear-cache" checked />
+          <input type="checkbox" id="profile-clear-cache" class="pro-switch" role="switch" checked />
           <span data-string="profileClearCache"></span>
         </label>
         <p id="profile-clear-usage" class="pro-description"></p>

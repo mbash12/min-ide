@@ -43,7 +43,7 @@ window.addEventListener('message', function (e) {
 
   if (e.data && e.data.message === 'agentFetchModels') {
     ipc.invoke('agent-fetch-models').then(function (models) {
-      window.postMessage({ message: 'agentFetchModelsResult', models: models }, window.location.toString())
+      window.postMessage({ message: 'agentFetchModelsResult', result: models }, window.location.toString())
     })
   }
 

@@ -147,6 +147,12 @@ function renderProviders () {
     var row = document.createElement('div')
     row.className = 'pro-provider-row'
 
+    var avatar = document.createElement('span')
+    avatar.className = 'pro-provider-avatar'
+    var avatarIcon = document.createElement('i')
+    avatarIcon.className = 'i carbon:password'
+    avatar.appendChild(avatarIcon)
+
     var name = document.createElement('span')
     name.className = 'pro-provider-name'
     name.textContent = providerLabel(id)
@@ -193,6 +199,7 @@ function renderProviders () {
       renderProviders()
     })
 
+    row.appendChild(avatar)
     row.appendChild(name)
     row.appendChild(masked)
     row.appendChild(spacer)
@@ -201,77 +208,74 @@ function renderProviders () {
     row.appendChild(removeBtn)
     providersList.appendChild(row)
   })
+}
 
-  /* add row */
+/* ---- add-provider modal ---- */
+var addOverlay = document.getElementById('provider-add-overlay')
+var addSelect = document.getElementById('provider-add-select')
+var addKey = document.getElementById('provider-add-key')
+var addLink = document.getElementById('provider-add-link')
+var addError = document.getElementById('provider-add-error')
+var addConfirm = document.getElementById('provider-add-confirm')
+addKey.placeholder = l('proSettingsApiKeyPlaceholder')
+
+function updateAddLink () {
+  var link = PROVIDER_LINKS[addSelect.value]
+  addLink.href = link || '#'
+  addLink.textContent = link ? link.replace('https://', '') : ''
+  addLink.style.visibility = link ? 'visible' : 'hidden'
+}
+
+function openAddDialog () {
+  var configured = Object.keys(providerKeys).filter(function (id) { return !!providerKeys[id] })
   var unconfigured = knownProviders.filter(function (p) {
     return configured.indexOf(p.id) === -1
   })
-
-  var addRow = document.createElement('div')
-  addRow.className = 'pro-provider-row pro-provider-add'
-
-  var select = document.createElement('select')
-  select.className = 'pro-provider-select'
+  addSelect.textContent = ''
   unconfigured.forEach(function (p) {
     var opt = document.createElement('option')
     opt.value = p.id
     opt.textContent = p.label + (p.models ? ' (' + p.models + ')' : '')
-    select.appendChild(opt)
+    addSelect.appendChild(opt)
   })
-
-  var keyInput = document.createElement('input')
-  keyInput.type = 'password'
-  keyInput.className = 'pro-provider-key-input'
-  keyInput.autocomplete = 'off'
-  keyInput.spellcheck = false
-  keyInput.placeholder = l('proSettingsApiKeyPlaceholder')
-
-  var addBtn = document.createElement('button')
-  addBtn.className = 'pro-button'
-  var addIcon = document.createElement('i')
-  addIcon.className = 'i carbon:add'
-  addBtn.appendChild(addIcon)
-  var addLabel = document.createElement('span')
-  addLabel.textContent = l('proSettingsAddProvider')
-  addBtn.appendChild(addLabel)
-
-  var linkNote = document.createElement('a')
-  linkNote.className = 'pro-provider-link'
-  linkNote.target = '_blank'
-  linkNote.rel = 'noopener'
-  function updateLink () {
-    var link = PROVIDER_LINKS[select.value]
-    linkNote.href = link || '#'
-    linkNote.textContent = link ? link.replace('https://', '') : ''
-    linkNote.style.visibility = link ? 'visible' : 'hidden'
-  }
-  select.addEventListener('change', updateLink)
-  updateLink()
-
-  addBtn.addEventListener('click', function () {
-    var key = keyInput.value.trim()
-    if (!key || !select.value) return
-    setProviderKey(select.value, key)
-    keyInput.value = ''
-    renderProviders()
-  })
-
-  if (!unconfigured.length) {
-    select.disabled = true
-    keyInput.disabled = true
-    addBtn.disabled = true
-  }
-
-  addRow.appendChild(select)
-  addRow.appendChild(keyInput)
-  addRow.appendChild(addBtn)
-  providersList.appendChild(addRow)
-
-  var linkWrap = document.createElement('p')
-  linkWrap.className = 'pro-description'
-  linkWrap.appendChild(linkNote)
-  providersList.appendChild(linkWrap)
+  addSelect.disabled = !unconfigured.length
+  addConfirm.disabled = !unconfigured.length
+  addKey.value = ''
+  addError.hidden = true
+  updateAddLink()
+  addOverlay.hidden = false
+  addKey.focus()
 }
+
+function closeAddDialog () {
+  addOverlay.hidden = true
+}
+
+function confirmAddProvider () {
+  var key = addKey.value.trim()
+  if (!key || !addSelect.value) {
+    if (!key) {
+      addError.hidden = false
+      addError.textContent = l('proSettingsApiKeyPlaceholder')
+    }
+    return
+  }
+  setProviderKey(addSelect.value, key)
+  closeAddDialog()
+  renderProviders()
+}
+
+document.getElementById('provider-add-open').addEventListener('click', openAddDialog)
+document.getElementById('provider-add-cancel').addEventListener('click', closeAddDialog)
+addSelect.addEventListener('change', updateAddLink)
+addConfirm.addEventListener('click', confirmAddProvider)
+addKey.addEventListener('input', function () { addError.hidden = true })
+addKey.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') confirmAddProvider()
+})
+addOverlay.addEventListener('click', function (e) {
+  if (e.target === addOverlay) closeAddDialog()
+})
 
 /* load: providers the SDK knows + keys already stored */
 agentCall('agentListProviders', {}, function (providers) {
@@ -403,11 +407,35 @@ function getWorkspaceUsage () {
 }
 
 var listEl = document.getElementById('profiles-list')
-var addInput = document.getElementById('profiles-add-input')
 var addButton = document.getElementById('profiles-add-button')
 var noticeEl = document.getElementById('profiles-notice')
 
-addInput.placeholder = l('taskProfileAddPlaceholder')
+/* add-profile modal */
+var profileAddOverlay = document.getElementById('profile-add-overlay')
+var profileAddInput = document.getElementById('profile-add-input')
+var profileAddError = document.getElementById('profile-add-error')
+var profileAddConfirm = document.getElementById('profile-add-confirm')
+profileAddInput.placeholder = l('taskProfileAddPlaceholder')
+
+function openProfileAddDialog () {
+  profileAddInput.value = ''
+  profileAddError.hidden = true
+  profileAddOverlay.hidden = false
+  profileAddInput.focus()
+}
+function closeProfileAddDialog () {
+  profileAddOverlay.hidden = true
+}
+addButton.addEventListener('click', openProfileAddDialog)
+document.getElementById('profile-add-cancel').addEventListener('click', closeProfileAddDialog)
+profileAddConfirm.addEventListener('click', addProfile)
+profileAddInput.addEventListener('input', function () { profileAddError.hidden = true })
+profileAddInput.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') addProfile()
+})
+profileAddOverlay.addEventListener('click', function (e) {
+  if (e.target === profileAddOverlay) closeProfileAddDialog()
+})
 
 function showProfilesNotice (text, isError) {
   noticeEl.hidden = false
@@ -459,7 +487,11 @@ clearOverlay.addEventListener('click', function (e) {
 clearSiteData.addEventListener('change', updateClearConfirm)
 clearCache.addEventListener('change', updateClearConfirm)
 document.addEventListener('keydown', function (e) {
-  if (e.key === 'Escape' && !clearOverlay.hidden) closeClearDialog()
+  if (e.key === 'Escape') {
+    if (!addOverlay.hidden) closeAddDialog()
+    if (!profileAddOverlay.hidden) closeProfileAddDialog()
+    if (!clearOverlay.hidden) closeClearDialog()
+  }
 })
 
 clearConfirmBtn.addEventListener('click', function () {
@@ -481,7 +513,7 @@ clearConfirmBtn.addEventListener('click', function () {
 
 function makeClearButton (profileId, name) {
   const btn = document.createElement('button')
-  btn.className = 'i carbon:erase'
+  btn.className = 'pro-icon-button i carbon:erase'
   btn.title = l('profileClearData')
   btn.addEventListener('click', function () {
     openClearDialog(profileId, name)
@@ -550,16 +582,14 @@ function renderProfiles () {
     }
 
     const renameBtn = document.createElement('button')
-    renameBtn.className = 'i carbon:edit'
+    renameBtn.className = 'pro-icon-button i carbon:edit'
     renameBtn.title = l('taskProfileRename')
     renameBtn.addEventListener('click', function () {
       const input = document.createElement('input')
       input.type = 'text'
+      input.className = 'pro-input'
       input.value = profile.name
       input.style.flex = '1'
-      input.style.padding = '0.3em 0.5em'
-      input.style.border = '1px solid rgba(127,127,127,0.4)'
-      input.style.borderRadius = '6px'
       row.replaceChild(input, nameEl)
       input.focus()
       input.select()
@@ -586,7 +616,7 @@ function renderProfiles () {
     row.appendChild(makeClearButton(profile.id, profile.name))
 
     const deleteBtn = document.createElement('button')
-    deleteBtn.className = 'profile-delete i carbon:trash-can'
+    deleteBtn.className = 'pro-icon-button profile-delete i carbon:trash-can'
     deleteBtn.title = l('taskProfileDelete')
     deleteBtn.addEventListener('click', function () {
       requestProfileDelete(profile.id, function (result) {
@@ -627,20 +657,19 @@ function renderProfiles () {
 }
 
 function addProfile () {
-  const name = addInput.value.trim()
-  if (!name) return
+  const name = profileAddInput.value.trim()
+  if (!name) {
+    profileAddError.hidden = false
+    profileAddError.textContent = l('taskProfileAddPlaceholder')
+    return
+  }
   const id = 'profile-' + Math.round(Math.random() * 100000000000000000)
   const profiles = getProfiles()
   profiles.push({ id: id, name: name })
   saveProfiles(profiles)
-  addInput.value = ''
+  closeProfileAddDialog()
   renderProfiles()
 }
-
-addButton.addEventListener('click', addProfile)
-addInput.addEventListener('keydown', function (e) {
-  if (e.key === 'Enter') addProfile()
-})
 
 renderProfiles()
 

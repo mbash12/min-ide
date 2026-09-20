@@ -133,7 +133,7 @@
     "proSettingsWordWrapLabel": "Word wrap",
     "proSettingsShellLabel": "Shell",
     "proSettingsShellHint": "Kosongkan untuk memakai shell bawaan sistem.",
-    "proSettingsDefaultProfileLabel": "Profil bawaan untuk workspace baru",
+    "proSettingsDefaultProfileLabel": "Profil bawaan",
     "proSettingsDocsModeLabel": "Mode editor bawaan",
     "proSettingsModeWysiwyg": "WYSIWYG",
     "proSettingsModeMarkdown": "Markdown (source)",
