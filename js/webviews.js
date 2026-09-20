@@ -199,10 +199,18 @@ const webviews = {
   getViewResourceFor: function (tabId) {
     const tab = tabs.get(tabId)
     const home = workspaces.findWorkspaceContainingTab(tabId)
-    return {
+    const out = {
       resource: (tab && tab.resource) || legacyResourceFromURL(tab && tab.url),
       rootPath: (home && home.path) || null
     }
+    if (tab && tab.kind === 'terminal') {
+      // persisted session state the terminal page redraws on restore (§15)
+      out.extra = {
+        scrollback: tab.terminalScrollback || null,
+        shell: tab.terminalShell || null
+      }
+    }
+    return out
   },
   /* points an existing view at another file without rebuilding it; the page
   picks the new resource up on its next load */
@@ -260,7 +268,8 @@ const webviews = {
       boundsString: JSON.stringify(webviews.getViewBounds(tabId)),
       events: webviews.events.map(e => e.event).filter((i, idx, arr) => arr.indexOf(i) === idx),
       resource: viewResource.resource,
-      rootPath: viewResource.rootPath
+      rootPath: viewResource.rootPath,
+      extra: viewResource.extra
     })
 
     if (!existingViewId) {

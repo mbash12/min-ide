@@ -89,7 +89,7 @@ function getDefaultViewWebPreferences () {
   )
 }
 
-function createView (existingViewId, id, webPreferences, boundsString, events, resource, rootPath) {
+function createView (existingViewId, id, webPreferences, boundsString, events, resource, rootPath, extra) {
   if (viewStateMap[id]) {
     console.warn('Creating duplicate view')
   }
@@ -101,7 +101,8 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
     hasJS: viewPrefs.javascript, // need this later to see if we should swap the view for a JS-enabled one
     partition: viewPrefs.partition || null, // used to give popups the same session as their parent
     resource: resource || null, // what an internal surface is showing, see getViewResource
-    rootPath: rootPath || null
+    rootPath: rootPath || null,
+    extra: extra || null // per-surface extras (e.g. terminal scrollback for restore)
   }
 
   let view
@@ -478,7 +479,8 @@ function getViewResource (id) {
   const state = id ? viewStateMap[id] : null
   return {
     resource: (state && state.resource) || null,
-    rootPath: (state && state.rootPath) || null
+    rootPath: (state && state.rootPath) || null,
+    extra: (state && state.extra) || null
   }
 }
 
@@ -491,7 +493,7 @@ function getWindowFromViewContents (webContents) {
 }
 
 ipc.on('createView', function (e, args) {
-  createView(args.existingViewId, args.id, args.webPreferences, args.boundsString, args.events, args.resource, args.rootPath)
+  createView(args.existingViewId, args.id, args.webPreferences, args.boundsString, args.events, args.resource, args.rootPath, args.extra)
 })
 
 /* the preload reads this synchronously, before the page's own scripts run */

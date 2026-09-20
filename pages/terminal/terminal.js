@@ -5,10 +5,15 @@ const container = document.getElementById('terminal-container')
 const exitMessage = document.getElementById('terminal-exit-message')
 const restartButton = document.getElementById('terminal-restart-button')
 
+const viewRes = window.minViewResource || {}
+/* scrollback saved on the tab by the host; redrawn on restore so the
+re-opened terminal shows where the previous shell left off (§15) */
+const restoredScrollback = (viewRes.extra && viewRes.extra.scrollback) || ''
+
 function getCwd () {
   /* the host puts the directory on the tab and the preload bridge hands it over */
-  if (window.minViewResource && window.minViewResource.resource) {
-    return window.minViewResource.resource
+  if (viewRes.resource) {
+    return viewRes.resource
   }
   /* the query parameter is still read for terminal tabs opened before the
   directory moved onto the tab */
@@ -46,13 +51,16 @@ function fitTerminal () {
   } catch (e) {}
 }
 
-function startTerminal () {
+function startTerminal (restore) {
   exitMessage.hidden = true
   window.postMessage({
     message: 'terminal-create',
     cwd: getCwd(),
     cols: term.cols,
-    rows: term.rows
+    rows: term.rows,
+    /* on restore the buffer we just redrew is handed back to main so its
+    tail keeps the full history rather than only the new process's output */
+    scrollback: restore ? restoredScrollback : null
   }, window.location.toString())
 }
 
@@ -76,7 +84,7 @@ window.addEventListener('message', function (e) {
 
 restartButton.addEventListener('click', function () {
   term.reset()
-  startTerminal()
+  startTerminal(false)
 })
 
 window.addEventListener('resize', function () {
@@ -86,6 +94,11 @@ window.addEventListener('resize', function () {
 /* wait for layout so the first fit measures the real container size */
 requestAnimationFrame(function () {
   fitTerminal()
-  startTerminal()
+  if (restoredScrollback) {
+    term.write(restoredScrollback)
+    startTerminal(true)
+  } else {
+    startTerminal(false)
+  }
   term.focus()
 })

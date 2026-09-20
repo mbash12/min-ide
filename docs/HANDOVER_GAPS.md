@@ -36,7 +36,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 12 | Central database | MISSING — sebagian besar tabel; DIFFERENT — JSON, bukan DB |
 | 13 | Tabs | — bersih |
 | 14 | Monaco editor | — bersih |
-| 15 | Terminal | DIFFERENT — cwd/scrollback tidak dipersist |
+| 15 | Terminal | — bersih |
 | 16 | Documents | — bersih |
 | 17 | Notes | — bersih |
 | 18 | Sidebar | — bersih |
@@ -161,7 +161,7 @@ Preview/temporary tab, focus existing tanpa duplikat, pin saat edit/double-click
 
 ## §15 Terminal
 
-- **DIFFERENT** — Persistence `cwd` untuk kasus archive/restart tidak benar-benar melacak shell. cwd hanya diturunkan dari `workspace.path` saat tab dibuka (`js/searchbar/customBangs.js:116-119`) dan dibaca kembali dari query URL saat spawn (`pages/terminal/terminal.js:8-14,71-74`). Jika user `cd` di dalam shell, cwd terakhir itu tidak tersimpan, dan tidak ada scrollback/history/shell metadata yang dipersist sama sekali.
+Seluruh requirement sudah sesuai, termasuk persistence archive/restart ala VS Code. `main/terminal.js` menyimpan session record per tab id — `tail` (rolling output, maks 128KB), `cwd`, `shell` — yang bertahan saat view dihancurkan (archive/switch) dan hanya dibersihkan saat tab benar-benar ditutup (`terminal-tab-gone`). cwd live dibaca dari proses pty (`/proc/<pid>/cwd` di Linux, `lsof` di macOS, best-effort null di platform lain). `js/terminalView.js` mem-poll `terminal-get-state` tiap 15 detik dan menulis `{resource: cwd, terminalScrollback, terminalShell}` ke record tab — yang sudah ikut dipersist session restore. Saat view dibuat ulang, `getViewResourceFor` membawa `extra.scrollback`/`extra.shell` → `minViewResource.extra` → halaman menulis ulang scrollback lalu spawn shell baru di cwd terakhir; seed yang sama dikembalikan ke main supaya tail tetap memuat seluruh history, bukan hanya output proses baru. Tombol Restart sengaja tidak membawa seed (session baru = buffer bersih). Diverifikasi headless: cwd live berubah setelah `cd`, tail berisi seed+output, record terhapus saat tab ditutup.
 
 PTY nyata, session per tab, default cwd, dan berhenti saat tab/task/workspace dihapus atau di-archive sudah sesuai.
 
@@ -386,6 +386,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 11. **Profile Clear Data + delete-blocking** (§9, §11). Dialog Clear Data per profile (termasuk Default) dengan pilihan jenis data; IPC `clearProfileData` memvalidasi partition dan membersihkan `clearStorageData`/`clearCache` sesuai pilihan; web tab hidup di workspace pemakai di-reload. Delete profile diblokir bila masih dipakai workspace (`in-use` + daftar nama). Diverifikasi headless: partition invalid/no-types ditolak, cookie nyata terhapus setelah clear.
 12. **Profile switching hanya menyentuh web tab** (§10). `setWorkspaceProfile` tidak lagi `webviews.destroy` seluruh tab: hanya view web non-private yang dihancurkan dan dibangun ulang lazy di partition baru; editor/terminal/docs/notes/task/layout split bertahan (`webviews.destroy` punya opsi `preserveSplit`).
 13. **Document tools selaras blueprint** (§16). Tool `docs` tetap satu group (katalog agent tidak menggembung), tapi operation-nya memakai nama blueprint verbatim: `listDocuments` (list/search), `readDocument` (by id), `editDocument` (create tanpa id / update dengan id).
+14. **Terminal persistence** (§15). Session record per tab id di main (`tail` + `cwd` + `shell`); cwd dilacak dari proses pty (`/proc`/`lsof`), renderer poll menulisnya ke record tab yang dipersist session restore; scrollback digambar ulang saat restore lewat `minViewResource.extra`. Diverifikasi headless: cwd live setelah `cd`, tail menangkap output, record bersih saat tab ditutup.
 
 ## Ditunda
 

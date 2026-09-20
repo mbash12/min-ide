@@ -15,7 +15,7 @@ window.addEventListener('message', function (e) {
   }
 
   if (e.data && e.data.message === 'terminal-create') {
-    ipc.send('terminal-create', { cwd: e.data.cwd, cols: e.data.cols, rows: e.data.rows })
+    ipc.send('terminal-create', { cwd: e.data.cwd, cols: e.data.cols, rows: e.data.rows, scrollback: e.data.scrollback })
   }
 
   if (e.data && e.data.message === 'terminal-write') {
