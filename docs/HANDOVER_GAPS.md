@@ -37,7 +37,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 13 | Tabs | — bersih |
 | 14 | Monaco editor | — bersih |
 | 15 | Terminal | DIFFERENT — cwd/scrollback tidak dipersist |
-| 16 | Documents | DIFFERENT — bentuk tool AI |
+| 16 | Documents | — bersih |
 | 17 | Notes | — bersih |
 | 18 | Sidebar | — bersih |
 | 19 | File Tree | — bersih |
@@ -169,7 +169,7 @@ PTY nyata, session per tab, default cwd, dan berhenti saat tab/task/workspace di
 
 ## §16 Documents
 
-- **DIFFERENT** — Tool AI tidak diekspos sebagai `listDocuments` / `readDocument` / `editDocument`, melainkan satu tool `docs` dengan operasi `list|search|get|create|update` (`main/agentTools.js:277-338`). Secara fungsi setara, jadi ini gap bentuk antarmuka saja.
+Seluruh requirement sudah sesuai. Tool AI tetap **satu tool `docs` bergaya group** (seperti `browser`/`playbook`/`figma` — keputusan sengaja supaya katalog tool agent tidak menggembung), tetapi operation-nya kini memakai nama blueprint verbatim: `operation: listDocuments | readDocument | editDocument` (`main/agentTools.js`). `listDocuments` mencakup list + `query` untuk search, `readDocument` membaca satu dokumen by id, `editDocument` membuat dokumen tanpa `id` dan meng-update dengan `id`. Konten tidak pernah diinjeksikan ke context — AI harus memanggil secara eksplisit.
 
 Mermaid kini terverifikasi jalan di kedua mode. `mermaid@11` dimuat halaman editor sebagai script polos (`mermaid.min.js`, CSP `script-src 'self'` lolos); glue dibagi lewat `window.MinMermaid`/`MinMermaidPlugin` di `dist/docs-editor.js` (`pages/docs/editorBundle.js`). Mode Markdown: blok ` ```mermaid ` di preview kanan di-swap jadi container `.mermaid`. Mode WYSIWYG: plugin PM menyisipkan `Decoration.widget` tepat setelah code block — diagram tampil di bawah kode yang tetap editable, DOM widget dikelola ProseMirror sehingga tidak disapu rebuild nodeView (penyebab hilangnya render sebelumnya), dan key widget membawa hash source sehingga svg di-reuse selama source tidak berubah. Render memakai `mermaid.render(id, text)` (temp element di `document.body`, kebal detach Toast UI) yang terserialisasi per window; pane tersembunyi di-skip karena `getBBox` dagre gagal di situ.
 
@@ -385,6 +385,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 10. **Mermaid** (§16, §33 Phase 5). `mermaid@11` terintegrasi di kedua surface editor: swap `pre` → `.mermaid` di preview Markdown, dan `Decoration.widget` ProseMirror di bawah code block WYSIWYG (kode tetap editable). Render lewat `mermaid.render` terserialisasi, guard pane tersembunyi, key widget = hash source untuk reuse DOM. Diverifikasi headless: render awal + re-render setelah edit source.
 11. **Profile Clear Data + delete-blocking** (§9, §11). Dialog Clear Data per profile (termasuk Default) dengan pilihan jenis data; IPC `clearProfileData` memvalidasi partition dan membersihkan `clearStorageData`/`clearCache` sesuai pilihan; web tab hidup di workspace pemakai di-reload. Delete profile diblokir bila masih dipakai workspace (`in-use` + daftar nama). Diverifikasi headless: partition invalid/no-types ditolak, cookie nyata terhapus setelah clear.
 12. **Profile switching hanya menyentuh web tab** (§10). `setWorkspaceProfile` tidak lagi `webviews.destroy` seluruh tab: hanya view web non-private yang dihancurkan dan dibangun ulang lazy di partition baru; editor/terminal/docs/notes/task/layout split bertahan (`webviews.destroy` punya opsi `preserveSplit`).
+13. **Document tools selaras blueprint** (§16). Tool `docs` tetap satu group (katalog agent tidak menggembung), tapi operation-nya memakai nama blueprint verbatim: `listDocuments` (list/search), `readDocument` (by id), `editDocument` (create tanpa id / update dengan id).
 
 ## Ditunda
 

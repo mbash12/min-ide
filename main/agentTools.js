@@ -47,7 +47,18 @@ var BROWSER_ACTIONS = [
   'wait', 'hover', 'drag', 'assert', 'upload', 'download', 'dialog'
 ]
 var FIGMA_ACTIONS = ['status', 'node-data', 'extract-text', 'find-text', 'export']
-var DOCS_OPERATIONS = ['list', 'search', 'get', 'create', 'update']
+/* operation names mirror the blueprint's document tools verbatim */
+var DOCS_OPERATIONS = ['listDocuments', 'readDocument', 'editDocument']
+
+function minDocsAvailable (workspaceId) {
+  if (!workspaceId || workspaceId === 'default') {
+    return 'Docs tools need an open workspace'
+  }
+  if (typeof minDocumentStore === 'undefined' || !minDocumentStore) {
+    return 'Docs tools are unavailable'
+  }
+  return null
+}
 
 function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
   const optStr = function (description) {
@@ -284,63 +295,58 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
     }
   })
 
+  /* Documents stay one grouped tool (like browser/playbook/figma) so the
+  agent catalog does not grow, but the operation names match the blueprint's
+  three tools verbatim: listDocuments, readDocument, editDocument. Nothing is
+  ever injected into context. */
+
   const docsTool = defineTool({
     name: 'docs',
     label: 'Docs',
-    description: 'On-demand access to this workspace\'s non-private Markdown documents. Docs are never injected into chat context; use an operation when the user asks you to inspect or persist documentation.',
-    promptSnippet: 'docs: list / search / get / create / update on request',
+    description: 'On-demand access to this workspace\'s non-private Markdown documents. Docs are never injected into chat context; call an operation when the user asks you to inspect or persist documentation.',
+    promptSnippet: 'docs: listDocuments / readDocument / editDocument on request',
     promptGuidelines: [
       'Docs are scoped to this workspace. The workspace is fixed by the session; never ask for or invent a workspaceId parameter.',
-      'Use list or search before get unless the user names a specific document. Call get only when its full Markdown is relevant.',
-      'Create or update a document only when the user explicitly asks for a persistent documentation change.',
+      'Use listDocuments before readDocument unless the user names a specific document. Call readDocument only when its full Markdown is relevant.',
+      'editDocument creates a document without id and updates it with id; use it only when the user explicitly asks for a persistent documentation change.',
       'Private or not-found documents are unavailable. Never infer, expose, or bypass a private document.'
     ],
     parameters: Type.Object({
       operation: minEnum(Type, DOCS_OPERATIONS, 'Docs operation'),
-      id: optStr('Document id. Required for get and update.'),
-      query: optStr('Search text. Required for search.'),
-      title: optStr('Document title. Used by create or update.'),
-      markdown: optStr('Markdown content. Used by create or update.'),
-      limit: optNum('Maximum list/search results. The service caps this value.')
+      id: optStr('Document id. Required for readDocument; for editDocument, omit to create.'),
+      query: optStr('Search text for listDocuments. When omitted, it lists documents.'),
+      title: optStr('Document title. Used by editDocument.'),
+      markdown: optStr('Markdown content. Used by editDocument.'),
+      private: optBool('Restrict the document from AI access. Used by editDocument.'),
+      limit: optNum('Maximum listDocuments results. The service caps this value.')
     }),
     execute: async function (_id, params) {
       params = params || {}
-      if (!workspaceId || workspaceId === 'default') {
-        return minToolTextResult('Docs tools need an open workspace', true)
-      }
-      if (typeof minDocumentStore === 'undefined' || !minDocumentStore) {
-        return minToolTextResult('Docs tools are unavailable', true)
-      }
+      const unavailable = minDocsAvailable(workspaceId)
+      if (unavailable) return minToolTextResult(unavailable, true)
       const operation = params.operation
-      if (operation === 'list') {
+      if (operation === 'listDocuments') {
+        if (params.query != null && String(params.query).trim()) {
+          const result = minDocumentStore.searchForAI(workspaceId, params.query, { limit: params.limit })
+          return minToolJsonResult(result, result && result.ok === false)
+        }
         return minToolJsonResult(minDocumentStore.listForAI(workspaceId, { limit: params.limit }))
       }
-      if (operation === 'search') {
-        const result = minDocumentStore.searchForAI(workspaceId, params.query, { limit: params.limit })
-        return minToolJsonResult(result, result && result.ok === false)
-      }
-      if (operation === 'get') {
+      if (operation === 'readDocument') {
         if (params.id == null || !String(params.id).trim()) return minToolTextResult('id is required', true)
         const result = minDocumentStore.getForAI(workspaceId, params.id)
         return minToolJsonResult(result, result && result.ok === false)
       }
-      if (operation === 'create') {
-        const input = {}
-        if (Object.prototype.hasOwnProperty.call(params, 'title')) input.title = params.title
-        if (Object.prototype.hasOwnProperty.call(params, 'markdown')) input.markdown = params.markdown
+      if (operation === 'editDocument') {
+        const fields = {}
+        if (Object.prototype.hasOwnProperty.call(params, 'title')) fields.title = params.title
+        if (Object.prototype.hasOwnProperty.call(params, 'markdown')) fields.markdown = params.markdown
         /* Keep an unexpected privacy field visible to the main-only helper so
          * malformed callers fail closed instead of silently changing policy. */
-        if (Object.prototype.hasOwnProperty.call(params, 'private')) input.private = params.private
-        const result = minDocumentStore.createForAI(workspaceId, input)
-        return minToolJsonResult(result, result && result.ok === false)
-      }
-      if (operation === 'update') {
-        if (params.id == null || !String(params.id).trim()) return minToolTextResult('id is required', true)
-        const changes = {}
-        if (Object.prototype.hasOwnProperty.call(params, 'title')) changes.title = params.title
-        if (Object.prototype.hasOwnProperty.call(params, 'markdown')) changes.markdown = params.markdown
-        if (Object.prototype.hasOwnProperty.call(params, 'private')) changes.private = params.private
-        const result = minDocumentStore.updateForAI(workspaceId, params.id, changes)
+        if (Object.prototype.hasOwnProperty.call(params, 'private')) fields.private = params.private
+        const result = (params.id != null && String(params.id).trim())
+          ? minDocumentStore.updateForAI(workspaceId, params.id, fields)
+          : minDocumentStore.createForAI(workspaceId, fields)
         return minToolJsonResult(result, result && result.ok === false)
       }
       return minToolTextResult('Unknown docs operation', true)
