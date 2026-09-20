@@ -43,28 +43,21 @@ function saveProfiles (profiles) {
   } catch (e) {}
 }
 
-// Sync from centralized DB on startup if available. Local profiles win when
-// present (so deletes persist); the DB is used only when localStorage is empty.
+// The centralized DB is the source of truth. localStorage only serves as a
+// synchronous cache so getProfiles() can stay sync for callers that run
+// before the first IPC round-trip. On startup: an empty DB is seeded from
+// the cache (upgrade path); otherwise the DB wins and refreshes the cache.
 if (typeof ipc !== 'undefined' && ipc.invoke) {
   ipc.invoke('db:getProfiles').then(function (dbProfiles) {
     const local = getProfiles()
-    if (local.length > 0) {
-      const keep = {}
+    if (Array.isArray(dbProfiles) && dbProfiles.length > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(dbProfiles))
+    } else if (local.length > 0) {
       local.forEach(function (p) {
         if (p && p.id) {
-          keep[p.id] = true
           ipc.invoke('db:saveProfile', p)
         }
       })
-      if (Array.isArray(dbProfiles)) {
-        dbProfiles.forEach(function (p) {
-          if (p && p.id && !keep[p.id]) {
-            ipc.invoke('db:deleteProfile', p.id)
-          }
-        })
-      }
-    } else if (Array.isArray(dbProfiles) && dbProfiles.length > 0) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(dbProfiles))
     }
   }).catch(function () {})
 }

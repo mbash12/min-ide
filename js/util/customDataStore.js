@@ -86,7 +86,14 @@ const customDataStore = {
 
   // Tab Activity Logs
   logTabActivity: (activity) => invokeDB('db:logTabActivity', activity),
-  getTabActivities: (workspaceId, limit) => invokeDB('db:getTabActivities', { workspaceId, limit })
+  getTabActivities: (workspaceId, limit) => invokeDB('db:getTabActivities', { workspaceId, limit }),
+
+  // Scoped key-value store. Valid scopes: workspace_state, task_extra_state,
+  // tab_extra_metadata, sidebar_state, tile_state, ai_config, provider_config
+  kvGet: (scope, key) => invokeDB('db:kvGet', { scope, key }),
+  kvSet: (scope, key, value) => invokeDB('db:kvSet', { scope, key, value }),
+  kvDelete: (scope, key) => invokeDB('db:kvDelete', { scope, key }),
+  kvList: (scope) => invokeDB('db:kvList', scope)
 }
 
 if (typeof module !== 'undefined') {

@@ -1,11 +1,16 @@
-/* global fs, path, ipc, userDataPath, writeFileAtomic, windows, getWindowWebContents */
+/* global fs, path, ipc, userDataPath, windows, getWindowWebContents */
 /* Centralized Database Service for Custom Features
-Manages single-source-of-truth storage for preferences, workspace profiles,
-workspace snapshots, design documents, workspace documents, and tab activity
-logs.
+Single-source-of-truth storage backed by SQLite (node:sqlite, WAL) for
+preferences, workspace profiles, workspace snapshots, design documents,
+workspace documents, notes, tab activity logs, and a scoped key-value store
+covering workspace/task/tab extra state, sidebar and tile state, and AI
+provider configuration.
 */
 
-const dbFilePath = path.join(userDataPath, 'custom_app_data.db')
+const { DatabaseSync } = require('node:sqlite')
+
+const dbFilePath = path.join(userDataPath, 'min.db')
+const legacyDbFilePath = path.join(userDataPath, 'custom_app_data.db')
 
 /* Documents deliberately stay small and local. These limits protect the
  * renderer and the AI tool from accidentally turning one note into an
@@ -18,17 +23,149 @@ const DOCUMENT_AI_MAX_RESULTS = 50
 const DOCUMENT_AI_DEFAULT_RESULTS = 20
 const DOCUMENT_AI_QUERY_MAX_LENGTH = 200
 const DOCUMENT_AI_SNIPPET_MAX_LENGTH = 240
+const TAB_ACTIVITY_KEEP = 1000
 
-/* In-memory store backed by atomic file persistence */
-let dbState = {
-  version: 1,
-  user_preferences: {},
-  workspace_profiles: [],
-  workspace_snapshots: [],
-  design_documents: [],
-  documents: [],
-  notes: [],
-  tab_activities: []
+const KV_SCOPES = [
+  'workspace_state',
+  'task_extra_state',
+  'tab_extra_metadata',
+  'sidebar_state',
+  'tile_state',
+  'ai_config',
+  'provider_config'
+]
+
+const db = new DatabaseSync(dbFilePath)
+db.exec('PRAGMA journal_mode = WAL')
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS user_preferences (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspace_profiles (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspace_snapshots (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  title TEXT,
+  snapshot_data TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_workspace ON workspace_snapshots(workspace_id);
+CREATE TABLE IF NOT EXISTS design_documents (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_designs_workspace ON design_documents(workspace_id);
+CREATE TABLE IF NOT EXISTS documents (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  markdown TEXT NOT NULL,
+  private INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_documents_workspace ON documents(workspace_id);
+CREATE TABLE IF NOT EXISTS notes (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  markdown TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tab_activities (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT,
+  tab_id TEXT,
+  url TEXT NOT NULL,
+  title TEXT,
+  metadata TEXT,
+  timestamp INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activities_workspace ON tab_activities(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_activities_timestamp ON tab_activities(timestamp);
+CREATE TABLE IF NOT EXISTS kv_store (
+  scope TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (scope, key)
+);
+`)
+
+/* One-time import of the legacy JSON store (custom_app_data.db). The file is
+ * kept as <name>.migrated so a rollback only requires deleting min.db. */
+function migrateLegacyJson () {
+  let legacy
+  try {
+    if (!fs.existsSync(legacyDbFilePath)) return
+    const raw = fs.readFileSync(legacyDbFilePath, 'utf-8')
+    if (!raw || !raw.trim()) return
+    legacy = JSON.parse(raw)
+    if (!legacy || typeof legacy !== 'object') return
+  } catch (e) {
+    return
+  }
+
+  try {
+    db.exec('BEGIN')
+    const now = Date.now()
+    const prefStmt = db.prepare('INSERT OR REPLACE INTO user_preferences (key, value, updated_at) VALUES (?, ?, ?)')
+    for (const key of Object.keys(legacy.user_preferences || {})) {
+      const entry = legacy.user_preferences[key]
+      const value = entry && typeof entry === 'object' && 'value' in entry ? entry.value : entry
+      const updated = entry && typeof entry === 'object' && isFinite(entry.updated_at) ? entry.updated_at : now
+      prefStmt.run(key, JSON.stringify(value), updated)
+    }
+    const profileStmt = db.prepare('INSERT OR REPLACE INTO workspace_profiles (id, name, color, created_at) VALUES (?, ?, ?, ?)')
+    for (const p of legacy.workspace_profiles || []) {
+      if (!p || !p.id) continue
+      profileStmt.run(String(p.id), String(p.name || 'Profile'), p.color || null, isFinite(p.created_at) ? p.created_at : now)
+    }
+    const snapshotStmt = db.prepare('INSERT OR REPLACE INTO workspace_snapshots (id, workspace_id, title, snapshot_data, created_at) VALUES (?, ?, ?, ?, ?)')
+    for (const s of legacy.workspace_snapshots || []) {
+      if (!s || !s.id) continue
+      snapshotStmt.run(String(s.id), String(s.workspace_id || ''), s.title || null, JSON.stringify(s.snapshot_data || {}), isFinite(s.created_at) ? s.created_at : now)
+    }
+    const designStmt = db.prepare('INSERT OR REPLACE INTO design_documents (id, workspace_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    for (const d of legacy.design_documents || []) {
+      if (!d || !d.id) continue
+      designStmt.run(String(d.id), d.workspace_id ? String(d.workspace_id) : null, String(d.title || ''), JSON.stringify(d.content || {}), isFinite(d.created_at) ? d.created_at : now, isFinite(d.updated_at) ? d.updated_at : now)
+    }
+    const docStmt = db.prepare('INSERT OR REPLACE INTO documents (id, workspace_id, title, markdown, private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    for (const d of legacy.documents || []) {
+      const doc = normalizeStoredDocument(d)
+      if (!doc) continue
+      docStmt.run(doc.id, doc.workspace_id, doc.title, doc.markdown, doc.private ? 1 : 0, doc.created_at, doc.updated_at)
+    }
+    const noteStmt = db.prepare('INSERT OR REPLACE INTO notes (id, title, markdown, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    for (const n of legacy.notes || []) {
+      const note = normalizeStoredNote(n)
+      if (!note) continue
+      noteStmt.run(note.id, note.title, note.markdown, note.created_at, note.updated_at)
+    }
+    const actStmt = db.prepare('INSERT OR REPLACE INTO tab_activities (id, workspace_id, tab_id, url, title, metadata, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    for (const a of legacy.tab_activities || []) {
+      if (!a || !a.url) continue
+      actStmt.run(String(a.id || ('act-' + Math.random().toString(36).slice(2))), a.workspace_id ? String(a.workspace_id) : null, a.tab_id ? String(a.tab_id) : null, String(a.url), a.title || '', JSON.stringify(a.metadata || {}), isFinite(a.timestamp) ? a.timestamp : now)
+    }
+    db.exec('COMMIT')
+    fs.renameSync(legacyDbFilePath, legacyDbFilePath + '.migrated')
+  } catch (e) {
+    try { db.exec('ROLLBACK') } catch (e2) {}
+    console.warn('dbService: legacy JSON migration failed', e)
+  }
 }
 
 function documentError (message) {
@@ -100,17 +237,10 @@ function normalizeStoredDocument (value) {
     workspace_id: workspace.value,
     title: title,
     markdown: markdown,
-    private: value.private === true,
+    private: value.private === true || value.private === 1,
     created_at: createdAt,
     updated_at: updatedAt
   }
-}
-
-function normalizeDocumentState () {
-  const stored = Array.isArray(dbState.documents) ? dbState.documents : []
-  dbState.documents = stored.map(normalizeStoredDocument).filter(function (document) {
-    return !!document
-  })
 }
 
 function normalizeStoredNote (value) {
@@ -140,177 +270,129 @@ function normalizeStoredNote (value) {
   }
 }
 
-function normalizeNoteState () {
-  const stored = Array.isArray(dbState.notes) ? dbState.notes : []
-  dbState.notes = stored.map(normalizeStoredNote).filter(function (note) {
-    return !!note
-  })
-}
-
-function loadDatabase () {
-  try {
-    if (fs.existsSync(dbFilePath)) {
-      const raw = fs.readFileSync(dbFilePath, 'utf-8')
-      if (raw && raw.trim()) {
-        const parsed = JSON.parse(raw)
-        dbState = Object.assign({}, dbState, parsed)
-        normalizeDocumentState()
-        normalizeNoteState()
-      }
-    } else {
-      // Legacy auto-migration from sessionRestore.json if exists
-      const sessionPath = path.join(userDataPath, 'sessionRestore.json')
-      if (fs.existsSync(sessionPath)) {
-        try {
-          const sessRaw = fs.readFileSync(sessionPath, 'utf-8')
-          if (sessRaw) {
-            const sessData = JSON.parse(sessRaw)
-            saveSnapshot({
-              id: 'initial-restore-snapshot',
-              workspace_id: 'default',
-              title: 'Initial Session Restore Archive',
-              snapshot_data: sessData,
-              created_at: Date.now()
-            })
-          }
-        } catch (e2) {}
-      }
-      normalizeDocumentState()
-      normalizeNoteState()
-    }
-  } catch (e) {
-    console.warn('dbService: failed to load database file, starting clean', e)
-    normalizeDocumentState()
-    normalizeNoteState()
-  }
-}
-
-function saveDatabase () {
-  try {
-    writeFileAtomic.sync(dbFilePath, JSON.stringify(dbState, null, 2), {})
-    return true
-  } catch (e) {
-    console.error('dbService: failed to save database file', e)
-    return false
-  }
-}
-
-// Initial load
-loadDatabase()
+// Initial migration of any legacy JSON state
+migrateLegacyJson()
 
 /* =====================================================================
    Database Operations
    ===================================================================== */
 
+function parseJson (text, fallback) {
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    return fallback
+  }
+}
+
 /* --- User Preferences --- */
+const prefGetStmt = db.prepare('SELECT value FROM user_preferences WHERE key = ?')
+const prefSetStmt = db.prepare('INSERT OR REPLACE INTO user_preferences (key, value, updated_at) VALUES (?, ?, ?)')
+
 function getPreference (key) {
-  return dbState.user_preferences[key] || null
+  const row = prefGetStmt.get(key)
+  if (!row) return null
+  return { value: parseJson(row.value, null), updated_at: row.updated_at }
 }
 
 function setPreference (key, value) {
   if (!key) return null
-  dbState.user_preferences[key] = {
-    value: value,
-    updated_at: Date.now()
-  }
-  saveDatabase()
-  return dbState.user_preferences[key]
+  const entry = { value: value, updated_at: Date.now() }
+  prefSetStmt.run(key, JSON.stringify(value), entry.updated_at)
+  return entry
 }
 
 /* --- Workspace Profiles --- */
+const profileAllStmt = db.prepare('SELECT * FROM workspace_profiles')
+const profileSetStmt = db.prepare('INSERT OR REPLACE INTO workspace_profiles (id, name, color, created_at) VALUES (?, ?, ?, ?)')
+const profileDelStmt = db.prepare('DELETE FROM workspace_profiles WHERE id = ?')
+
 function getProfiles () {
-  return dbState.workspace_profiles || []
+  return profileAllStmt.all()
 }
 
 function saveProfile (profile) {
   if (!profile || !profile.id) return null
-  const idx = dbState.workspace_profiles.findIndex(p => p.id === profile.id)
   const updated = {
-    id: profile.id,
+    id: String(profile.id),
     name: profile.name || 'Profile',
     color: profile.color || null,
     created_at: profile.created_at || Date.now()
   }
-  if (idx >= 0) {
-    dbState.workspace_profiles[idx] = updated
-  } else {
-    dbState.workspace_profiles.push(updated)
-  }
-  saveDatabase()
+  profileSetStmt.run(updated.id, updated.name, updated.color, updated.created_at)
   return updated
 }
 
 function deleteProfile (profileId) {
   if (!profileId) return false
-  dbState.workspace_profiles = dbState.workspace_profiles.filter(p => p.id !== profileId)
-  saveDatabase()
+  profileDelStmt.run(String(profileId))
   return true
 }
 
 /* --- Workspace Snapshots --- */
+const snapshotAllStmt = db.prepare('SELECT * FROM workspace_snapshots')
+const snapshotWsStmt = db.prepare('SELECT * FROM workspace_snapshots WHERE workspace_id = ?')
+const snapshotSetStmt = db.prepare('INSERT OR REPLACE INTO workspace_snapshots (id, workspace_id, title, snapshot_data, created_at) VALUES (?, ?, ?, ?, ?)')
+const snapshotDelStmt = db.prepare('DELETE FROM workspace_snapshots WHERE id = ?')
+
 function getSnapshots (workspaceId) {
-  if (!workspaceId) return dbState.workspace_snapshots
-  return dbState.workspace_snapshots.filter(s => s.workspace_id === workspaceId)
+  const rows = workspaceId ? snapshotWsStmt.all(String(workspaceId)) : snapshotAllStmt.all()
+  return rows.map(function (row) {
+    return Object.assign({}, row, { snapshot_data: parseJson(row.snapshot_data, {}) })
+  })
 }
 
 function saveSnapshot (snapshot) {
   if (!snapshot || !snapshot.workspace_id) return null
   const id = snapshot.id || ('snapshot-' + Date.now() + '-' + Math.floor(Math.random() * 10000))
   const entry = {
-    id: id,
-    workspace_id: snapshot.workspace_id,
+    id: String(id),
+    workspace_id: String(snapshot.workspace_id),
     title: snapshot.title || ('Snapshot ' + new Date().toLocaleString()),
     snapshot_data: snapshot.snapshot_data || {},
     created_at: snapshot.created_at || Date.now()
   }
-  const idx = dbState.workspace_snapshots.findIndex(s => s.id === id)
-  if (idx >= 0) {
-    dbState.workspace_snapshots[idx] = entry
-  } else {
-    dbState.workspace_snapshots.push(entry)
-  }
-  saveDatabase()
+  snapshotSetStmt.run(entry.id, entry.workspace_id, entry.title, JSON.stringify(entry.snapshot_data), entry.created_at)
   return entry
 }
 
 function deleteSnapshot (snapshotId) {
   if (!snapshotId) return false
-  dbState.workspace_snapshots = dbState.workspace_snapshots.filter(s => s.id !== snapshotId)
-  saveDatabase()
+  snapshotDelStmt.run(String(snapshotId))
   return true
 }
 
 /* --- Design Documents --- */
+const designAllStmt = db.prepare('SELECT * FROM design_documents')
+const designWsStmt = db.prepare('SELECT * FROM design_documents WHERE workspace_id = ?')
+const designSetStmt = db.prepare('INSERT OR REPLACE INTO design_documents (id, workspace_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+const designDelStmt = db.prepare('DELETE FROM design_documents WHERE id = ?')
+
 function getDesigns (workspaceId) {
-  if (!workspaceId) return dbState.design_documents
-  return dbState.design_documents.filter(d => d.workspace_id === workspaceId)
+  const rows = workspaceId ? designWsStmt.all(String(workspaceId)) : designAllStmt.all()
+  return rows.map(function (row) {
+    return Object.assign({}, row, { content: parseJson(row.content, {}) })
+  })
 }
 
 function saveDesign (design) {
   if (!design || !design.title) return null
   const id = design.id || ('design-' + Date.now() + '-' + Math.floor(Math.random() * 10000))
   const entry = {
-    id: id,
-    workspace_id: design.workspace_id || null,
+    id: String(id),
+    workspace_id: design.workspace_id ? String(design.workspace_id) : null,
     title: design.title,
     content: design.content || {},
     created_at: design.created_at || Date.now(),
     updated_at: Date.now()
   }
-  const idx = dbState.design_documents.findIndex(d => d.id === id)
-  if (idx >= 0) {
-    dbState.design_documents[idx] = entry
-  } else {
-    dbState.design_documents.push(entry)
-  }
-  saveDatabase()
+  designSetStmt.run(entry.id, entry.workspace_id, entry.title, JSON.stringify(entry.content), entry.created_at, entry.updated_at)
   return entry
 }
 
 function deleteDesign (designId) {
   if (!designId) return false
-  dbState.design_documents = dbState.design_documents.filter(d => d.id !== designId)
-  saveDatabase()
+  designDelStmt.run(String(designId))
   return true
 }
 
@@ -331,17 +413,30 @@ function cloneDocument (document) {
   return Object.assign({}, document, { private: document.private === true })
 }
 
-function findDocumentIndex (workspaceId, id) {
-  return dbState.documents.findIndex(function (document) {
-    return document.workspace_id === workspaceId && document.id === id
-  })
+function rowToDocument (row) {
+  return {
+    id: row.id,
+    workspace_id: row.workspace_id,
+    title: row.title,
+    markdown: row.markdown,
+    private: row.private === 1,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  }
 }
+
+const docListStmt = db.prepare('SELECT * FROM documents WHERE workspace_id = ?')
+const docGetStmt = db.prepare('SELECT * FROM documents WHERE workspace_id = ? AND id = ?')
+const docInsertStmt = db.prepare('INSERT INTO documents (id, workspace_id, title, markdown, private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+const docUpdateStmt = db.prepare('UPDATE documents SET title = ?, markdown = ?, private = ?, updated_at = ? WHERE workspace_id = ? AND id = ?')
+const docDeleteStmt = db.prepare('DELETE FROM documents WHERE workspace_id = ? AND id = ?')
+const docIdCheckStmt = db.prepare('SELECT 1 FROM documents WHERE id = ?')
 
 function newDocumentId () {
   let id
   do {
     id = 'doc-' + Date.now() + '-' + Math.floor(Math.random() * 1000000000).toString(36)
-  } while (dbState.documents.some(function (document) { return document.id === id }))
+  } while (docIdCheckStmt.get(id))
   return id
 }
 
@@ -383,9 +478,7 @@ function documentWorkspaceAndId (workspaceId, id) {
 function listDocuments (workspaceId) {
   const workspace = validateDocumentWorkspaceId(workspaceId)
   if (!workspace.ok) return workspace
-  const documents = dbState.documents
-    .filter(function (document) { return document.workspace_id === workspace.value })
-    .map(documentMetadata)
+  const documents = docListStmt.all(workspace.value).map(documentMetadata)
   documents.sort(function (a, b) {
     return (b.updated_at - a.updated_at) || (b.created_at - a.created_at) || a.title.localeCompare(b.title)
   })
@@ -398,9 +491,9 @@ function getDocument (workspaceId, id) {
   if (!workspace.ok) return workspace
   const documentId = validateDocumentId(identity.id)
   if (!documentId.ok) return documentId
-  const index = findDocumentIndex(workspace.value, documentId.value)
-  if (index < 0) return documentError('Document not found')
-  return { ok: true, document: cloneDocument(dbState.documents[index]) }
+  const row = docGetStmt.get(workspace.value, documentId.value)
+  if (!row) return documentError('Document not found')
+  return { ok: true, document: cloneDocument(rowToDocument(row)) }
 }
 
 function createDocument (workspaceId, title, markdown, options) {
@@ -430,9 +523,9 @@ function createDocument (workspaceId, title, markdown, options) {
     created_at: now,
     updated_at: now
   }
-  dbState.documents.push(document)
-  if (!saveDatabase()) {
-    dbState.documents.pop()
+  try {
+    docInsertStmt.run(document.id, document.workspace_id, document.title, document.markdown, 0, document.created_at, document.updated_at)
+  } catch (e) {
     return documentError('Could not save document')
   }
   if (!options || options.broadcast !== false) broadcastDocsChanged(workspace.value, document.id)
@@ -469,17 +562,17 @@ function updateDocument (workspaceId, id, changes, options) {
     return documentError('private must be a boolean')
   }
 
-  const index = findDocumentIndex(workspace.value, documentId.value)
-  if (index < 0) return documentError('Document not found')
-  const document = dbState.documents[index]
-  const previous = Object.assign({}, document)
+  const row = docGetStmt.get(workspace.value, documentId.value)
+  if (!row) return documentError('Document not found')
+  const document = rowToDocument(row)
   if (validatedTitle) document.title = validatedTitle.value
   if (validatedMarkdown) document.markdown = validatedMarkdown.value
   if (hasPrivate) document.private = changes.private
   document.updated_at = Date.now()
 
-  if (!saveDatabase()) {
-    dbState.documents[index] = previous
+  try {
+    docUpdateStmt.run(document.title, document.markdown, document.private ? 1 : 0, document.updated_at, workspace.value, documentId.value)
+  } catch (e) {
     return documentError('Could not save document')
   }
   if (!options || options.broadcast !== false) broadcastDocsChanged(workspace.value, document.id)
@@ -492,14 +585,10 @@ function deleteDocument (workspaceId, id) {
   if (!workspace.ok) return workspace
   const documentId = validateDocumentId(identity.id)
   if (!documentId.ok) return documentId
-  const index = findDocumentIndex(workspace.value, documentId.value)
-  if (index < 0) return documentError('Document not found')
-  const removed = dbState.documents.splice(index, 1)[0]
-  if (!saveDatabase()) {
-    dbState.documents.splice(index, 0, removed)
-    return documentError('Could not save document')
-  }
-  broadcastDocsChanged(workspace.value, removed.id)
+  const row = docGetStmt.get(workspace.value, documentId.value)
+  if (!row) return documentError('Document not found')
+  docDeleteStmt.run(workspace.value, documentId.value)
+  broadcastDocsChanged(workspace.value, row.id)
   return { ok: true }
 }
 
@@ -556,9 +645,10 @@ function searchDocumentsForAI (workspaceId, query, options) {
   if (query.length > DOCUMENT_AI_QUERY_MAX_LENGTH) return documentError('query is too long')
   const lowerQuery = query.toLowerCase()
   const limit = documentAiLimit(options && options.limit)
-  const documents = dbState.documents
+  const documents = docListStmt.all(workspace.value)
+    .map(rowToDocument)
     .filter(function (document) {
-      if (document.workspace_id !== workspace.value || document.private === true) return false
+      if (document.private === true) return false
       const title = document.title.toLowerCase()
       const markdown = document.markdown.toLowerCase()
       return title.indexOf(lowerQuery) !== -1 || markdown.indexOf(lowerQuery) !== -1
@@ -606,7 +696,7 @@ function updateDocumentForAI (workspaceId, id, changes) {
     id = payload.id
     changes = payload
   }
-  changes = changes && typeof changes === 'object' && !Array.isArray(changes) ? changes : {}
+  changes = changes && typeof changes === 'object' ? changes : {}
   if (Object.prototype.hasOwnProperty.call(changes, 'private')) {
     return documentError('AI cannot change document privacy')
   }
@@ -641,17 +731,18 @@ function cloneNote (note) {
   return Object.assign({}, note)
 }
 
-function findNoteIndex (id) {
-  return dbState.notes.findIndex(function (note) {
-    return note.id === id
-  })
-}
+const noteListStmt = db.prepare('SELECT * FROM notes')
+const noteGetStmt = db.prepare('SELECT * FROM notes WHERE id = ?')
+const noteInsertStmt = db.prepare('INSERT INTO notes (id, title, markdown, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+const noteUpdateStmt = db.prepare('UPDATE notes SET title = ?, markdown = ?, updated_at = ? WHERE id = ?')
+const noteDeleteStmt = db.prepare('DELETE FROM notes WHERE id = ?')
+const noteIdCheckStmt = db.prepare('SELECT 1 FROM notes WHERE id = ?')
 
 function newNoteId () {
   let id
   do {
     id = 'note-' + Date.now() + '-' + Math.floor(Math.random() * 1000000000).toString(36)
-  } while (dbState.notes.some(function (note) { return note.id === id }))
+  } while (noteIdCheckStmt.get(id))
   return id
 }
 
@@ -684,7 +775,7 @@ function noteIdFromArg (value, id) {
 }
 
 function listNotes () {
-  const notes = dbState.notes.map(noteMetadata)
+  const notes = noteListStmt.all().map(noteMetadata)
   notes.sort(function (a, b) {
     return (b.updated_at - a.updated_at) || (b.created_at - a.created_at) || a.title.localeCompare(b.title)
   })
@@ -694,9 +785,9 @@ function listNotes () {
 function getNote (value, id) {
   const noteId = validateDocumentId(noteIdFromArg(value, id))
   if (!noteId.ok) return noteId
-  const index = findNoteIndex(noteId.value)
-  if (index < 0) return documentError('Note not found')
-  return { ok: true, note: cloneNote(dbState.notes[index]) }
+  const row = noteGetStmt.get(noteId.value)
+  if (!row) return documentError('Note not found')
+  return { ok: true, note: cloneNote(row) }
 }
 
 function createNote (value, markdown) {
@@ -720,9 +811,9 @@ function createNote (value, markdown) {
     created_at: now,
     updated_at: now
   }
-  dbState.notes.push(note)
-  if (!saveDatabase()) {
-    dbState.notes.pop()
+  try {
+    noteInsertStmt.run(note.id, note.title, note.markdown, note.created_at, note.updated_at)
+  } catch (e) {
     return documentError('Could not save note')
   }
   broadcastNotesChanged(note.id)
@@ -754,64 +845,101 @@ function updateNote (value, id, changes) {
   const validatedMarkdown = hasMarkdown ? validateDocumentMarkdown(changes.markdown) : null
   if (validatedMarkdown && !validatedMarkdown.ok) return validatedMarkdown
 
-  const index = findNoteIndex(noteId.value)
-  if (index < 0) return documentError('Note not found')
-  const note = dbState.notes[index]
-  const previous = Object.assign({}, note)
-  if (validatedTitle) note.title = validatedTitle.value
-  if (validatedMarkdown) note.markdown = validatedMarkdown.value
-  note.updated_at = Date.now()
+  const row = noteGetStmt.get(noteId.value)
+  if (!row) return documentError('Note not found')
+  const title = validatedTitle ? validatedTitle.value : row.title
+  const markdownValue = validatedMarkdown ? validatedMarkdown.value : row.markdown
+  const updatedAt = Date.now()
 
-  if (!saveDatabase()) {
-    dbState.notes[index] = previous
+  try {
+    noteUpdateStmt.run(title, markdownValue, updatedAt, noteId.value)
+  } catch (e) {
     return documentError('Could not save note')
   }
-  broadcastNotesChanged(note.id)
-  return { ok: true, note: cloneNote(note) }
+  broadcastNotesChanged(noteId.value)
+  return { ok: true, note: cloneNote({ id: noteId.value, title: title, markdown: markdownValue, created_at: row.created_at, updated_at: updatedAt }) }
 }
 
 function deleteNote (value, id) {
   const noteId = validateDocumentId(noteIdFromArg(value, id))
   if (!noteId.ok) return noteId
-  const index = findNoteIndex(noteId.value)
-  if (index < 0) return documentError('Note not found')
-  const removed = dbState.notes.splice(index, 1)[0]
-  if (!saveDatabase()) {
-    dbState.notes.splice(index, 0, removed)
-    return documentError('Could not delete note')
-  }
-  broadcastNotesChanged(removed.id)
+  const row = noteGetStmt.get(noteId.value)
+  if (!row) return documentError('Note not found')
+  noteDeleteStmt.run(noteId.value)
+  broadcastNotesChanged(row.id)
   return { ok: true }
 }
 
 /* --- Tab Activity Logs --- */
+const actInsertStmt = db.prepare('INSERT INTO tab_activities (id, workspace_id, tab_id, url, title, metadata, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)')
+const actAllStmt = db.prepare('SELECT * FROM tab_activities ORDER BY timestamp DESC LIMIT ?')
+const actWsStmt = db.prepare('SELECT * FROM tab_activities WHERE workspace_id = ? ORDER BY timestamp DESC LIMIT ?')
+const actPruneStmt = db.prepare('DELETE FROM tab_activities WHERE id NOT IN (SELECT id FROM tab_activities ORDER BY timestamp DESC LIMIT ?)')
+
 function logTabActivity (activity) {
   if (!activity || !activity.url) return null
   const entry = {
     id: 'act-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
-    workspace_id: activity.workspace_id || null,
-    tab_id: activity.tab_id || null,
+    workspace_id: activity.workspace_id ? String(activity.workspace_id) : null,
+    tab_id: activity.tab_id ? String(activity.tab_id) : null,
     url: activity.url,
     title: activity.title || '',
     metadata: activity.metadata || {},
     timestamp: Date.now()
   }
-  dbState.tab_activities.push(entry)
-  // keep last 1000 entries
-  if (dbState.tab_activities.length > 1000) {
-    dbState.tab_activities = dbState.tab_activities.slice(-1000)
-  }
-  saveDatabase()
+  actInsertStmt.run(entry.id, entry.workspace_id, entry.tab_id, entry.url, entry.title, JSON.stringify(entry.metadata), entry.timestamp)
+  // keep the last N entries
+  actPruneStmt.run(TAB_ACTIVITY_KEEP)
   return entry
 }
 
 function getTabActivities (workspaceId, limit) {
-  let list = dbState.tab_activities
-  if (workspaceId) {
-    list = list.filter(a => a.workspace_id === workspaceId)
-  }
   const max = limit || 100
-  return list.slice(-max)
+  const rows = workspaceId
+    ? actWsStmt.all(String(workspaceId), max)
+    : actAllStmt.all(max)
+  return rows.map(function (row) {
+    return Object.assign({}, row, { metadata: parseJson(row.metadata, {}) })
+  }).reverse()
+}
+
+/* --- Scoped key-value store ---
+   Covers the remaining blueprint entities: workspace_state, task_extra_state,
+   tab_extra_metadata, sidebar_state, tile_state, ai_config, provider_config. */
+const kvGetStmt = db.prepare('SELECT value FROM kv_store WHERE scope = ? AND key = ?')
+const kvSetStmt = db.prepare('INSERT OR REPLACE INTO kv_store (scope, key, value, updated_at) VALUES (?, ?, ?, ?)')
+const kvDelStmt = db.prepare('DELETE FROM kv_store WHERE scope = ? AND key = ?')
+const kvListStmt = db.prepare('SELECT key, value FROM kv_store WHERE scope = ?')
+
+function validScope (scope) {
+  return typeof scope === 'string' && KV_SCOPES.includes(scope)
+}
+
+function kvGet (scope, key) {
+  if (!validScope(scope) || !key) return null
+  const row = kvGetStmt.get(scope, String(key))
+  return row ? parseJson(row.value, null) : null
+}
+
+function kvSet (scope, key, value) {
+  if (!validScope(scope) || !key) return false
+  kvSetStmt.run(scope, String(key), JSON.stringify(value === undefined ? null : value), Date.now())
+  return true
+}
+
+function kvDelete (scope, key) {
+  if (!validScope(scope) || !key) return false
+  kvDelStmt.run(scope, String(key))
+  return true
+}
+
+function kvList (scope) {
+  if (!validScope(scope)) return {}
+  const out = {}
+  kvListStmt.all(scope).forEach(function (row) {
+    out[row.key] = parseJson(row.value, null)
+  })
+  return out
 }
 
 /* =====================================================================
@@ -862,25 +990,37 @@ snapshots and tab activities. Workspace-scoped collections share the
 workspace_id key, so one sweep covers all of them. */
 function deleteWorkspaceData (workspaceId) {
   const id = String(workspaceId)
-  const before = {
-    documents: dbState.documents.length,
-    designs: dbState.design_documents.length,
-    snapshots: dbState.workspace_snapshots.length,
-    activities: dbState.tab_activities.length
+  db.exec('BEGIN')
+  try {
+    db.prepare('DELETE FROM documents WHERE workspace_id = ?').run(id)
+    db.prepare('DELETE FROM design_documents WHERE workspace_id = ?').run(id)
+    db.prepare('DELETE FROM workspace_snapshots WHERE workspace_id = ?').run(id)
+    db.prepare('DELETE FROM tab_activities WHERE workspace_id = ?').run(id)
+    db.exec('COMMIT')
+  } catch (e) {
+    db.exec('ROLLBACK')
   }
-  dbState.documents = dbState.documents.filter(document => String(document.workspace_id) !== id)
-  dbState.design_documents = dbState.design_documents.filter(design => String(design.workspace_id) !== id)
-  dbState.workspace_snapshots = dbState.workspace_snapshots.filter(snapshot => String(snapshot.workspace_id) !== id)
-  dbState.tab_activities = dbState.tab_activities.filter(activity => String(activity.workspace_id) !== id)
-  saveDatabase()
   broadcastDocsChanged(id, null)
-  return { ok: true, removed: before }
+  return { ok: true }
 }
 
 ipc.handle('db:deleteWorkspaceData', async (event, workspaceId) => deleteWorkspaceData(workspaceId))
 
 ipc.handle('db:logTabActivity', async (event, activity) => logTabActivity(activity))
 ipc.handle('db:getTabActivities', async (event, data) => getTabActivities(data && data.workspaceId, data && data.limit))
+
+ipc.handle('db:kvGet', async (event, data) => kvGet(data && data.scope, data && data.key))
+ipc.handle('db:kvSet', async (event, data) => kvSet(data && data.scope, data && data.key, data && data.value))
+ipc.handle('db:kvDelete', async (event, data) => kvDelete(data && data.scope, data && data.key))
+ipc.handle('db:kvList', async (event, scope) => kvList(scope))
+
+/* Sync variants for callers that cannot await (session save on unload). */
+ipc.on('db:kvSetSync', function (event, data) {
+  event.returnValue = kvSet(data && data.scope, data && data.key, data && data.value)
+})
+ipc.on('db:kvGetSync', function (event, data) {
+  event.returnValue = kvGet(data && data.scope, data && data.key)
+})
 
 /* Used by main/agentTools.js in the concatenated main bundle. Keeping these
  * accessors out of IPC makes it impossible for a renderer caller to request
