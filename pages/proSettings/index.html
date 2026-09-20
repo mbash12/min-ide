@@ -17,6 +17,10 @@
       <nav class="pro-tabs">
         <button class="pro-tab active" data-tab="provider" data-string="proSettingsTabProvider"></button>
         <button class="pro-tab" data-tab="profiles" data-string="proSettingsTabProfiles"></button>
+        <button class="pro-tab" data-tab="editor" data-string="proSettingsTabEditor"></button>
+        <button class="pro-tab" data-tab="terminal" data-string="proSettingsTabTerminal"></button>
+        <button class="pro-tab" data-tab="workspace" data-string="proSettingsTabWorkspace"></button>
+        <button class="pro-tab" data-tab="documents" data-string="proSettingsTabDocuments"></button>
         <button class="pro-tab" data-tab="design" data-string="proSettingsTabDesign"></button>
       </nav>
 
@@ -79,6 +83,78 @@
           <div class="pro-add-row" id="profiles-add-section">
             <input type="text" id="profiles-add-input" spellcheck="false" />
             <button id="profiles-add-button" data-string="taskProfileAdd"></button>
+          </div>
+        </section>
+      </section>
+
+      <!-- ===== editor tab ===== -->
+      <section class="pro-panel" id="panel-editor">
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsEditorHeading"></span>
+          </div>
+          <p class="pro-description" data-string="proSettingsPrefsNote"></p>
+          <div class="pro-field-row">
+            <label class="pro-field-label" for="editor-font-size" data-string="proSettingsFontSizeLabel"></label>
+            <input type="number" id="editor-font-size" min="8" max="40" step="1" />
+          </div>
+          <div class="pro-field-row">
+            <label class="pro-field-label" for="editor-tab-size" data-string="proSettingsTabSizeLabel"></label>
+            <input type="number" id="editor-tab-size" min="1" max="8" step="1" />
+          </div>
+          <div class="pro-field-row">
+            <label class="pro-field-label" for="editor-word-wrap" data-string="proSettingsWordWrapLabel"></label>
+            <input type="checkbox" id="editor-word-wrap" />
+          </div>
+        </section>
+      </section>
+
+      <!-- ===== terminal tab ===== -->
+      <section class="pro-panel" id="panel-terminal">
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsTerminalHeading"></span>
+          </div>
+          <p class="pro-description" data-string="proSettingsPrefsNote"></p>
+          <div class="pro-field-row">
+            <label class="pro-field-label" for="terminal-font-size" data-string="proSettingsFontSizeLabel"></label>
+            <input type="number" id="terminal-font-size" min="8" max="40" step="1" />
+          </div>
+          <div class="pro-field-row">
+            <label class="pro-field-label" for="terminal-shell" data-string="proSettingsShellLabel"></label>
+            <input type="text" id="terminal-shell" spellcheck="false" placeholder="/bin/bash" />
+          </div>
+          <p class="pro-description" data-string="proSettingsShellHint"></p>
+        </section>
+      </section>
+
+      <!-- ===== workspace defaults tab ===== -->
+      <section class="pro-panel" id="panel-workspace">
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsWorkspaceHeading"></span>
+          </div>
+          <p class="pro-description" data-string="proSettingsWorkspaceDescription"></p>
+          <div class="pro-field-row">
+            <label class="pro-field-label" for="workspace-default-profile" data-string="proSettingsDefaultProfileLabel"></label>
+            <select id="workspace-default-profile"></select>
+          </div>
+        </section>
+      </section>
+
+      <!-- ===== documents tab ===== -->
+      <section class="pro-panel" id="panel-documents">
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsDocumentsHeading"></span>
+          </div>
+          <p class="pro-description" data-string="proSettingsPrefsNote"></p>
+          <div class="pro-field-row">
+            <label class="pro-field-label" for="docs-default-mode" data-string="proSettingsDocsModeLabel"></label>
+            <select id="docs-default-mode">
+              <option value="wysiwyg" data-string="proSettingsModeWysiwyg"></option>
+              <option value="markdown" data-string="proSettingsModeMarkdown"></option>
+            </select>
           </div>
         </section>
       </section>

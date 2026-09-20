@@ -152,7 +152,7 @@
       el: editorEl,
       height: 'calc(100vh - 50px)',
       initialValue: note.markdown || '',
-      initialEditType: 'wysiwyg',
+      initialEditType: (((window.minViewResource || {}).extra || {}).defaultMode === 'markdown') ? 'markdown' : 'wysiwyg',
       previewStyle: 'vertical',
       usageStatistics: false,
       theme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',

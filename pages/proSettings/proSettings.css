@@ -216,6 +216,52 @@ body.dark-mode #toggle-key-visibility {
   background: rgba(128, 128, 128, 0.1);
 }
 
+/* labeled form rows used by the simple preference tabs */
+
+.pro-field-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+}
+
+.pro-field-label {
+  flex: 0 0 220px;
+  font-size: 13.5px;
+  opacity: 0.85;
+}
+
+.pro-field-row input[type='number'],
+.pro-field-row input[type='text'],
+.pro-field-row select {
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+body.dark-mode .pro-field-row input[type='number'],
+body.dark-mode .pro-field-row input[type='text'],
+body.dark-mode .pro-field-row select {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.pro-field-row input[type='number'] {
+  width: 80px;
+}
+.pro-field-row input[type='text'] {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.pro-field-row select option {
+  color: #333;
+}
+.pro-field-row input:focus,
+.pro-field-row select:focus {
+  outline: none;
+  border-color: rgba(128, 128, 128, 0.55);
+}
+
 .pro-actions-row {
   display: flex;
   align-items: center;

@@ -48,7 +48,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 24 | AI coding agent | DIFFERENT — hanya OpenRouter |
 | 25 | AI session model | DIFFERENT — history per Task, bukan per Workspace; MISSING — ownership |
 | 26 | Browser control | — bersih |
-| 27 | Extra settings page | MISSING — 4 seksi |
+| 27 | Extra settings page | — bersih |
 | 28 | Startup behavior | — bersih |
 | 29 | Task deletion | DITUNDA — pinned task (§22), download preference (§23) |
 | 30 | Workspace deletion | DITUNDA — pinned task (§22) |
@@ -247,12 +247,7 @@ Kemampuan lain sudah ada: tab list/create/close/select, navigate/back/forward/re
 
 ## §27 Extra settings page
 
-- **MISSING** — Seksi **Editor**.
-- **MISSING** — Seksi **Terminal**.
-- **MISSING** — Seksi **Workspace Defaults**.
-- **MISSING** — Seksi **Documents**.
-
-Halaman settings internal hanya punya tab Provider (OpenRouter), Profiles, dan Design (`pages/proSettings/index.html:17-21`; `pages/proSettings/proSettings.js:14-18`). Halaman ini bernama `min://proSettings` alih-alih `min://settings`, tapi blueprint membolehkan variasi itu.
+Seluruh seksi minimal kini ada di `pages/proSettings` (`min://proSettings` — variasi nama yang diizinkan blueprint): AI Provider, Profiles, **Editor** (font size, tab size, word wrap → `editorFontSize`/`editorTabSize`/`editorWordWrap`, dibaca Monaco di `pages/editor/editor.js`), **Terminal** (font size, shell override → `terminalFontSize`/`terminalShell`, dibaca xterm + `getShell` di `main/terminal.js`), **Workspace Defaults** (`defaultWorkspaceProfile` — preselect profil di modal workspace baru), dan **Documents** (`docsDefaultMode` — `initialEditType` editor Toast UI di Docs dan Notes). Settings disimpan lewat store `settings` biasa dan sampai ke halaman internal lewat channel `minViewResource.extra`; berlaku untuk tab yang baru dibuka. Perubahan workspace-specific tetap di modal workspace sesuai spec.
 
 ---
 
@@ -387,6 +382,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 12. **Profile switching hanya menyentuh web tab** (§10). `setWorkspaceProfile` tidak lagi `webviews.destroy` seluruh tab: hanya view web non-private yang dihancurkan dan dibangun ulang lazy di partition baru; editor/terminal/docs/notes/task/layout split bertahan (`webviews.destroy` punya opsi `preserveSplit`).
 13. **Document tools selaras blueprint** (§16). Tool `docs` tetap satu group (katalog agent tidak menggembung), tapi operation-nya memakai nama blueprint verbatim: `listDocuments` (list/search), `readDocument` (by id), `editDocument` (create tanpa id / update dengan id).
 14. **Terminal persistence** (§15). Session record per tab id di main (`tail` + `cwd` + `shell`); cwd dilacak dari proses pty (`/proc`/`lsof`), renderer poll menulisnya ke record tab yang dipersist session restore; scrollback digambar ulang saat restore lewat `minViewResource.extra`. Diverifikasi headless: cwd live setelah `cd`, tail menangkap output, record bersih saat tab ditutup.
+15. **Extra settings sections** (§27). Empat tab baru di Pro Settings: Editor (font size/tab size/word wrap), Terminal (font size/shell), Workspace Defaults (profil bawaan workspace baru), Documents (mode editor bawaan). Preferensi sampai ke halaman internal lewat `minViewResource.extra`; shell dibaca langsung di main lewat `settings`.
 
 ## Ditunda
 

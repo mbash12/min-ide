@@ -12,6 +12,8 @@ const editorParams = new URLSearchParams(window.location.search.replace('?', '')
 the resource moved onto the tab */
 const editorFilePath =
   (window.minViewResource && window.minViewResource.resource) || editorParams.get('path') || ''
+/* user preferences from Pro Settings -> Editor, handed over with the view */
+const editorPrefs = (window.minViewResource && window.minViewResource.extra) || {}
 
 /* resolved once the AMD loader has loaded the editor */
 let monacoEditor = null
@@ -266,11 +268,11 @@ function createEditor (content) {
       theme: 'vs-dark',
       automaticLayout: true,
       minimap: { enabled: true },
-      fontSize: 13,
+      fontSize: editorPrefs.fontSize || 13,
       renderWhitespace: 'selection',
       scrollBeyondLastLine: true,
-      wordWrap: 'off',
-      tabSize: 2
+      wordWrap: editorPrefs.wordWrap === 'on' ? 'on' : 'off',
+      tabSize: editorPrefs.tabSize || 2
     })
 
     monacoEditor.onDidChangeModelContent(function () {

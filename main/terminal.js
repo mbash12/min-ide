@@ -15,6 +15,10 @@ const terminalSessions = {} // tab id: {tail, cwd, shell}
 const MAX_TERMINAL_TAIL = 128 * 1024
 
 function getShell () {
+  const configured = settings.get('terminalShell')
+  if (typeof configured === 'string' && configured.trim()) {
+    return configured.trim()
+  }
   if (process.platform === 'win32') {
     return process.env.ComSpec || 'cmd.exe'
   }

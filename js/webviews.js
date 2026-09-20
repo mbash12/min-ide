@@ -203,11 +203,25 @@ const webviews = {
       resource: (tab && tab.resource) || legacyResourceFromURL(tab && tab.url),
       rootPath: (home && home.path) || null
     }
-    if (tab && tab.kind === 'terminal') {
-      // persisted session state the terminal page redraws on restore (§15)
-      out.extra = {
-        scrollback: tab.terminalScrollback || null,
-        shell: tab.terminalShell || null
+    if (tab && (tab.kind || 'web') !== 'web') {
+      // per-surface extras: persisted state and user preferences, read by
+      // the page through window.minViewResource.extra (§15, §27)
+      const extra = {}
+      if (tab.kind === 'terminal') {
+        extra.scrollback = tab.terminalScrollback || null
+        extra.shell = tab.terminalShell || null
+        extra.fontSize = settings.get('terminalFontSize')
+      }
+      if (tab.kind === 'editor') {
+        extra.fontSize = settings.get('editorFontSize')
+        extra.tabSize = settings.get('editorTabSize')
+        extra.wordWrap = settings.get('editorWordWrap')
+      }
+      if (tab.kind === 'document' || tab.kind === 'note') {
+        extra.defaultMode = settings.get('docsDefaultMode')
+      }
+      if (Object.keys(extra).length > 0) {
+        out.extra = extra
       }
     }
     return out

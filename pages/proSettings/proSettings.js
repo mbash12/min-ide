@@ -14,6 +14,10 @@ var tabButtons = Array.from(document.querySelectorAll('.pro-tab'))
 var panels = {
   provider: document.getElementById('panel-provider'),
   profiles: document.getElementById('panel-profiles'),
+  editor: document.getElementById('panel-editor'),
+  terminal: document.getElementById('panel-terminal'),
+  workspace: document.getElementById('panel-workspace'),
+  documents: document.getElementById('panel-documents'),
   design: document.getElementById('panel-design')
 }
 
@@ -459,6 +463,86 @@ addInput.addEventListener('keydown', function (e) {
 })
 
 renderProfiles()
+
+/* =====================================================================
+   Simple preference tabs (Editor / Terminal / Workspace / Documents)
+   ===================================================================== */
+
+function bindNumberField (inputId, key, fallback, min, max) {
+  var el = document.getElementById(inputId)
+  settings.get(key, function (value) {
+    el.value = (typeof value === 'number' && !isNaN(value)) ? value : fallback
+  })
+  el.addEventListener('change', function () {
+    var n = parseInt(el.value, 10)
+    if (isNaN(n)) n = fallback
+    n = Math.min(max, Math.max(min, n))
+    el.value = n
+    settings.set(key, n)
+  })
+}
+
+function bindTextField (inputId, key) {
+  var el = document.getElementById(inputId)
+  settings.get(key, function (value) {
+    el.value = value || ''
+  })
+  el.addEventListener('change', function () {
+    settings.set(key, el.value.trim() || null)
+  })
+}
+
+function bindCheckboxField (inputId, key) {
+  var el = document.getElementById(inputId)
+  settings.get(key, function (value) {
+    el.checked = value === 'on'
+  })
+  el.addEventListener('change', function () {
+    settings.set(key, el.checked ? 'on' : 'off')
+  })
+}
+
+function bindSelectField (inputId, key, fallback) {
+  var el = document.getElementById(inputId)
+  settings.get(key, function (value) {
+    el.value = value || fallback
+  })
+  el.addEventListener('change', function () {
+    settings.set(key, el.value)
+  })
+}
+
+bindNumberField('editor-font-size', 'editorFontSize', 13, 8, 40)
+bindNumberField('editor-tab-size', 'editorTabSize', 2, 1, 8)
+bindCheckboxField('editor-word-wrap', 'editorWordWrap')
+
+bindNumberField('terminal-font-size', 'terminalFontSize', 13, 8, 40)
+bindTextField('terminal-shell', 'terminalShell')
+
+/* workspace defaults: pick which profile a new workspace starts on */
+var defaultProfileSelect = document.getElementById('workspace-default-profile')
+function populateDefaultProfileSelect () {
+  defaultProfileSelect.textContent = ''
+  var noneOpt = document.createElement('option')
+  noneOpt.value = ''
+  noneOpt.textContent = l('taskProfileDefault')
+  defaultProfileSelect.appendChild(noneOpt)
+  getProfiles().forEach(function (p) {
+    var opt = document.createElement('option')
+    opt.value = p.id
+    opt.textContent = p.name
+    defaultProfileSelect.appendChild(opt)
+  })
+  settings.get('defaultWorkspaceProfile', function (value) {
+    defaultProfileSelect.value = value || ''
+  })
+}
+defaultProfileSelect.addEventListener('change', function () {
+  settings.set('defaultWorkspaceProfile', defaultProfileSelect.value || null)
+})
+populateDefaultProfileSelect()
+
+bindSelectField('docs-default-mode', 'docsDefaultMode', 'wysiwyg')
 
 /* =====================================================================
    Figma engine (global controls)

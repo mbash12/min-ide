@@ -26,7 +26,7 @@ function getCwd () {
 
 const term = new Terminal({
   fontFamily: '"SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace',
-  fontSize: 13,
+  fontSize: (viewRes.extra && viewRes.extra.fontSize) || 13,
   cursorBlink: true,
   allowProposedApi: true,
   /* match the page background so the container padding blends in */
