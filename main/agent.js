@@ -28,8 +28,44 @@ installed on this machine, the SDK's data dirs (sessions, logs, package cache,
 model catalogs) are redirected to Min's own userData via env vars inside
 loadPiSdk() — so Min never merges its data with the laptop's ~/.pi. */
 const PROVIDER_LABELS = {
-  openrouter: 'OpenRouter'
+  openrouter: 'OpenRouter',
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  google: 'Google AI',
+  xai: 'xAI',
+  groq: 'Groq',
+  mistral: 'Mistral',
+  deepseek: 'DeepSeek',
+  'ant-ling': 'Ant Ling',
+  'azure-openai-responses': 'Azure OpenAI',
+  nvidia: 'NVIDIA NIM',
+  'amazon-bedrock': 'Amazon Bedrock',
+  cerebras: 'Cerebras',
+  'cloudflare-ai-gateway': 'Cloudflare AI Gateway',
+  'cloudflare-workers-ai': 'Cloudflare Workers AI',
+  'vercel-ai-gateway': 'Vercel AI Gateway',
+  zai: 'ZAI',
+  'zai-coding-cn': 'ZAI Coding (CN)',
+  opencode: 'OpenCode Zen',
+  'opencode-go': 'OpenCode Go',
+  radius: 'Radius',
+  huggingface: 'Hugging Face',
+  fireworks: 'Fireworks',
+  together: 'Together AI',
+  baseten: 'Baseten',
+  'kimi-coding': 'Kimi For Coding',
+  meta: 'Meta',
+  minimax: 'MiniMax',
+  'minimax-cn': 'MiniMax (CN)',
+  'qwen-token-plan': 'Qwen Token Plan',
+  'qwen-token-plan-individual': 'Qwen Token Plan (Individual)',
+  'qwen-token-plan-cn': 'Qwen Token Plan (CN)',
+  xiaomi: 'Xiaomi MiMo',
+  'xiaomi-token-plan-cn': 'Xiaomi MiMo (CN)',
+  'xiaomi-token-plan-ams': 'Xiaomi MiMo (AMS)',
+  'xiaomi-token-plan-sgp': 'Xiaomi MiMo (SGP)'
 }
+const KNOWN_PROVIDERS = Object.keys(PROVIDER_LABELS)
 const agentSenders = new Set() // webContents that should receive agent events
 
 function loadPiSdk () {
@@ -46,6 +82,8 @@ function loadPiSdk () {
       process.env.PI_CODING_AGENT_DIR = agentDataDir
       process.env.PI_CODING_AGENT_SESSION_DIR = require('path').join(agentDataDir, 'sessions')
       process.env.PI_PACKAGE_DIR = require('path').join(agentDataDir, 'packages')
+      // mirror any stored provider keys into the SDK's auth.json
+      syncProviderAuthFile()
     } catch (err) {}
     sdkPromise = import('@earendil-works/pi-coding-agent').then(function (mod) {
       if (!mod || typeof mod.createAgentSession !== 'function') {
@@ -312,16 +350,93 @@ function scheduleAgentPrefsSave () {
 /* Provider/agent configuration lives in the central DB (kv scopes
  * 'provider_config' and 'ai_config'); Min's settings are only a fallback and
  * an upgrade path - a settings value found there is migrated into the DB. */
-function getProviderApiKey () {
+function getProviderApiKey (provider) {
+  provider = provider || 'openrouter'
   try {
-    const fromDb = kvGet('provider_config', 'openrouterApiKey')
+    const fromDb = kvGet('provider_config', provider + 'ApiKey')
     if (fromDb) return fromDb
   } catch (e) {}
-  const key = settings.get('openrouterApiKey')
-  if (key) {
-    try { kvSet('provider_config', 'openrouterApiKey', key) } catch (e) {}
+  // legacy upgrade path: the OpenRouter key used to live in settings.json
+  if (provider === 'openrouter') {
+    const key = settings.get('openrouterApiKey')
+    if (key) {
+      try { kvSet('provider_config', 'openrouterApiKey', key) } catch (e) {}
+      return key
+    }
   }
-  return key || null
+  return null
+}
+
+function getAllProviderKeys () {
+  const keys = {}
+  try {
+    const all = kvList('provider_config')
+    Object.keys(all).forEach(function (kvKey) {
+      if (kvKey.endsWith('ApiKey') && all[kvKey]) {
+        keys[kvKey.slice(0, -'ApiKey'.length)] = all[kvKey]
+      }
+    })
+  } catch (e) {}
+  // legacy upgrade path: the OpenRouter key used to live in settings.json
+  if (!keys.openrouter) {
+    const key = getProviderApiKey('openrouter')
+    if (key) keys.openrouter = key
+  }
+  return keys
+}
+
+/* runtime api keys are not persisted automatically - install every
+configured key on each fresh ModelRuntime so getAvailable() sees all
+providers */
+async function installProviderKeys (modelRuntime) {
+  const keys = getAllProviderKeys()
+  for (const provider of Object.keys(keys)) {
+    try {
+      await modelRuntime.setRuntimeApiKey(provider, keys[provider])
+    } catch (e) {}
+  }
+  return keys
+}
+
+/* mirrors provider_config api keys into the SDK's own auth.json so
+credentials are resolved natively (auth file takes priority over env vars);
+OAuth and other non-api-key entries are preserved untouched */
+function syncProviderAuthFile () {
+  try {
+    const agentDataDir = require('path').join(require('electron').app.getPath('userData'), 'pi-agent')
+    const authPath = require('path').join(agentDataDir, 'auth.json')
+    let auth = {}
+    try {
+      auth = JSON.parse(fs.readFileSync(authPath, 'utf-8'))
+    } catch (e) {}
+    const keys = getAllProviderKeys()
+    // drop api_key entries for providers no longer configured, keep the rest
+    Object.keys(auth).forEach(function (provider) {
+      if (auth[provider] && auth[provider].type === 'api_key' && !keys[provider]) {
+        delete auth[provider]
+      }
+    })
+    Object.keys(keys).forEach(function (provider) {
+      const existing = auth[provider]
+      if (!existing || existing.type === 'api_key') {
+        auth[provider] = { type: 'api_key', key: keys[provider] }
+      }
+    })
+    fs.mkdirSync(agentDataDir, { recursive: true })
+    require('write-file-atomic').sync(authPath, JSON.stringify(auth, null, 2), { mode: 0o600 })
+  } catch (err) {
+    console.warn('failed to sync provider auth.json', err)
+  }
+}
+
+function invalidateModelCatalog () {
+  modelCatalogCache = null
+}
+
+/* called by dbService whenever provider_config changes */
+function onProviderConfigChanged () {
+  invalidateModelCatalog()
+  syncProviderAuthFile()
 }
 
 function getAgentSetting (key) {
@@ -509,9 +624,9 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
   const effectiveCwd = getEffectiveCwd(cwd)
   const sessionDir = getWorkspaceSessionDir(toolWorkspaceId, cwd)
   const prefs = prefsFor(sessionKey)
-  const apiKey = getProviderApiKey()
   const modelId = prefs.modelId || getAgentSetting('agentModel') || 'anthropic/claude-3.5-sonnet'
   let provider = prefs.provider || getAgentSetting('agentProvider') || 'openrouter'
+  const apiKey = getProviderApiKey(provider)
 
   const existing = agentSessions.get(sessionKey)
   const livePath = getLiveSessionFile(existing)
@@ -532,9 +647,7 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
   await destroySession(sessionKey)
 
   const modelRuntime = await sdk.ModelRuntime.create()
-  if (apiKey) {
-    await modelRuntime.setRuntimeApiKey('openrouter', apiKey)
-  }
+  await installProviderKeys(modelRuntime)
 
   let model = null
   const resolvedProvider = provider
@@ -645,7 +758,7 @@ function snapshotState (taskId, cwd) {
     model: entry ? entry.resolvedModel : null,
     modelId: prefs.modelId || getAgentSetting('agentModel') || 'anthropic/claude-3.5-sonnet',
     provider: prefs.provider || getAgentSetting('agentProvider') || 'openrouter',
-    hasApiKey: !!(getProviderApiKey()),
+    hasApiKey: Object.keys(getAllProviderKeys()).length > 0,
     taskId: taskId,
     cwd: cwd,
     sessionPath: getLiveSessionFile(entry) || prefs.sessionPath || null,
@@ -791,25 +904,66 @@ ipc.on('agent-set-thinking', function (e, data) {
 
 /* settings-page helpers: verify an OpenRouter key against the account
 endpoint and fetch the public model catalog for the model picker */
-ipc.handle('agent-test-key', async function (e, key) {
+ipc.handle('agent-test-key', async function (e, data) {
+  /* accepts {provider, key}; a bare string is treated as an OpenRouter key
+  for backwards compatibility */
+  const provider = (data && data.provider) || 'openrouter'
+  const key = (data && data.key) || (typeof data === 'string' ? data : null)
   if (!key || typeof key !== 'string') {
     return { ok: false, message: 'No API key set.' }
   }
+  if (provider === 'openrouter') {
+    try {
+      const resp = await net.fetch('https://openrouter.ai/api/v1/key', {
+        headers: { Authorization: 'Bearer ' + key }
+      })
+      if (resp.ok) {
+        return { ok: true, message: 'Key valid.' }
+      }
+      let detail = ''
+      try {
+        const body = await resp.json()
+        detail = body && body.error && body.error.message ? ' ' + body.error.message : ''
+      } catch (err) {}
+      return { ok: false, message: 'HTTP ' + resp.status + '.' + detail }
+    } catch (err) {
+      return { ok: false, message: (err && err.message) || String(err) }
+    }
+  }
+  /* generic check for the other providers: install the key on a throwaway
+  runtime and see whether the SDK accepts it (models become available) */
   try {
-    const resp = await net.fetch('https://openrouter.ai/api/v1/key', {
-      headers: { Authorization: 'Bearer ' + key }
-    })
-    if (resp.ok) {
+    const sdk = await loadPiSdk()
+    const modelRuntime = await sdk.ModelRuntime.create()
+    await modelRuntime.setRuntimeApiKey(provider, key)
+    const models = await modelRuntime.getAvailable(provider)
+    if (models && models.length) {
       return { ok: true, message: 'Key valid.' }
     }
-    let detail = ''
-    try {
-      const body = await resp.json()
-      detail = body && body.error && body.error.message ? ' ' + body.error.message : ''
-    } catch (err) {}
-    return { ok: false, message: 'HTTP ' + resp.status + '.' + detail }
+    return { ok: false, message: 'Key rejected or no models for this provider.' }
   } catch (err) {
     return { ok: false, message: (err && err.message) || String(err) }
+  }
+})
+
+/* the providers the installed SDK actually knows, for the Pro Settings
+"add provider" picker - probed live so it tracks the SDK version */
+ipc.handle('agent-list-providers', async function () {
+  try {
+    const sdk = await loadPiSdk()
+    const modelRuntime = await sdk.ModelRuntime.create()
+    return KNOWN_PROVIDERS
+      .map(function (id) {
+        return {
+          id: id,
+          label: PROVIDER_LABELS[id] || id,
+          models: modelRuntime.getModels(id).length,
+          known: !!modelRuntime.getProvider(id)
+        }
+      })
+      .filter(function (p) { return p.known })
+  } catch (err) {
+    return []
   }
 })
 
@@ -820,13 +974,10 @@ ipc.handle('agent-fetch-models', async function () {
   try {
     const sdk = await loadPiSdk()
     const modelRuntime = await sdk.ModelRuntime.create()
-    /* runtime api keys are not persisted to auth.json - the key stored in
-    the central DB has to be installed on this runtime before asking for the
+    /* runtime api keys are not persisted to auth.json - the keys stored in
+    the central DB have to be installed on this runtime before asking for the
     catalog, otherwise getAvailable() reports no providers */
-    const apiKey = getProviderApiKey()
-    if (apiKey) {
-      await modelRuntime.setRuntimeApiKey('openrouter', apiKey)
-    }
+    await installProviderKeys(modelRuntime)
     const available = (await modelRuntime.getAvailable()) || []
     const models = available
       .map(function (m) {

@@ -45,7 +45,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 21 | Tile / Split View | — bersih |
 | 22 | Pinned Tasks | DITUNDA — arah diubah ke pinned tab |
 | 23 | Download preference | DITUNDA — tidak Task-scoped |
-| 24 | AI coding agent | DIFFERENT — hanya OpenRouter |
+| 24 | AI coding agent | — bersih (multi-provider) |
 | 25 | AI session model | — bersih |
 | 26 | Browser control | — bersih |
 | 27 | Extra settings page | — bersih |
@@ -234,9 +234,15 @@ Implementasinya sudah pernah dibuat lengkap dan berfungsi, lalu dibatalkan atas 
 
 ## §24 AI coding agent
 
-- **DIFFERENT** — **"Support multiple providers" tidak terwujud.** Hanya OpenRouter yang bisa dikonfigurasi dan diautentikasi: `PROVIDER_LABELS` hanya berisi `openrouter` (`main/agent.js:30-32`), API key dibaca dari `openrouterApiKey` dan runtime key hanya di-set untuk openrouter (`main/agent.js:402-404,426`), uji key di-hardcode ke endpoint OpenRouter (`main/agent.js:689`), dan halaman settings hanya menyediakan satu input key (`pages/proSettings/index.html:46-53`).
+Seluruh requirement sudah sesuai:
 
-Model picker memang provider-aware lewat katalog SDK, tetapi tidak ada jalur kredensial untuk provider lain.
+- **Multi-provider.** Semua provider API-key yang dikenal pi SDK (~34 id: `openrouter`, `anthropic`, `openai`, `google`, `xai`, `groq`, `mistral`, `deepseek`, `together`, `fireworks`, `cerebras`, `vercel-ai-gateway`, `amazon-bedrock`, dll — `KNOWN_PROVIDERS`, `main/agent.js`). Key tiap provider disimpan di kv `provider_config` sebagai `<id>ApiKey` (plaintext, sesuai spec "boleh plaintext di local DB").
+- **UI CRUD.** Pro Settings → Provider menampilkan hanya provider yang sudah dikonfigurasi (key ter-mask + test + remove), dan satu baris "add" dengan dropdown semua provider yang di-probe live dari SDK (`agent-list-providers`) — tidak ada daftar statis delapan seksi lagi.
+- **Runtime keys.** `installProviderKeys` memasang **semua** key terkonfigurasi ke tiap `ModelRuntime` baru; `syncProviderAuthFile` juga menulisnya ke `<userData>/pi-agent/auth.json` (format `{provider: {type:'api_key', key}}`, mode 0600) sehingga resolusi kredensial native SDK ikut bekerja — entry OAuth/non-api-key tidak disentuh.
+- **Session memilih provider/model sendiri.** Picker menampilkan katalog gabungan lintas provider (`providerLabel`), pilihan disimpan di `prefs.modelId`/`prefs.provider` per session (`agent-set-model`), dan `ensureSession` memakai key milik provider session itu.
+- **Invalidasi katalog** — `kvSet`/`kvDelete` pada scope `provider_config` memanggil `onProviderConfigChanged()` (hook di `main/dbService.js`) yang me-refresh katalog + auth.json; listener `openrouterApiKey` lama tetap ada untuk mirror settings.
+
+Catatan: OAuth/subscription provider tidak diekspos — hanya API key (spec memang tidak memintanya). `agentProvider`/`agentModel` di `ai_config` tetap menjadi default saat session belum memilih model sendiri.
 
 ---
 

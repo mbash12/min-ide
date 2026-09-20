@@ -1,6 +1,14 @@
 /* Pro Settings (min://proSettings) — minimal styling matching the
 sidebar's flat look: no gradients or shadows, hairline separators only. */
 
+/* base.css locks body/html to overflow:hidden for the app shell — this page
+is a document, so re-enable scrolling */
+html,
+body {
+  overflow: auto;
+  height: auto;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -173,6 +181,105 @@ body.dark-mode .pro-provider-badge {
   display: flex;
   align-items: stretch;
   gap: 8px;
+}
+
+/* provider CRUD list */
+
+.pro-provider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+body.dark-mode .pro-provider-row {
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+}
+.pro-provider-row:last-child {
+  border-bottom: none;
+}
+
+.pro-provider-name {
+  font-weight: 600;
+  min-width: 110px;
+}
+
+.pro-provider-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  opacity: 0.65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pro-provider-spacer {
+  flex: 1;
+}
+
+.pro-icon-button {
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  width: 30px;
+  height: 30px;
+}
+body.dark-mode .pro-icon-button {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.pro-icon-button:hover {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.1);
+}
+.pro-icon-button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.pro-provider-add {
+  margin-top: 6px;
+}
+
+.pro-provider-select {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  max-width: 210px;
+}
+body.dark-mode .pro-provider-select {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgb(35, 38, 44);
+}
+
+.pro-provider-key-input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+body.dark-mode .pro-provider-key-input {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.pro-provider-key-input:focus,
+.pro-provider-select:focus {
+  outline: none;
+  border-color: rgba(128, 128, 128, 0.55);
 }
 
 #input-openrouter-key {
