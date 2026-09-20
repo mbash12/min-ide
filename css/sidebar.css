@@ -1486,6 +1486,16 @@ body.dark-mode .agent-history-item-main:hover {
 body.dark-mode .agent-history-item.active .agent-history-item-main {
   background: rgba(255, 255, 255, 0.1);
 }
+/* a session owned by another task is shown but not selectable (§25) */
+.agent-history-item.locked {
+  opacity: 0.55;
+}
+.agent-history-item.locked .agent-history-item-main {
+  cursor: default;
+}
+.agent-history-item.locked .agent-history-item-main:hover {
+  background: transparent;
+}
 .agent-history-item-title,
 .agent-history-item-title * {
   font-size: 13px;

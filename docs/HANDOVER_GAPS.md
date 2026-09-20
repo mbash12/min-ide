@@ -46,7 +46,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 22 | Pinned Tasks | DITUNDA — arah diubah ke pinned tab |
 | 23 | Download preference | DITUNDA — tidak Task-scoped |
 | 24 | AI coding agent | DIFFERENT — hanya OpenRouter |
-| 25 | AI session model | DIFFERENT — history per Task, bukan per Workspace; MISSING — ownership |
+| 25 | AI session model | — bersih |
 | 26 | Browser control | — bersih |
 | 27 | Extra settings page | — bersih |
 | 28 | Startup behavior | — bersih |
@@ -231,9 +231,15 @@ Model picker memang provider-aware lewat katalog SDK, tetapi tidak ada jalur kre
 
 ## §25 AI session model
 
-- **DIFFERENT** — **History di-scope per Task, bukan per Workspace.** Blueprint minta `Workspace └── AI Sessions[]` sehingga semua task melihat history yang sama; kenyataannya session key adalah `'task-' + taskId` (`main/agent.js:91-99`), setiap task punya direktori session ter-hash sendiri (`main/agent.js:231-237`), listing hanya membaca direktori task itu (`main/agent.js:744-777`), dan renderer me-key conversation per task id (`js/sidebar/agentPanel.js:10-13,47-80`).
-- **MISSING** — Model **"0 atau 1 active session per Task"** dengan status `active in Task A` / `available` tidak ada. Drawer history hanya menampilkan session task yang sedang dipilih tanpa label status (`js/sidebar/agentPanel.js:390-433`), dan `agent-open-session` menerima file `.jsonl` mana pun di bawah shared sessions root sehingga satu session bisa dibuka task lain (`main/agent.js:239-249,779-794`).
-- **MISSING** — Perilaku **"Task A melepas Session 1 supaya Task lain bisa memakainya"** tidak ada; session hanya hidup di bawah key/direktori task pemiliknya dan tidak bisa di-detach lalu di-reattach.
+Seluruh requirement sudah sesuai:
+
+- **History scoped ke Workspace.** File session disimpan di `sessions/workspaces/ws-<hash(workspaceId)>` (`getWorkspaceSessionDir`, `main/agent.js`) — semua task di workspace melihat daftar yang sama lewat `agent-list-sessions`. Binding live tetap per task (`sessionKey = task-<id>`), sesuai model "0 atau 1 active session per Task".
+- **Ownership model.** Sebuah session "active in Task A" dicatat sebagai `task.prefs.agentSession` — path file pada record task (konsumen pertama `taskPrefs`, §2). `sessionOwners()` di `agentPanel.js` memetakan `path → task` dari seluruh task workspace.
+- **History UI.** Drawer menampilkan status tiap session: `active` (task ini), `active in <nama task>` (task lain — baris disabled, tidak selectable), atau `available`.
+- **Free a session.** Task membebaskan session-nya dengan membuat chat baru atau switch ke session lain (`syncSessionOwnership` memperbarui pref pada setiap state/reset). Task dihapus → pref ikut mati → session otomatis `available`, dan `agent-destroy-task-session` sudah menghentikan agent-nya.
+- **Delete session** membersihkan pref owner-nya juga. Workspace dihapus → `agent-destroy-workspace-sessions` menghentikan session live semua task + menghapus direktori workspace (spec §30).
+
+Catatan: session yang dibuat sebelum model ini hidup di direktori `sessions/tasks/` lama — tidak ter-list lagi di workspace (migrasi sengaja tidak dibuat, dev-stage).
 
 ---
 
@@ -384,6 +390,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 14. **Terminal persistence** (§15). Session record per tab id di main (`tail` + `cwd` + `shell`); cwd dilacak dari proses pty (`/proc`/`lsof`), renderer poll menulisnya ke record tab yang dipersist session restore; scrollback digambar ulang saat restore lewat `minViewResource.extra`. Diverifikasi headless: cwd live setelah `cd`, tail menangkap output, record bersih saat tab ditutup.
 15. **Extra settings sections** (§27). Empat tab baru di Pro Settings: Editor (font size/tab size/word wrap), Terminal (font size/shell), Workspace Defaults (profil bawaan workspace baru), Documents (mode editor bawaan). Preferensi sampai ke halaman internal lewat `minViewResource.extra`; shell dibaca langsung di main lewat `settings`.
 16. **Task-scoped preferences** (§2). `task.prefs` — map key/value di record task, masuk whitelist restore dan ikut session restore; API `js/taskPrefs.js` (`get`/`getAll`/`set`) resolve lintas workspace. Siap jadi rumah untuk, mis., session id agent per task.
+17. **AI session model** (§25). History session pindah ke scope workspace (`sessions/workspaces/ws-<hash>`); ownership `task.prefs.agentSession` memberi status `active`/`active in Task X`/`available` di drawer, session milik task lain tidak selectable, dan task yang dihapus otomatis melepas session-nya.
 
 ## Ditunda
 

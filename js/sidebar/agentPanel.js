@@ -1,7 +1,8 @@
-/* global ipc, tasks */
+/* global ipc, tasks, workspaces */
 const proSettingsPage = require('util/proSettingsPage.js')
 const agentMarkdown = require('sidebar/agentMarkdown.js')
 const agentSlash = require('sidebar/agentSlash.js')
+const taskPrefs = require('taskPrefs.js')
 
 /* Chat UI for the sidebar's AI tab. The pi agent session runs in the main
 process (main/agent.js); this module renders the streaming transcript and
@@ -77,6 +78,35 @@ function convFor (taskId) {
 
 function currentConv () {
   return convFor(getActiveTaskId())
+}
+
+/* ----- session ownership (HANDOVER §25) -----
+Sessions live at workspace scope; a task claims one by keeping its file path
+in task.prefs.agentSession. The record dies with the task, so a deleted task
+frees its session automatically. At most one task holds a given session. */
+
+function sessionOwners () {
+  const owners = {}
+  const ws = typeof workspaces !== 'undefined' && workspaces.getSelected && workspaces.getSelected()
+  if (!ws) return owners
+  ws.tasks.forEach(function (task) {
+    const path = task.prefs && task.prefs.agentSession
+    if (path) owners[path] = task
+  })
+  return owners
+}
+
+function ownerTaskFor (sessionPath) {
+  return sessionPath ? (sessionOwners()[sessionPath] || null) : null
+}
+
+function taskLabel (task) {
+  return (task && task.name) || 'Task'
+}
+
+function syncSessionOwnership (taskId, sessionPath) {
+  if (!taskId || taskId === 'default') return
+  taskPrefs.set(taskId, 'agentSession', sessionPath || null)
 }
 
 function getModelLabel (modelId) {
@@ -396,10 +426,17 @@ function renderHistoryList (sessions) {
     els.historyList.appendChild(empty)
     return
   }
+  const owners = sessionOwners()
+  const myTaskId = getActiveTaskId()
   sessions.forEach(function (session) {
+    const owner = session.path ? owners[session.path] : null
+    const mine = owner ? String(owner.id) === myTaskId : false
+    const locked = !!(owner && !mine)
+
     const row = document.createElement('div')
     row.className = 'agent-history-item'
-    if (session.path && session.path === currentSessionPath) row.classList.add('active')
+    if (mine || (session.path && session.path === currentSessionPath)) row.classList.add('active')
+    if (locked) row.classList.add('locked')
 
     const main = document.createElement('button')
     main.type = 'button'
@@ -410,9 +447,15 @@ function renderHistoryList (sessions) {
     const meta = document.createElement('div')
     meta.className = 'agent-history-item-meta'
     const count = session.messageCount === 1 ? '1 message' : (session.messageCount || 0) + ' messages'
-    meta.textContent = formatHistoryTime(session.modified) + ' · ' + count
+    const status = owner
+      ? (mine ? ' · active' : ' · active in ' + taskLabel(owner))
+      : ' · available'
+    meta.textContent = formatHistoryTime(session.modified) + ' · ' + count + status
     main.appendChild(title)
     main.appendChild(meta)
+    /* a session owned by another task is not selectable - its task has to
+    create a new chat or switch first (HANDOVER §25) */
+    main.disabled = locked
     main.addEventListener('click', function () {
       switchToSession(session.path)
     })
@@ -434,6 +477,8 @@ function renderHistoryList (sessions) {
 
 async function switchToSession (sessionPath) {
   if (!sessionPath) return
+  const owner = ownerTaskFor(sessionPath)
+  if (owner && String(owner.id) !== getActiveTaskId()) return
   if (sessionPath === currentSessionPath) {
     closeHistoryDrawer()
     return
@@ -457,6 +502,9 @@ async function deleteHistorySession (sessionPath) {
   try {
     const result = await ipc.invoke('agent-delete-session', agentPayload({ path: sessionPath }))
     if (!result || result.ok === false) return
+    /* free the deleted file from whichever task held it */
+    const owner = ownerTaskFor(sessionPath)
+    if (owner) syncSessionOwnership(String(owner.id), null)
     if (result.deletedCurrent) {
       applyTaskState(result.state)
     }
@@ -471,6 +519,7 @@ function applyTaskState (state) {
   conv.assistantMsg = null
   conv.thinking = ''
   currentSessionPath = state.sessionPath || null
+  syncSessionOwnership(getActiveTaskId(), state.sessionPath)
   if (state.modelId) {
     els.modelLabel.textContent = getModelLabel(state.modelId)
     els.modelLabel.dataset.modelId = state.modelId
@@ -1353,6 +1402,7 @@ function applyEvent (ev) {
       conv.thinking = ''
       if (active) {
         currentSessionPath = null
+        syncSessionOwnership(getActiveTaskId(), null)
         clearActiveConversation()
       }
       break
@@ -1396,6 +1446,9 @@ async function refreshState () {
   try {
     const state = await ipc.invoke('agent-get-state', agentPayload({ restore: true }))
     if (!state) return
+    /* the state belongs to the task it was queried for - keep its ownership
+    record correct even if the user moved to another task meanwhile */
+    syncSessionOwnership(taskInfo.taskId, state.sessionPath)
     if (taskInfo.taskId === activeTaskId) {
       applyTaskState(state)
     } else {
@@ -1431,8 +1484,13 @@ async function initialize () {
   buildUI()
 
   /* re-scope the chat whenever the task changes, like the other sidebar
-  panels (file tree, git) re-scope on workspace change */
+  panels (file tree, git) re-scope on workspace change. activeTaskId is
+  written with emit=false so 'workspace-updated' never fires for it - the
+  inner TaskList's 'task-selected' is forwarded by the store instead. */
   workspaces.on('workspace-selected', onWorkspaceChange)
+  workspaces.on('task-selected', function (taskId) {
+    onTaskChange(taskId)
+  })
   workspaces.on('workspace-updated', function (id, key) {
     if (key === 'activeTaskId') {
       onTaskChange(workspaces.get(id) && workspaces.get(id).activeTaskId)

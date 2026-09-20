@@ -223,17 +223,21 @@ function getSessionsRoot () {
   }
 }
 
-/* SessionManager's default directory is keyed by cwd. Min tasks need a
- * stronger boundary: two tasks may intentionally share a cwd (they can live in
- * the same workspace), and a task's workspace may have no folder at all. Keep
- * each task in its own stable directory below Min's userData-backed sessions
- * root. Hashing the key keeps arbitrary task ids out of the filesystem path. */
-function getTaskSessionDir (taskId, cwd) {
+/* SessionManager's default directory is keyed by cwd. Min workspaces need a
+ * stronger boundary: the blueprint scopes AI sessions to the Workspace
+ * (Workspace -> AI Sessions[]), and every task in the workspace shares that
+ * history - which task currently owns a session is a renderer-side matter
+ * (task.prefs.agentSession), not a storage one. A workspace may also have no
+ * folder at all, so key by workspace id. Hashing keeps arbitrary ids out of
+ * the filesystem path. */
+function getWorkspaceSessionDir (workspaceId, cwd) {
   const sessionsRoot = getSessionsRoot()
   if (!sessionsRoot) return null
-  const sessionKey = getSessionKey(taskId, cwd)
-  const digest = require('crypto').createHash('sha256').update(sessionKey).digest('hex')
-  return require('path').join(sessionsRoot, 'tasks', 'task-' + digest)
+  const key = (workspaceId && workspaceId !== 'default')
+    ? 'ws-' + String(workspaceId)
+    : getSessionKey(null, cwd)
+  const digest = require('crypto').createHash('sha256').update(key).digest('hex')
+  return require('path').join(sessionsRoot, 'workspaces', 'ws-' + digest)
 }
 
 /* The per-task session pointer has to outlive a restart: without it a task
@@ -407,18 +411,10 @@ async function resolveSessionFile (sdk, effectiveCwd, sessionDir, options, prefs
     return { path: prefs.sessionPath }
   }
   if (options.restoreRecent) {
-    if (prefs.skipRestore) return { path: null, none: true }
-    try {
-      const listed = await listTaskSessions(sdk, effectiveCwd, sessionDir)
-      if (listed && listed.length) {
-        listed.sort(function (a, b) {
-          return (+new Date(b.modified)) - (+new Date(a.modified))
-        })
-        if (listed[0] && listed[0].path && fs.existsSync(listed[0].path)) {
-          return { path: listed[0].path }
-        }
-      }
-    } catch (e) {}
+    /* A task only ever restores the session it actually had open. The session
+    directory is shared workspace-wide now, so "the most recent file in it"
+    would often be another task's chat - a task with no saved pointer simply
+    has no session. */
     return { path: null, none: true }
   }
   return { path: null }
@@ -474,7 +470,7 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
   const sessionKey = getSessionKey(taskId, cwd)
   const clientTaskId = getClientTaskId(taskId)
   const effectiveCwd = getEffectiveCwd(cwd)
-  const sessionDir = getTaskSessionDir(taskId, cwd)
+  const sessionDir = getWorkspaceSessionDir(toolWorkspaceId, cwd)
   const prefs = prefsFor(sessionKey)
   const apiKey = settings.get('openrouterApiKey') || null
   const modelId = prefs.modelId || settings.get('agentModel') || 'anthropic/claude-3.5-sonnet'
@@ -787,6 +783,13 @@ ipc.handle('agent-fetch-models', async function () {
   try {
     const sdk = await loadPiSdk()
     const modelRuntime = await sdk.ModelRuntime.create()
+    /* runtime api keys are not persisted to auth.json - the key stored in
+    Min's settings has to be installed on this runtime before asking for the
+    catalog, otherwise getAvailable() reports no providers */
+    const apiKey = settings.get('openrouterApiKey')
+    if (apiKey) {
+      await modelRuntime.setRuntimeApiKey('openrouter', apiKey)
+    }
     const available = (await modelRuntime.getAvailable()) || []
     const models = available
       .map(function (m) {
@@ -804,6 +807,11 @@ ipc.handle('agent-fetch-models', async function () {
     modelCatalogCache = []
   }
   return modelCatalogCache
+})
+
+/* a changed provider key means a different catalog - refetch on demand */
+settings.listen('openrouterApiKey', function () {
+  modelCatalogCache = null
 })
 
 ipc.handle('agent-get-state', async function (e, data) {
@@ -828,7 +836,7 @@ ipc.handle('agent-list-sessions', async function (e, data) {
     const listed = await listTaskSessions(
       sdk,
       getEffectiveCwd(cwd),
-      getTaskSessionDir(taskId, cwd)
+      getWorkspaceSessionDir(data && data.workspaceId, cwd)
     )
     let items = listed || []
     if (query) {
@@ -880,12 +888,12 @@ ipc.on('agent-destroy-task-session', function (e, data) {
   } catch (err) {}
 })
 
-/* Deletes a task's transcripts from disk. Used when a workspace is removed:
- * the sessions can never be listed again once their tasks are gone, so leaving
+/* Deletes a workspace's transcripts from disk. Used when a workspace is
+ * removed: the sessions can never be listed again once it is gone, so leaving
  * the files behind would only orphan them. Strictly confined to the sessions
  * root, like every other path this module writes to. */
-function deleteTaskSessionFiles (taskId) {
-  const dir = getTaskSessionDir(taskId, null)
+function deleteWorkspaceSessionFiles (workspaceId) {
+  const dir = getWorkspaceSessionDir(workspaceId, null)
   const sessionsRoot = getSessionsRoot()
   if (!dir || !sessionsRoot) return
 
@@ -898,22 +906,23 @@ function deleteTaskSessionFiles (taskId) {
   try {
     fs.rmSync(resolved, { recursive: true, force: true })
   } catch (err) {
-    console.warn('failed to delete agent sessions for task', taskId, err)
+    console.warn('failed to delete agent sessions for workspace', workspaceId, err)
   }
 }
 
-/* Safety net for workspace close: stops sessions for the given task ids in
-windows whose session keys may differ (different cwd fallback). */
+/* Workspace close: stops the running sessions of the given tasks and deletes
+ * the workspace's transcript directory. Task deletion alone only stops the
+ * live session - its file stays and becomes available to other tasks. */
 ipc.on('agent-destroy-workspace-sessions', function (e, data) {
   try {
     const taskIds = (data && data.taskIds) || []
     taskIds.forEach(function (taskId) {
       const sessionKey = getSessionKey(taskId, null)
       destroySession(sessionKey)
-      deleteTaskSessionFiles(taskId)
       // the task is gone, so its saved pointer is dead weight
       forgetSessionPrefs(sessionKey)
     })
+    deleteWorkspaceSessionFiles(data && data.workspaceId)
   } catch (err) {}
 })
 
