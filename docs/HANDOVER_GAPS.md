@@ -23,7 +23,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 
 | § | Topik | Gap |
 | --- | --- | --- |
-| 2 | Core hierarchy | DIFFERENT — task-scoped preferences |
+| 2 | Core hierarchy | — bersih |
 | 3 | Favicon | — bersih |
 | 4 | Workspace model | DITUNDA — `sidebarState` |
 | 5 | Workspace switching | — bersih |
@@ -65,9 +65,9 @@ Dua hal yang paling sering muncul sebagai akar gap: **tab metadata tidak ada** (
 
 ## §2 Core hierarchy
 
-- **DIFFERENT** — Satu anggota model di level Task masih belum ada: **task-scoped preferences**. Tidak ada store untuk preferensi per task. (Tiled relationships sudah terpenuhi: task membawa `splitState` — `js/tabState/task.js:49-52`, diisi oleh `js/splitView.js`.)
+Seluruh anggota model kini ada. **Task-scoped preferences** diimplementasikan sebagai `task.prefs` — map key/value JSON di record task yang ikut whitelist restore (`js/tabState/task.js`) dan tersimpan lewat session restore biasa. API-nya modul `js/taskPrefs.js` (`get`/`getAll`/`set`, hapus key dengan nilai null), resolve task lintas workspace lewat `workspaces.findTask`/`findWorkspaceContainingTask`. Belum ada konsumen — siap dipakai, mis. session id agent per task (§25). Diverifikasi: prefs serialize → restore → clear semuanya round-trip.
 
-Hierarki `Workspace → Task → Tab` itu sendiri **sudah nyata** (bukan lagi alias) dan tidak dicatat sebagai gap.
+Hierarki `Workspace → Task → Tab` itu sendiri sudah nyata (bukan lagi alias).
 
 ---
 
@@ -383,6 +383,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 13. **Document tools selaras blueprint** (§16). Tool `docs` tetap satu group (katalog agent tidak menggembung), tapi operation-nya memakai nama blueprint verbatim: `listDocuments` (list/search), `readDocument` (by id), `editDocument` (create tanpa id / update dengan id).
 14. **Terminal persistence** (§15). Session record per tab id di main (`tail` + `cwd` + `shell`); cwd dilacak dari proses pty (`/proc`/`lsof`), renderer poll menulisnya ke record tab yang dipersist session restore; scrollback digambar ulang saat restore lewat `minViewResource.extra`. Diverifikasi headless: cwd live setelah `cd`, tail menangkap output, record bersih saat tab ditutup.
 15. **Extra settings sections** (§27). Empat tab baru di Pro Settings: Editor (font size/tab size/word wrap), Terminal (font size/shell), Workspace Defaults (profil bawaan workspace baru), Documents (mode editor bawaan). Preferensi sampai ke halaman internal lewat `minViewResource.extra`; shell dibaca langsung di main lewat `settings`.
+16. **Task-scoped preferences** (§2). `task.prefs` — map key/value di record task, masuk whitelist restore dan ikut session restore; API `js/taskPrefs.js` (`get`/`getAll`/`set`) resolve lintas workspace. Siap jadi rumah untuk, mis., session id agent per task.
 
 ## Ditunda
 

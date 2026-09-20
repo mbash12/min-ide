@@ -50,6 +50,9 @@ class TaskList {
       // listed here because this constructor is the restore whitelist: fields
       // that are not copied over are dropped when the session is restored.
       splitState: task.splitState || null,
+      // FORK: task-scoped preferences (HANDOVER §2), a plain JSON key/value
+      // map written via js/taskPrefs.js. null until first use.
+      prefs: task.prefs || null,
     }
 
     if (index) {
