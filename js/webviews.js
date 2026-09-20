@@ -321,10 +321,13 @@ const webviews = {
   update: function (id, url) {
     ipc.send('loadURLInView', { id: id, url: urlParser.parse(url) })
   },
-  destroy: function (id) {
+  destroy: function (id, options) {
     // if the destroyed tab is part of a split view, exit split mode first
-    // (this also determines which tab remains visible)
-    if (webviews.splitProvider && webviews.splitProvider.getGroupForTab && webviews.splitProvider.getGroupForTab(id)) {
+    // (this also determines which tab remains visible). preserveSplit skips
+    // that teardown for callers that will re-show the same group afterwards
+    // (e.g. profile switching recreates web views but keeps the layout).
+    if (!(options && options.preserveSplit) &&
+      webviews.splitProvider && webviews.splitProvider.getGroupForTab && webviews.splitProvider.getGroupForTab(id)) {
       webviews.splitProvider.handleTabDestroyed(id)
     }
 

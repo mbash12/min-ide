@@ -31,7 +31,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 7 | Archive Workspace | DITUNDA — auto-unpin (§22) |
 | 8 | Missing workspace path | — bersih |
 | 9 | Profiles | — bersih |
-| 10 | Profile switching | DIFFERENT — semua view dibongkar, bukan hanya web tab |
+| 10 | Profile switching | — bersih |
 | 11 | Clear Profile Data | — bersih |
 | 12 | Central database | MISSING — sebagian besar tabel; DIFFERENT — JSON, bukan DB |
 | 13 | Tabs | — bersih |
@@ -115,7 +115,7 @@ Delete kini **diblokir** selama profile masih dipakai workspace — termasuk wor
 
 ## §10 Profile switching
 
-- **DIFFERENT** — Mengganti profile sebuah workspace membongkar **semua** view, bukan hanya web tab. `setWorkspaceProfile` mengiterasi seluruh tab di seluruh task dan memanggil `webviews.destroy(tab.id)` (`js/browserUI.js:326-331`), sehingga tab editor (Monaco) dan terminal ikut mati — bertentangan dengan "editor tidak berubah, terminal tidak berubah". PTY terminal mati karena di-key ke `webContents` yang dihancurkan (`main/terminal.js:82-84`).
+Seluruh requirement sudah sesuai. `setWorkspaceProfile` (`js/browserUI.js`) sekarang hanya membongkar view **web tab** — partition adalah webPreference saat create dan tidak bisa ditukar pada webContents hidup, jadi view web dihancurkan lalu dibangun ulang lazy di partition baru. Editor (Monaco), terminal (PTY ikut hidup karena `webContents`-nya tidak dihancurkan), documents, notes, task, dan layout split semuanya tidak berubah: `webviews.destroy` mendapat opsi `preserveSplit` sehingga group tidak dibongkar, dan `splitView.showSplit`/`switchToTab` membangun ulang view yang hilang. Tab private dilewati karena memakai partition per-tab sendiri, bukan milik profile — tidak ada data profile lama yang bisa bocor lewat mereka. Untuk workspace yang tidak sedang dipilih, view web-nya (kalau ada) dihancurkan dan tercipta kembali saat workspace dibuka.
 
 ---
 
@@ -384,6 +384,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 9. **Source mode Documents** (§16, §33). `hideModeSwitch` dilepas dari editor Docs, jadi tombol switch WYSIWYG ↔ Markdown kini tampil — editor Notes memakai konfigurasi yang sama.
 10. **Mermaid** (§16, §33 Phase 5). `mermaid@11` terintegrasi di kedua surface editor: swap `pre` → `.mermaid` di preview Markdown, dan `Decoration.widget` ProseMirror di bawah code block WYSIWYG (kode tetap editable). Render lewat `mermaid.render` terserialisasi, guard pane tersembunyi, key widget = hash source untuk reuse DOM. Diverifikasi headless: render awal + re-render setelah edit source.
 11. **Profile Clear Data + delete-blocking** (§9, §11). Dialog Clear Data per profile (termasuk Default) dengan pilihan jenis data; IPC `clearProfileData` memvalidasi partition dan membersihkan `clearStorageData`/`clearCache` sesuai pilihan; web tab hidup di workspace pemakai di-reload. Delete profile diblokir bila masih dipakai workspace (`in-use` + daftar nama). Diverifikasi headless: partition invalid/no-types ditolak, cookie nyata terhapus setelah clear.
+12. **Profile switching hanya menyentuh web tab** (§10). `setWorkspaceProfile` tidak lagi `webviews.destroy` seluruh tab: hanya view web non-private yang dihancurkan dan dibangun ulang lazy di partition baru; editor/terminal/docs/notes/task/layout split bertahan (`webviews.destroy` punya opsi `preserveSplit`).
 
 ## Ditunda
 

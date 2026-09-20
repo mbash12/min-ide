@@ -301,9 +301,12 @@ function setWindowTitle () {
   }
 }
 
-/* changes the profile (session partition) used by a workspace. All existing
-views of the workspace's tasks are destroyed so they get recreated with the
-new partition. */
+/* changes the profile (session partition) used by a workspace. Only web tab
+views are recreated: a partition is a creation-time webPreference, so it
+cannot be swapped on a live webContents - the web tabs' views are destroyed
+and lazily rebuilt on the new partition, while editor/terminal/document/note
+tabs, tasks, and the split layout all stay untouched. Private tabs keep their
+own per-tab partition and are not affected either. */
 
 function setWorkspaceProfile (workspaceId, profileId, options) {
   options = options || {}
@@ -316,28 +319,31 @@ function setWorkspaceProfile (workspaceId, profileId, options) {
     return true
   }
 
-  const allTabs = ws.tasks.map(task => task.tabs.get()).reduce((all, arr) => all.concat(arr), [])
-  if (!options.skipDirtyCheck && !confirmDiscardTabs(allTabs)) {
-    return false
-  }
+  // update the record first so any view recreated from now on gets the new
+  // partition
+  workspaces.update(workspaceId, { profileId: profileId })
 
-  // Drop every group, including paused groups, before replacing the views.
-  splitView.clearAll()
+  const isSelected = !!(workspaces.getSelected() && workspaces.getSelected().id === workspaceId)
+  const selectedTabId = isSelected && tasks.getSelected() && tasks.getSelected().tabs.getSelected()
 
   ws.tasks.forEach(function (task) {
     task.tabs.get().forEach(function (tab) {
-      editorView.allowDiscard(tab.id)
-      webviews.destroy(tab.id)
+      if ((tab.kind || 'web') !== 'web' || tab.private) {
+        return
+      }
+      webviews.destroy(tab.id, { preserveSplit: true })
     })
   })
 
-  workspaces.update(workspaceId, { profileId: profileId })
-
-  if (workspaceId === workspaces.getSelected().id) {
-    var selectedTab = tasks.getSelected() && tasks.getSelected().tabs.getSelected()
-    if (selectedTab) {
-      switchToTab(selectedTab, { focusWebview: true })
-    } else {
+  if (isSelected) {
+    // rebuild the visible surface: showSplit recreates missing pane views,
+    // switchToTab recreates a destroyed selected tab (no-op for live views)
+    if (splitView.isSplit()) {
+      splitView.showSplit()
+    }
+    if (selectedTabId) {
+      switchToTab(selectedTabId, { focusWebview: true })
+    } else if (tasks.getSelected() && tasks.getSelected().tabs.count() === 0) {
       addTab()
     }
   }
