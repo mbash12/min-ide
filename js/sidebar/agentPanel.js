@@ -604,6 +604,19 @@ function openThinkingPopover (anchor) {
 }
 
 function openModelPopover (anchor) {
+  /* the catalog is fetched once at startup - if that ran before an API key
+  existed (or failed), refetch on open and re-render so the picker is not
+  stuck empty */
+  if (!modelsCache || modelsCache.length === 0) {
+    ipc.invoke('agent-fetch-models').then(function (models) {
+      if (models && models.length) {
+        modelsCache = models
+        if (list.isConnected) {
+          render(search.value)
+        }
+      }
+    }).catch(function () {})
+  }
   const p = buildPopover(anchor)
   p.classList.add('agent-popover-models')
   const search = document.createElement('input')

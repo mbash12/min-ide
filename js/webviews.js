@@ -546,6 +546,18 @@ webviews.bindEvent('page-title-updated', function (tabId, title, explicitSet) {
   })
 })
 
+/* safety net: page-title-updated is a pushed event and can be missed (e.g.
+when a view is recreated mid-navigation or the renderer is busy), so pull the
+final title once loading settles */
+webviews.bindEvent('did-stop-loading', function (tabId) {
+  webviews.callAsync(tabId, 'getTitle', function (err, title) {
+    const tab = tabs.get(tabId)
+    if (!err && title && tab && tab.title !== title) {
+      tabs.update(tabId, { title: title })
+    }
+  })
+})
+
 webviews.bindEvent('did-fail-load', function (tabId, errorCode, errorDesc, validatedURL, isMainFrame) {
   if (errorCode && errorCode !== -3 && isMainFrame && validatedURL) {
     webviews.update(tabId, webviews.internalPages.error + '?ec=' + encodeURIComponent(errorCode) + '&url=' + encodeURIComponent(validatedURL))

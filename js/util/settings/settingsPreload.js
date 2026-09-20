@@ -68,7 +68,8 @@ window.addEventListener('message', function (e) {
       'db:getProfiles', 'db:saveProfile', 'db:deleteProfile',
       'db:getSnapshots', 'db:saveSnapshot', 'db:deleteSnapshot',
       'db:getDesigns', 'db:saveDesign', 'db:deleteDesign',
-      'db:logTabActivity', 'db:getTabActivities'
+      'db:logTabActivity', 'db:getTabActivities',
+      'db:kvGet', 'db:kvSet', 'db:kvDelete', 'db:kvList'
     ]
     if (allowedDbActions.indexOf(e.data.action) === -1) {
       return

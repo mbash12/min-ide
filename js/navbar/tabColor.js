@@ -184,7 +184,18 @@ function setColor (bg, fg, isLowContrast) {
 a plain refresh emits nothing, so the navigation reset below would leave the
 tab on the globe icon forever. Cache the favicon per page URL and restore it
 on navigations we have seen before. */
-const faviconCache = new Map() // page URL -> {url, luminance}
+const faviconCache = new Map() // site host -> {url, luminance}
+
+/* key the cache by host so redirects between subdomains (facebook.com ->
+www.facebook.com) still hit; the favicon is only a placeholder until the
+real page-favicon-updated event arrives anyway */
+function faviconCacheKey (url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch (e) {
+    return url
+  }
+}
 
 const tabColor = {
   useSiteTheme: false, // default to the theme colors (keeps the tab bar readable); opt in via the siteTheme setting
@@ -217,7 +228,22 @@ const tabColor = {
       if (isMainFrame && isInPlace === false) {
         tabs.update(tabId, {
           backgroundColor: null,
-          favicon: faviconCache.get(url) || null
+          favicon: faviconCache.get(faviconCacheKey(url)) || null
+        })
+      }
+    })
+
+    /* if no favicon arrived by the end of the load (the pushed event can be
+    missed), read the declared icon from the DOM once loading settles */
+    webviews.bindEvent('did-stop-loading', function (tabId) {
+      const tab = tabs.get(tabId)
+      if (tab && !(tab.favicon && tab.favicon.url)) {
+        webviews.callAsync(tabId, 'executeJavaScript', [
+          "(function(){var l=document.querySelector('link[rel~=icon], link[rel=\"shortcut icon\"]');return l?l.href:null})()"
+        ], function (err, iconUrl) {
+          if (!err && iconUrl) {
+            tabColor.updateFromImage([iconUrl], tabId)
+          }
         })
       }
     })
@@ -281,7 +307,7 @@ const tabColor = {
     if (tab) {
       const favicon = { url: iconUrl, luminance: null }
       tabs.update(tabId, { favicon })
-      if (tab.url) faviconCache.set(tab.url, favicon)
+      if (tab.url) faviconCache.set(faviconCacheKey(tab.url), favicon)
     }
 
     requestIdleCallback(function () {
@@ -308,7 +334,7 @@ const tabColor = {
           favicon
         })
         const current = tabs.get(tabId)
-        if (current && current.url) faviconCache.set(current.url, favicon)
+        if (current && current.url) faviconCache.set(faviconCacheKey(current.url), favicon)
 
         if (callback) {
           callback()
