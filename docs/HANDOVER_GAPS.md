@@ -33,7 +33,7 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 9 | Profiles | — bersih |
 | 10 | Profile switching | — bersih |
 | 11 | Clear Profile Data | — bersih |
-| 12 | Central database | MISSING — sebagian besar tabel; DIFFERENT — JSON, bukan DB |
+| 12 | Central database | OK — SQLite di main process; ACCEPTED — session blob tersimpan sebagai satu nilai kv, tidak dinormalisasi per entity |
 | 13 | Tabs | — bersih |
 | 14 | Monaco editor | — bersih |
 | 15 | Terminal | — bersih |
@@ -129,13 +129,24 @@ Cascade ke live workspace terpenuhi: setelah partition dibersihkan, setiap **web
 
 ## §12 Central database
 
-- **DIFFERENT** — Yang ada bukan database melainkan **satu file JSON**. `main/dbService.js` menyimpan seluruh state di objek in-memory dan menuliskannya atomik sebagai `custom_app_data.db` (`main/dbService.js:22-31,150-158`). `CENTRALIZED_SQLITE_PLAN.md` belum dijalankan.
-- **MISSING** — `workspaces`, `workspace_state`, `task_extra_state`, dan `tab_extra_metadata` tidak ada di DB. State workspace/task/tab ditulis ke `sessionRestore.json` + `localStorage['taskRestoreData']` (`js/sessionRestore.js:19-61`). Permukaan IPC DB hanya mencakup preferences/profiles/snapshots/designs/documents/notes/activities (`main/dbService.js`).
-- **DIFFERENT** — `profiles` disimpan utama di `localStorage['workspaceProfiles']`; DB hanya mirror sekunder (`js/profiles.js:11-44`; `pages/proSettings/proSettings.js:147-164`).
-- **DIFFERENT** — `sidebar_state` tidak di DB melainkan di IndexedDB Dexie (`js/util/uiStateDB.js:13-29,44-60`).
-- **MISSING** — `tile_state` tidak punya storage sama sekali. (`notes` kini ada sebagai collection tersendiri — lihat §17.)
-- **DIFFERENT** — AI config/provider tidak di DB melainkan di `settings.json` dan Map in-memory (`main/agent.js:22,402-404`; `js/util/settings/settings.js:16-44`).
-- **DIFFERENT** — Empat collection di `dbService` adalah **dead code** (nol pemanggil di luar layer DB): `user_preferences`, `workspace_snapshots`, `design_documents`, `tab_activities` (`main/dbService.js:23-31`; wrapper IPC-nya masih ada di `js/util/customDataStore.js:52-79`).
+**OK — database sentral nyata sekarang.** `main/dbService.js` memakai `node:sqlite` (bawaan runtime Node di Electron 43 — tanpa dependensi native) di `<userData>/min.db` dengan WAL. File JSON lama `custom_app_data.db` diimpor sekali lalu di-rename `.migrated`. Semua IPC `db:*` dan API `customDataStore` tidak berubah.
+
+Tabel nyata: `user_preferences`, `workspace_profiles`, `workspace_snapshots`, `design_documents`, `documents`, `notes`, `tab_activities`, dan `kv_store` generik `(scope, key, value)` untuk state yang belum punya tabel khusus. Scope kv yang dipakai:
+
+| Scope | Isi | Catatan |
+| --- | --- | --- |
+| `workspace_state` | blob session `workspaces → tasks → tabs` (key `session`) | **Primary store** via `ipc.sendSync` di `js/sessionRestore.js`; `sessionRestore.json` tetap ditulis sebagai backup crash |
+| `task_extra_state` | `task.prefs` | mirror dari session blob (ditulis oleh `js/taskPrefs.js`) |
+| `tab_extra_metadata` | scope tersedia | metadata tab (favicon, scrollback, `extra`) ikut di blob session |
+| `sidebar_state` | sidebar per-workspace, git panel, file tree, recent file searches | `js/util/uiStateDB.js` — Dexie/IndexedDB diimpor sekali lalu dihapus |
+| `tile_state` | `task.splitState` | mirror debounced dari `js/splitView.js` persist |
+| `ai_config` | pointer session agent (`sessionPrefs`), `agentModel`, `agentProvider` | `main/agent.js` |
+| `provider_config` | `openrouterApiKey` | `main/agent.js` + `pages/proSettings` |
+
+- **OK** — `profiles` kini authoritative di DB; `localStorage['workspaceProfiles']` hanya cache sinkron untuk partition lookup (`js/profiles.js`).
+- **ACCEPTED** — state workspace/task/tab tersimpan sebagai **satu blob JSON** di `workspace_state`, bukan baris ternormalisasi per entity. Menormalisasi berarti rewrite session-restore dengan risiko tinggi; blob tetap berada di DB sentral, dan `task_extra_state`/`tile_state` tersedia sebagai proyeksi per-task untuk query. `tab_extra_metadata` belum punya writer karena metadata tab sudah ikut di blob.
+- **DIFFERENT (kecil)** — copy sekunder masih ditulis untuk resiliensi: `sessionRestore.json`, `localStorage['taskRestoreData']`, `agent-prefs.json`, dan mirror `openrouterApiKey` di `settings.json` (juga menjadi pemicu invalidasi katalog model). DB tetap yang dibaca lebih dulu.
+- **Catatan** — empat tabel masih rendah pemakaian (`user_preferences`, `workspace_snapshots`, `design_documents`, `tab_activities`) — disediakan untuk fitur lanjutan.
 
 Yang sudah sesuai: website storage tetap di Electron session partition, tidak dipindah ke DB custom.
 
@@ -311,7 +322,7 @@ Yang sudah benar dan terverifikasi: `origin` = `github.com/mbash12/min-ide`, `up
 ## §33 Implementation order
 
 **Phase 1 — Foundation**
-- central DB — **belum**: masih satu file JSON dan workspaces/tabs tidak ada di dalamnya (`main/dbService.js:8,23-31,150-158`; `js/sessionRestore.js:19`).
+- central DB — **selesai**: `node:sqlite` `min.db` (WAL) di main process dengan migrasi JSON satu kali; session state di kv `workspace_state`, sidebar/git/tree di `sidebar_state`, provider/AI config di `provider_config`/`ai_config` (lihat §12).
 - Sisanya selesai: fork build/run, favicon, Workspace model, Profile model, Workspace drawer, workspace persistence, dan hierarki `Workspace → Task → Tab`.
 
 **Phase 2 — Workspace runtime**

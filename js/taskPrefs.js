@@ -35,6 +35,14 @@ const taskPrefs = {
       prefs[key] = value
     }
     ws.tasks.update(taskId, { prefs: Object.keys(prefs).length > 0 ? prefs : null })
+    /* mirror to the central DB under the 'task_extra_state' scope so the
+    data also exists as a queryable collection; the session blob stays the
+    runtime source of truth */
+    try {
+      require('util/customDataStore.js')
+        .kvSet('task_extra_state', taskId, Object.keys(prefs).length > 0 ? prefs : null)
+        .catch(function () {})
+    } catch (e) {}
     return true
   }
 }

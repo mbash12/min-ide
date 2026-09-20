@@ -46,6 +46,13 @@ const sessionRestore = {
     }
 
     if (forceSave === true || stateString !== sessionRestore.previousState) {
+      /* the central DB is the source of truth; the JSON file stays as an
+      async crash-backup, and localStorage keeps its legacy copy */
+      try {
+        ipc.sendSync('db:kvSetSync', { scope: 'workspace_state', key: 'session', value: data })
+      } catch (e) {
+        console.warn('failed to save session to DB', e)
+      }
       try {
         localStorage.setItem('taskRestoreData', JSON.stringify(data))
       } catch (e) {}
@@ -64,10 +71,22 @@ const sessionRestore = {
   },
   restoreFromFile: function () {
     var savedStringData
+    /* the DB is the primary store; fall back to the JSON file so sessions
+    saved before the move still restore (the next save lands them in the DB) */
     try {
-      savedStringData = fs.readFileSync(sessionRestore.savePath, 'utf-8')
+      const fromDb = ipc.sendSync('db:kvGetSync', { scope: 'workspace_state', key: 'session' })
+      if (fromDb) {
+        savedStringData = JSON.stringify(fromDb)
+      }
     } catch (e) {
-      console.warn('failed to read session restore data', e)
+      console.warn('failed to read session from DB', e)
+    }
+    if (!savedStringData) {
+      try {
+        savedStringData = fs.readFileSync(sessionRestore.savePath, 'utf-8')
+      } catch (e) {
+        console.warn('failed to read session restore data', e)
+      }
     }
 
     // default to reopening the last task so the last tabs are shown on startup

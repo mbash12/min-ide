@@ -257,29 +257,39 @@ function loadAgentPrefs () {
   if (agentPrefsLoaded) return
   agentPrefsLoaded = true
 
-  const prefsPath = getAgentPrefsPath()
-  if (!prefsPath) return
+  /* the central DB is the primary store; the legacy JSON file next to the
+  sessions is only read as an upgrade path */
+  let parsed = null
   try {
-    const parsed = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'))
-    Object.keys(parsed || {}).forEach(function (sessionKey) {
-      const entry = parsed[sessionKey]
-      if (entry && typeof entry === 'object') {
-        prefsByCwd.set(sessionKey, entry)
-      }
-    })
-  } catch (err) {
-    // no file yet, or unreadable: start with nothing remembered
+    parsed = kvGet('ai_config', 'sessionPrefs')
+  } catch (e) {}
+  if (!parsed) {
+    const prefsPath = getAgentPrefsPath()
+    try {
+      if (prefsPath) parsed = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'))
+    } catch (err) {}
   }
+  Object.keys(parsed || {}).forEach(function (sessionKey) {
+    const entry = parsed[sessionKey]
+    if (entry && typeof entry === 'object') {
+      prefsByCwd.set(sessionKey, entry)
+    }
+  })
 }
 
 function saveAgentPrefs () {
-  const prefsPath = getAgentPrefsPath()
-  if (!prefsPath) return
-
   const stored = {}
   prefsByCwd.forEach(function (value, key) {
     stored[key] = value
   })
+  try {
+    kvSet('ai_config', 'sessionPrefs', stored)
+  } catch (err) {
+    console.warn('failed to save agent session pointers', err)
+  }
+  // legacy file copy kept as a crash backup
+  const prefsPath = getAgentPrefsPath()
+  if (!prefsPath) return
   try {
     // write-file-atomic does not create the directory, and pi-agent/ is made
     // by the SDK, so it may not exist yet
@@ -297,6 +307,33 @@ function scheduleAgentPrefsSave () {
     agentPrefsSaveTimer = null
     saveAgentPrefs()
   }, 400)
+}
+
+/* Provider/agent configuration lives in the central DB (kv scopes
+ * 'provider_config' and 'ai_config'); Min's settings are only a fallback and
+ * an upgrade path - a settings value found there is migrated into the DB. */
+function getProviderApiKey () {
+  try {
+    const fromDb = kvGet('provider_config', 'openrouterApiKey')
+    if (fromDb) return fromDb
+  } catch (e) {}
+  const key = settings.get('openrouterApiKey')
+  if (key) {
+    try { kvSet('provider_config', 'openrouterApiKey', key) } catch (e) {}
+  }
+  return key || null
+}
+
+function getAgentSetting (key) {
+  try {
+    const fromDb = kvGet('ai_config', key)
+    if (fromDb !== null && fromDb !== undefined) return fromDb
+  } catch (e) {}
+  const value = settings.get(key)
+  if (value !== null && value !== undefined) {
+    try { kvSet('ai_config', key, value) } catch (e) {}
+  }
+  return value
 }
 
 /* the remembered settings of a session, loading the file on first use so the
@@ -472,9 +509,9 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
   const effectiveCwd = getEffectiveCwd(cwd)
   const sessionDir = getWorkspaceSessionDir(toolWorkspaceId, cwd)
   const prefs = prefsFor(sessionKey)
-  const apiKey = settings.get('openrouterApiKey') || null
-  const modelId = prefs.modelId || settings.get('agentModel') || 'anthropic/claude-3.5-sonnet'
-  let provider = prefs.provider || settings.get('agentProvider') || 'openrouter'
+  const apiKey = getProviderApiKey()
+  const modelId = prefs.modelId || getAgentSetting('agentModel') || 'anthropic/claude-3.5-sonnet'
+  let provider = prefs.provider || getAgentSetting('agentProvider') || 'openrouter'
 
   const existing = agentSessions.get(sessionKey)
   const livePath = getLiveSessionFile(existing)
@@ -606,9 +643,9 @@ function snapshotState (taskId, cwd) {
     ok: true,
     streaming: !!(entry && entry.session && entry.session.isStreaming),
     model: entry ? entry.resolvedModel : null,
-    modelId: prefs.modelId || settings.get('agentModel') || 'anthropic/claude-3.5-sonnet',
-    provider: prefs.provider || settings.get('agentProvider') || 'openrouter',
-    hasApiKey: !!(settings.get('openrouterApiKey')),
+    modelId: prefs.modelId || getAgentSetting('agentModel') || 'anthropic/claude-3.5-sonnet',
+    provider: prefs.provider || getAgentSetting('agentProvider') || 'openrouter',
+    hasApiKey: !!(getProviderApiKey()),
     taskId: taskId,
     cwd: cwd,
     sessionPath: getLiveSessionFile(entry) || prefs.sessionPath || null,
@@ -784,9 +821,9 @@ ipc.handle('agent-fetch-models', async function () {
     const sdk = await loadPiSdk()
     const modelRuntime = await sdk.ModelRuntime.create()
     /* runtime api keys are not persisted to auth.json - the key stored in
-    Min's settings has to be installed on this runtime before asking for the
+    the central DB has to be installed on this runtime before asking for the
     catalog, otherwise getAvailable() reports no providers */
-    const apiKey = settings.get('openrouterApiKey')
+    const apiKey = getProviderApiKey()
     if (apiKey) {
       await modelRuntime.setRuntimeApiKey('openrouter', apiKey)
     }

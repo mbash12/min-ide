@@ -343,7 +343,7 @@ ipc.handle('gitDiff', function (e, cwd, filePath, staged) {
 
 ipc.handle('gitGenerateCommitMessage', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
-  var key = settings.get('openrouterApiKey')
+  var key = getProviderApiKey()
   if (!key) return { error: 'Set an OpenRouter API key in Pro Settings first.' }
 
   var diffResult = runGit(cwd, ['diff', '--staged', '--no-color', '--stat'])
@@ -351,7 +351,7 @@ ipc.handle('gitGenerateCommitMessage', async function (e, cwd) {
   if (patchResult.status !== 0) return { error: patchResult.stderr || 'Could not read staged changes.' }
   if (!patchResult.stdout.trim()) return { error: 'Stage changes before generating a commit message.' }
 
-  var model = settings.get('agentModel') || 'anthropic/claude-3.5-sonnet'
+  var model = getAgentSetting('agentModel') || 'anthropic/claude-3.5-sonnet'
   var promptText = [
     'Write one concise Git commit message for the staged changes below.',
     'Use an imperative subject, preferably Conventional Commits when appropriate.',

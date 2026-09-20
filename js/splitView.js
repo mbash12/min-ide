@@ -24,6 +24,8 @@ const gutterWidth = 4 // gap between two panes
 const minPaneWidth = 100 // minimum width of a pane when resizing
 const maxPanesPerGroup = 3 // most panes a single tiled group can hold
 
+let tileStateMirrorTimer = null // debounces the tile_state DB mirror in persist()
+
 /* a new group starts with the width divided evenly */
 function evenFractions (count) {
   return new Array(count).fill(1 / count)
@@ -102,6 +104,21 @@ const splitView = {
       }),
       activeGroupIndex: splitView.activeGroupIndex
     }
+    /* mirror to the central DB's 'tile_state' scope (debounced - persist runs
+    on every divider drag). The session blob stays the runtime source. */
+    const taskId = task.id
+    const state = task.splitState
+    if (tileStateMirrorTimer) {
+      clearTimeout(tileStateMirrorTimer)
+    }
+    tileStateMirrorTimer = setTimeout(function () {
+      tileStateMirrorTimer = null
+      try {
+        require('util/customDataStore.js')
+          .kvSet('tile_state', taskId, state)
+          .catch(function () {})
+      } catch (e) {}
+    }, 500)
   },
   /* loads the layout saved on the selected task. Groups whose tabs no longer
   exist (or that share a tab) are dropped, and the shown group is only restored

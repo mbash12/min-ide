@@ -66,6 +66,24 @@ function agentCall (message, data, callback) {
   window.postMessage(Object.assign({ message: message }, data), window.location.toString())
 }
 
+/* db calls go through the settingsPreload 'dbInvoke' relay; callback receives
+the result (or null on error) */
+var dbCallCounter = 0
+function dbInvoke (action, payload, callback) {
+  var callId = 'pdb-' + (++dbCallCounter)
+  function listener (e) {
+    if (!e.origin.startsWith('min://')) return
+    if (e.data && e.data.message === 'dbInvokeResult' && e.data.callId === callId) {
+      window.removeEventListener('message', listener)
+      callback(e.data.error ? null : e.data.result)
+    }
+  }
+  if (callback) {
+    window.addEventListener('message', listener)
+  }
+  window.postMessage({ message: 'dbInvoke', callId: callId, action: action, payload: payload }, window.location.toString())
+}
+
 /* status pill */
 
 function updateStatusPill () {
@@ -84,7 +102,11 @@ toggleVisibilityButton.addEventListener('click', function () {
 })
 
 keyInput.addEventListener('input', function () {
-  settings.set('openrouterApiKey', this.value.trim() || null)
+  var value = this.value.trim() || null
+  /* the central DB is the source of truth; settings stay as a mirror so the
+  agent's catalog cache invalidation listener keeps firing */
+  dbInvoke('db:kvSet', { scope: 'provider_config', key: 'openrouterApiKey', value: value })
+  settings.set('openrouterApiKey', value)
   testResult.hidden = true
   updateStatusPill()
 })
@@ -108,9 +130,16 @@ testButton.addEventListener('click', function () {
   })
 })
 
-settings.get('openrouterApiKey', function (value) {
-  if (value) keyInput.value = value
-  updateStatusPill()
+dbInvoke('db:kvGet', { scope: 'provider_config', key: 'openrouterApiKey' }, function (value) {
+  if (value) {
+    keyInput.value = value
+    updateStatusPill()
+    return
+  }
+  settings.get('openrouterApiKey', function (value) {
+    if (value) keyInput.value = value
+    updateStatusPill()
+  })
 })
 
 updateStatusPill()
