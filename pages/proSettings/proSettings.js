@@ -139,7 +139,7 @@ function renderProviders () {
   if (!configured.length) {
     var empty = document.createElement('p')
     empty.className = 'pro-description'
-    empty.textContent = 'No providers configured yet.'
+    empty.textContent = l('proSettingsNoProviders')
     providersList.appendChild(empty)
   }
 
@@ -154,7 +154,6 @@ function renderProviders () {
     var masked = document.createElement('span')
     masked.className = 'pro-provider-key'
     masked.textContent = maskKey(providerKeys[id])
-    masked.title = providerKeys[id]
 
     var spacer = document.createElement('span')
     spacer.className = 'pro-provider-spacer'
@@ -172,7 +171,7 @@ function renderProviders () {
 
     var removeBtn = document.createElement('button')
     removeBtn.className = 'pro-icon-button'
-    removeBtn.title = 'Remove'
+    removeBtn.title = l('proSettingsRemoveProvider')
     var removeIcon = document.createElement('i')
     removeIcon.className = 'i carbon:trash-can'
     removeBtn.appendChild(removeIcon)
@@ -225,7 +224,7 @@ function renderProviders () {
   keyInput.className = 'pro-provider-key-input'
   keyInput.autocomplete = 'off'
   keyInput.spellcheck = false
-  keyInput.placeholder = 'API key'
+  keyInput.placeholder = l('proSettingsApiKeyPlaceholder')
 
   var addBtn = document.createElement('button')
   addBtn.className = 'pro-button'
@@ -233,7 +232,7 @@ function renderProviders () {
   addIcon.className = 'i carbon:add'
   addBtn.appendChild(addIcon)
   var addLabel = document.createElement('span')
-  addLabel.textContent = 'Add'
+  addLabel.textContent = l('proSettingsAddProvider')
   addBtn.appendChild(addLabel)
 
   var linkNote = document.createElement('a')

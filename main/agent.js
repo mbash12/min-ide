@@ -54,7 +54,6 @@ const PROVIDER_LABELS = {
   together: 'Together AI',
   baseten: 'Baseten',
   'kimi-coding': 'Kimi For Coding',
-  meta: 'Meta',
   minimax: 'MiniMax',
   'minimax-cn': 'MiniMax (CN)',
   'qwen-token-plan': 'Qwen Token Plan',
