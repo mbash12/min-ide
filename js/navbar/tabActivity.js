@@ -29,9 +29,7 @@ var tabActivity = {
   initialize: function () {
     setInterval(tabActivity.refresh, 7500)
 
-    require('util/followTaskList.js').followTaskList(function (taskList) {
-      taskList.on('tab-selected', tabActivity.refresh)
-    })
+    tasks.on('tab-selected', tabActivity.refresh)
   }
 }
 

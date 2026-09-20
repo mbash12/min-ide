@@ -173,7 +173,6 @@ class WorkspaceStore {
       }
     }
     if (onWindow === windowId) {
-      repointTaskGlobal(this.get(id))
       if (emit) {
         this.emit('workspace-selected', id)
       }
@@ -297,15 +296,6 @@ function copyWorkspace (ws) {
     collapsed: ws.collapsed,
     selectedInWindow: ws.selectedInWindow,
     tasks: ws.tasks.getCopyableState().tasks
-  }
-}
-
-// Keep the global tasks reference on the selected workspace's TaskList so
-// selected-only call sites (tasks.getSelected().tabs.*, tasks.get/update)
-// keep working without changes.
-function repointTaskGlobal (ws) {
-  if (ws) {
-    window.tasks = ws.tasks
   }
 }
 

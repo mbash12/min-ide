@@ -101,12 +101,10 @@ webviews.bindEvent('view-hidden', function (tabId) {
   }
 })
 
-require('util/followTaskList.js').followTaskList(function (taskList) {
-  taskList.on('tab-selected', function (tabId) {
-    if (tabId !== findinpage.activeTab) {
-      findinpage.end()
-    }
-  })
+tasks.on('tab-selected', function (tabId) {
+  if (tabId !== findinpage.activeTab) {
+    findinpage.end()
+  }
 })
 
 webviews.bindEvent('did-start-navigation', function (tabId, url, isInPlace, isMainFrame, frameProcessId, frameRoutingId) {

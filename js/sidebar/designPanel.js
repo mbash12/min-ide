@@ -738,44 +738,41 @@ const designPanel = {
       refreshStatus()
     })
 
-    // Tab/task events come from the active workspace's TaskList, which is
-    // re-pointed on workspace switch — followTaskList re-subscribes to the
-    // current list after every switch.
-    require('util/followTaskList.js').followTaskList(function (taskList) {
-      taskList.on('tab-selected', function () {
-        lastParsed = null
-        lastParsedUrl = ''
-        lastParsedTabId = null
-        lastResult = null
-        lastError = null
+    // tasks.on subscribes at the workspace store, so it keeps receiving the
+    // selected workspace's task events across switches.
+    tasks.on('tab-selected', function () {
+      lastParsed = null
+      lastParsedUrl = ''
+      lastParsedTabId = null
+      lastResult = null
+      lastError = null
+      render()
+      refreshStatus()
+    })
+    tasks.on('tab-updated', function (id, key, value) {
+      if (key !== 'url') return
+      ipc.invoke('figmaEngine:syncUrl', { tabId: id, url: value })
+      if (!tabs || !sameTab(id, tabs.getSelected())) return
+      render()
+      ipc.invoke('figmaEngine:parseUrl', value).then(function (parsed) {
+        const current = selectedTab()
+        if (
+          !current ||
+          !sameTab(id, current.id) ||
+          String(current.url || '') !== String(value || '')
+        ) return
+        rememberParsed(parsed, value, id)
         render()
+      })
+    })
+    tasks.on('tab-destroyed', function (id) {
+      ipc.invoke('figmaEngine:disconnect', { tabId: id }).then(function (result) {
+        if (result && result.ignored) return
         refreshStatus()
       })
-      taskList.on('tab-updated', function (id, key, value) {
-        if (key !== 'url') return
-        ipc.invoke('figmaEngine:syncUrl', { tabId: id, url: value })
-        if (!tabs || !sameTab(id, tabs.getSelected())) return
-        render()
-        ipc.invoke('figmaEngine:parseUrl', value).then(function (parsed) {
-          const current = selectedTab()
-          if (
-            !current ||
-            !sameTab(id, current.id) ||
-            String(current.url || '') !== String(value || '')
-          ) return
-          rememberParsed(parsed, value, id)
-          render()
-        })
-      })
-      taskList.on('tab-destroyed', function (id) {
-        ipc.invoke('figmaEngine:disconnect', { tabId: id }).then(function (result) {
-          if (result && result.ignored) return
-          refreshStatus()
-        })
-      })
-      taskList.on('task-selected', function () {
-        refreshStatus()
-      })
+    })
+    tasks.on('task-selected', function () {
+      refreshStatus()
     })
     workspaces.on('workspace-selected', function () {
       refreshStatus()

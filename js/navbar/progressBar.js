@@ -13,7 +13,7 @@ const progressBar = {
   update: function (bar, status) {
     if (status === 'start') {
       var loadID = Date.now().toString()
-      bar.setAttribute('loading', loadID) // we need to use unique ID's to ensure that the same page that was loading initialy is the same page that is loading 4 seconds later
+      bar.setAttribute('loading', loadID) // we need to use unique ID's to ensure that the same page that was loading initialy is the same page that is loading a moment later
       setTimeout(function () {
         if (bar.getAttribute('loading') === loadID) {
           bar.hidden = false
@@ -21,7 +21,7 @@ const progressBar = {
             bar.className = 'progress-bar p25'
           })
         }
-      }, 4000)
+      }, 200)
     } else {
       bar.setAttribute('loading', 'false')
       if (bar.classList.contains('p25')) {

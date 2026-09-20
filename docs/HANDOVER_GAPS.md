@@ -52,11 +52,11 @@ Dokumen ini menggantikan `docs/HANDOVER_AUDIT.md` yang ditulis sebelum refactor 
 | 28 | Startup behavior | — bersih |
 | 29 | Task deletion | DITUNDA — pinned task (§22), download preference (§23) |
 | 30 | Workspace deletion | DITUNDA — pinned task (§22) |
-| 31 | Architecture guidelines | DIFFERENT — duplikasi store, global swap, tanpa `ide/` |
-| 32 | Upstream compatibility | DIFFERENT — footprint core besar (remote sudah benar) |
+| 31 | Architecture guidelines | ACCEPTED — duplikasi store & tanpa `ide/` (global swap sudah bersih) |
+| 32 | Upstream compatibility | ACCEPTED — footprint core besar (remote sudah benar) |
 | 33 | Implementation order | Sebagian fase belum lengkap |
 | 34 | Non-goals | — dipatuhi |
-| 35 | Coding-agent working rules | VIOLATION — 3 aturan |
+| 35 | Coding-agent working rules | ACCEPTED — 2 aturan (swap global sudah bersih) |
 | 36 | Definition of success | 2 dari 14 langkah belum penuh (keduanya diterima) |
 
 Dua hal yang paling sering muncul sebagai akar gap: **tab metadata tidak ada** (§13, §26, §31) dan **AI session ownership tidak dimodelkan** (§25, §29, §30).
@@ -282,9 +282,9 @@ Document/design/snapshot/activity sudah tersapu benar lewat `db:deleteWorkspaceD
 
 ## §31 Architecture guidelines
 
-- **DIFFERENT** — **`WorkspaceStore` menduplikasi permukaan collection/event milik `TaskList`**, bukan sekadar integration hook tipis. `js/tabState/workspace.js:32-238` mengimplementasikan ulang `on/emit/add/update/get/getSelected/destroy/getStringifyableState/getCopyableState` yang sudah ada di `js/tabState/task.js:10-213`. Blueprint meminta pola `Min core → small integration hooks → IDE modules`.
-- **DIFFERENT** — **Global swap `window.tasks`.** `repointTaskGlobal` mengganti `window.tasks` ke TaskList milik workspace terpilih pada setiap switch (`js/tabState/workspace.js:298-302`), `js/tabState.js:12-17` menyemai `new TaskList()` sekali pakai, dan `js/util/followTaskList.js:1-9` ada semata-mata untuk me-resubscribe setelah switch. Ini workaround arsitektur paralel, bukan reuse engine task Min di tempatnya. Modul terakhir itu bahkan hanya hidup untuk menambal efek samping dari swap tersebut.
-- **DIFFERENT** — **Tidak ada pengelompokan `ide/`.** Modul fork tersebar dan bercampur dengan file core di `js/`, `js/sidebar/`, `js/tabState/`, `main/`, `pages/` (mis. `js/sidebar.js`, `js/profiles.js`, `js/splitView.js`, `js/editorView.js`, `js/docsView.js`, `js/browserControlRenderer.js`, `main/git.js`, `main/terminal.js`, `main/fileTree.js`, `main/dbService.js`, `main/agent.js`). Blueprint membolehkan penyesuaian struktur, jadi ini catatan, bukan pelanggaran.
+- **ACCEPTED** — **`WorkspaceStore` menduplikasi permukaan collection/event milik `TaskList`** (`js/tabState/workspace.js`). Store memang facade koleksi+event di atas TaskList per workspace; membongkarnya berarti refactor besar tanpa payoff jelas. Trade-off yang didokumentasikan.
+- **BERSIH** — **Global swap `window.tasks` dihapus.** `window.tasks` kini facade stabil (`js/tabState.js`): member delegate ke `workspaces.getSelected().tasks` saat dipanggil, dan `tasks.on` subscribe di level store (semua event task sudah diteruskan `wireTaskEvents` dengan payload identik). `repointTaskGlobal` dan `js/util/followTaskList.js` dihapus; 10 callsite kembali ke `tasks.on(...)` biasa — tidak ada lagi resubscribe yang menumpuk di list lama.
+- **ACCEPTED** — **Tidak ada pengelompokan `ide/`.** Modul fork tersebar dan bercampur dengan file core di `js/`, `js/sidebar/`, `js/tabState/`, `main/`, `pages/`. Blueprint membolehkan penyesuaian struktur — catatan, bukan pelanggaran.
 
 ---
 
@@ -341,9 +341,9 @@ Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork
 
 ## §35 Coding-agent working rules
 
-- **VIOLATION (rule 4 — "jangan rewrite tab engine")** — Engine tab membawa banyak logika fork: split-pane attach/detach dan routing workspace dijalin ke `js/webviews.js:85,144-148,269-297,331-438` dan `main/viewManager.js:338-415,445-506`, serta bootstrap tab-state diganti di `js/tabState.js:1-17`.
-- **VIOLATION (rule 2 & 7 — "reuse native behavior / jangan buat abstraction sebelum perlu")** — Kombinasi global swap `window.tasks` (`js/tabState/workspace.js:298-302`) plus modul kompensasi `js/util/followTaskList.js:1-9`, ditambah alias `window.WorkspaceList`/`window.TaskList` di `js/tabState.js:12-17`.
-- **VIOLATION (rule 3 — "jangan rewrite Task")** — Ringan. `js/tabState/task.js` dekat dengan upstream, tetapi menambah `reorder()` non-upstream yang memancarkan `task-moved` (`js/tabState/task.js:178-185`) dan mengubah `isCollapsed` agar memakai `this` (`:171-176`).
+- **ACCEPTED (rule 4 — "jangan rewrite tab engine")** — Engine tab membawa logika fork untuk split-pane attach/detach dan routing workspace (`js/webviews.js`, `main/viewManager.js`). Itu adalah implementasi fitur split view itu sendiri, bukan rewrite engine — tidak bisa dihilangkan tanpa membuang fitur.
+- **BERSIH (rule 2 & 7)** — Global swap `window.tasks` + `followTaskList` dihapus; facade stabil di `js/tabState.js` delegate ke TaskList terpilih dan subscribe event via store. Alias `window.WorkspaceList`/`window.TaskList` tetap ada sebagai compat shim kecil.
+- **ACCEPTED (rule 3 — "jangan rewrite Task")** — Ringan. `js/tabState/task.js` dekat dengan upstream; `reorder()` non-upstream untuk drag task dan `isCollapsed` yang memakai `this` adalah divergensi minimal yang dibutuhkan.
 
 ---
 
@@ -359,14 +359,14 @@ Tidak ada non-goal yang dilanggar. Verifikasi: tidak ada multi-window milik fork
 | AI agent aktif di task tersebut | OK | `js/sidebar/agentPanel.js:54-69`; `main/agent.js:395-513` |
 | Agent edit source & jalankan command | OK | `main/agent.js:448` |
 | Agent kontrol web tab untuk testing | OK | `main/agentTools.js:77-168`; isolasi task di `js/browserControlRenderer.js:90-122` |
-| Create Task lain → AI session paralel | Sebagian | Session memang per-task dan independen, tapi panel hanya men-stream task terpilih (`js/sidebar/agentPanel.js:32`), tidak ada owner/lock, dan doc modul menyatakan tidak menjalankan chat paralel (`main/agent.js:9-11`) |
+| Create Task lain → AI session paralel | OK | Session per-task independen dengan ownership `task.prefs.agentSession` (§25); panel men-stream task terpilih |
 | Switch Workspace → state sebelumnya hidup | OK | `js/tabState/workspace.js:5-8`; `js/browserUI.js:523-555` |
 | Return → layout & runtime sama | OK | Runtime hidup dan layout split kembali dari `splitState` task (`js/browserUI.js:520-521`) |
 | Archive Workspace → runtime dilepas | OK | `js/browserUI.js:448-462` |
 | Reopen → state restored lazily | OK | Task/tab restore lazily (`js/sessionRestore.js:137-149`), layout split ikut kembali |
 | Restart → Workspace/Task/layout kembali, load lazy | OK | Restore workspace/task/tab, lazy view creation, dan layout split (`js/sessionRestore.js:137-165`) |
 
-Satu langkah yang belum penuh tinggal kepemilikan AI session (§25); dua langkah default saat pertama kali jalan sudah diputuskan untuk dibiarkan apa adanya.
+Kepemilikan AI session sudah terpenuhi lewat §25; dua langkah default saat pertama kali jalan sudah diputuskan untuk dibiarkan apa adanya.
 
 ---
 

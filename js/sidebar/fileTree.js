@@ -601,13 +601,11 @@ const fileTree = {
         render()
       }
     })
-    require('util/followTaskList.js').followTaskList(function (taskList) {
-      taskList.on('tab-selected', function (tabId, taskId) {
-        const activeTask = window.tasks.getSelected()
-        if (activeTask && taskId === activeTask.id) {
-          syncSelectionWithTab(tabId)
-        }
-      })
+    tasks.on('tab-selected', function (tabId, taskId) {
+      const activeTask = window.tasks.getSelected()
+      if (activeTask && taskId === activeTask.id) {
+        syncSelectionWithTab(tabId)
+      }
     })
   },
 

@@ -685,12 +685,10 @@ function switchToTab (id, options) {
   }
 }
 
-require('util/followTaskList.js').followTaskList(function (taskList) {
-  taskList.on('tab-updated', function (id, key) {
-    if (key === 'url' && window.tabs && id === window.tabs.getSelected()) {
-      document.body.classList.remove('is-ntp')
-    }
-  })
+tasks.on('tab-updated', function (id, key) {
+  if (key === 'url' && window.tabs && id === window.tabs.getSelected()) {
+    document.body.classList.remove('is-ntp')
+  }
 })
 
 webviews.bindEvent('did-create-popup', function (tabId, popupId, initialURL) {

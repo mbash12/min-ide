@@ -502,11 +502,9 @@ var workspaceDrawer = {
       }
     }
 
-    require('util/followTaskList.js').followTaskList(function (taskList) {
-      taskList.on('task-selected', updateIndicator)
-      taskList.on('task-updated', function (id, key) {
-        if (key === 'name') updateIndicator()
-      })
+    tasks.on('task-selected', updateIndicator)
+    tasks.on('task-updated', function (id, key) {
+      if (key === 'name') updateIndicator()
     })
     workspaces.on('workspace-selected', function () {
       updateIndicator()

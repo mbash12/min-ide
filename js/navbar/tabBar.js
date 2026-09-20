@@ -403,26 +403,27 @@ settings.listen('showDividerBetweenTabs', function (dividerPreference) {
   tabBar.handleDividerPreference(dividerPreference)
 })
 
-/* tab loading and progress bar status */
+/* tab loading and progress bar status - the tab may belong to a task that
+isn't shown in the bar (background task), so guard getTab */
 webviews.bindEvent('did-start-loading', function (tabId) {
-  progressBar.update(tabBar.getTab(tabId).querySelector('.progress-bar'), 'start')
+  var tabEl = tabBar.getTab(tabId)
+  if (tabEl) progressBar.update(tabEl.querySelector('.progress-bar'), 'start')
   tabs.update(tabId, { loaded: false })
 })
 
 webviews.bindEvent('did-stop-loading', function (tabId) {
-  progressBar.update(tabBar.getTab(tabId).querySelector('.progress-bar'), 'finish')
+  var tabEl = tabBar.getTab(tabId)
+  if (tabEl) progressBar.update(tabEl.querySelector('.progress-bar'), 'finish')
   tabs.update(tabId, { loaded: true })
-  tabBar.updateTab(tabId)
+  if (tabEl) tabBar.updateTab(tabId)
 })
 
-require('util/followTaskList.js').followTaskList(function (taskList) {
-  taskList.on('tab-updated', function (id, key) {
-    var updateKeys = ['title', 'secure', 'url', 'muted', 'hasAudio', 'preview', 'favicon']
-    if (updateKeys.includes(key)) {
-      tabBar.updateTab(id)
-      updateSplitGroupIndicators()
-    }
-  })
+tasks.on('tab-updated', function (id, key) {
+  var updateKeys = ['title', 'secure', 'url', 'muted', 'hasAudio', 'preview', 'favicon']
+  if (updateKeys.includes(key)) {
+    tabBar.updateTab(id)
+    updateSplitGroupIndicators()
+  }
 })
 
 permissionRequests.onChange(function (tabId) {

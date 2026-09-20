@@ -180,6 +180,12 @@ function setColor (bg, fg, isLowContrast) {
   }
 }
 
+/* Chromium only fires page-favicon-updated when the favicon list changes -
+a plain refresh emits nothing, so the navigation reset below would leave the
+tab on the globe icon forever. Cache the favicon per page URL and restore it
+on navigations we have seen before. */
+const faviconCache = new Map() // page URL -> {url, luminance}
+
 const tabColor = {
   useSiteTheme: false, // default to the theme colors (keeps the tab bar readable); opt in via the siteTheme setting
   initialize: function () {
@@ -211,7 +217,7 @@ const tabColor = {
       if (isMainFrame && isInPlace === false) {
         tabs.update(tabId, {
           backgroundColor: null,
-          favicon: null
+          favicon: faviconCache.get(url) || null
         })
       }
     })
@@ -235,9 +241,7 @@ const tabColor = {
       }
     })
 
-    require('util/followTaskList.js').followTaskList(function (taskList) {
-      taskList.on('tab-selected', tabColor.updateColors)
-    })
+    tasks.on('tab-selected', tabColor.updateColors)
   },
   updateFromThemeColor: function (color, tabId) {
     if (!color) {
@@ -273,13 +277,11 @@ const tabColor = {
     // store the favicon right away so it can be displayed even if the color
     // extraction below fails (the image is loaded with crossOrigin=anonymous,
     // which makes the load fail entirely on servers without CORS headers)
-    if (tabs.get(tabId)) {
-      tabs.update(tabId, {
-        favicon: {
-          url: iconUrl,
-          luminance: null
-        }
-      })
+    const tab = tabs.get(tabId)
+    if (tab) {
+      const favicon = { url: iconUrl, luminance: null }
+      tabs.update(tabId, { favicon })
+      if (tab.url) faviconCache.set(tab.url, favicon)
     }
 
     requestIdleCallback(function () {
@@ -293,17 +295,20 @@ const tabColor = {
         const backgroundColor = getColorFromImage(colorExtractorImage)
         const backgroundColorAdjusted = adjustColorForTheme(backgroundColor)
 
+        const favicon = {
+          url: iconUrl,
+          luminance: getLuminance(backgroundColor)
+        }
         tabs.update(tabId, {
           backgroundColor: {
             color: getRGBString(backgroundColorAdjusted),
             textColor: getTextColor(backgroundColorAdjusted),
             isLowContrast: isLowContrast(backgroundColorAdjusted)
           },
-          favicon: {
-            url: iconUrl,
-            luminance: getLuminance(backgroundColor)
-          }
+          favicon
         })
+        const current = tabs.get(tabId)
+        if (current && current.url) faviconCache.set(current.url, favicon)
 
         if (callback) {
           callback()

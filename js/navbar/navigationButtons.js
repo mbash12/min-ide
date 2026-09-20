@@ -55,9 +55,7 @@ var navigationButtons = {
       navigationButtons.tabsList.classList.remove('disable-scroll')
     })
 
-    require('util/followTaskList.js').followTaskList(function (taskList) {
-      taskList.on('tab-selected', navigationButtons.update)
-    })
+    tasks.on('tab-selected', navigationButtons.update)
     webviews.bindEvent('did-navigate', this.update)
     webviews.bindEvent('did-navigate-in-page', this.update)
   }
