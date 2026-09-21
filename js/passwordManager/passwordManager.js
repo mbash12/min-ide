@@ -7,6 +7,7 @@ const statistics = require('js/statistics.js')
 
 const Bitwarden = require('js/passwordManager/bitwarden.js')
 const OnePassword = require('js/passwordManager/onePassword.js')
+const ProtonPass = require('js/passwordManager/protonPass.js')
 const Keychain = require('js/passwordManager/keychain.js')
 
 const PasswordManagers = {
@@ -16,6 +17,7 @@ const PasswordManagers = {
   managers: [
     new Bitwarden(),
     new OnePassword(),
+    new ProtonPass(),
     new Keychain()
   ],
   // Returns an active password manager, which is the one that is selected in app's

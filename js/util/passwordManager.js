@@ -12,6 +12,9 @@ var passwordManagers = {
   '1Password': {
     name: '1Password'
   },
+  'Proton Pass': {
+    name: 'Proton Pass'
+  },
   'Built-in password manager': {
     name: 'Built-in password manager'
   }
