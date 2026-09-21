@@ -1,0 +1,1215 @@
+diff --git a/src/constants/window.ts b/src/constants/window.ts
+old mode 100644
+new mode 100755
+index bdd43da..bb55240
+--- a/src/constants/window.ts
++++ b/src/constants/window.ts
+@@ -17,6 +17,7 @@ export const WINDOW_DEFAULT_OPTIONS: Types.WindowState & {
+   webPreferences: {
+     nodeIntegration: false,
+     contextIsolation: true,
++    backgroundThrottling: false,
+     preload: isDev ? bridgePreloadPathDev : bridgePreloadPathProd,
+   },
+ };
+diff --git a/src/main/App.ts b/src/main/App.ts
+index e98a49e..c0746bb 100755
+--- a/src/main/App.ts
++++ b/src/main/App.ts
+@@ -15,6 +15,13 @@ import type FontManager from "./Fonts";
+ import { McpServer } from "./MCP";
+ import type { FigmaViewProvider } from "./MCP";
+ import { MCP_PORT } from "./MCP/config";
++import {
++  isMinFigmaEngine,
++  isEngineProcessQuitting,
++  startEngineControl,
++  hideEngineBrowserWindow,
++  watchMinParentProcess,
++} from "./engineMode";
+ 
+ // Controllers
+ import { ipcRegistry } from "./controllers/registry";
+@@ -48,11 +55,13 @@ export default class App {
+     // which point Chromium has already read its command line, so any appendSwitch here is
+     // silently ignored. See applyChromiumSwitches.ts.
+ 
+-    if (!app.isDefaultProtocolClient(Const.PROTOCOL)) {
++    if (!isMinFigmaEngine() && !app.isDefaultProtocolClient(Const.PROTOCOL)) {
+       app.setAsDefaultProtocolClient(Const.PROTOCOL);
+     }
+ 
+-    registerUrlHandler();
++    if (!isMinFigmaEngine()) {
++      registerUrlHandler();
++    }
+ 
+     this.mcpServer = new McpServer(logger);
+     this.trayManager = new TrayManager(this.windowManager);
+@@ -110,9 +119,13 @@ export default class App {
+     this.mcpServer.setViewProvider(viewProvider);
+     this.mcpServer.setWriteToolsEnabled(!!storage.settings.mcp?.enableWriteTools);
+     // Server is opt-out (default on). Only bind when enabled.
+-    if (storage.settings.mcp?.serverEnabled !== false) {
++    if (!isMinFigmaEngine() && storage.settings.mcp?.serverEnabled !== false) {
+       this.mcpServer.start(storage.settings.mcp?.serverPort ?? MCP_PORT);
+     }
++    if (isMinFigmaEngine()) {
++      startEngineControl({ windowManager: this.windowManager });
++      watchMinParentProcess();
++    }
+ 
+     setTimeout(() => {
+       if (figmaUrl !== "") {
+@@ -123,7 +136,7 @@ export default class App {
+     setTimeout(() => {
+       // Skip the auto "What's new" popup under test: it's a separate
+       // WebContentsView that overlays the panel and races e2e DOM capture.
+-      if (process.env.NODE_ENV === "test") return;
++      if (process.env.NODE_ENV === "test" || isMinFigmaEngine()) return;
+       const current = readAppVersion();
+       const lastSeen = storage.settings.app.lastSeenChangelogVersion ?? "";
+       if (lastSeen !== current) {
+@@ -191,6 +204,10 @@ export default class App {
+   }
+ 
+   private onWindowAllClosed() {
++    if (isMinFigmaEngine() && !isEngineProcessQuitting()) {
++      logger.warn("[engine] window closed; keeping engine process alive");
++      return;
++    }
+     // With the tray enabled the process outlives its windows: the tray icon is
+     // the way back in, and "Quit" from its menu goes through quitApp().
+     // State is still persisted so a crash in the background loses nothing.
+@@ -216,6 +233,11 @@ export default class App {
+   }
+ 
+   private async quitApp() {
++    if (isMinFigmaEngine() && !isEngineProcessQuitting()) {
++      const window = this.windowManager.getLastFocusedWindow();
++      if (window) hideEngineBrowserWindow(window.win);
++      return;
++    }
+     this.mcpServer.stop();
+     this.windowManager.saveState();
+     await storage.save();
+diff --git a/src/main/ExtensionManager.ts b/src/main/ExtensionManager.ts
+old mode 100644
+new mode 100755
+index 7710177..56730af
+--- a/src/main/ExtensionManager.ts
++++ b/src/main/ExtensionManager.ts
+@@ -12,9 +12,16 @@ import { logger } from "./Logger";
+ import { MANIFEST_FILE_NAME } from "Const";
+ import { ALLOW_CODE_FILES, ALLOW_EXT_FILES, ALLOW_UI_FILES } from "Utils/Common";
+ import { access, mkPath } from "Utils/Main";
++import { enginePluginPath, isMinFigmaEngine } from "./engineMode";
+ 
+ type ObserverCallback = (args: any) => void;
+ 
++let extensionManagerInstance: ExtensionManager | null = null;
++
++export function getExtensionManager(): ExtensionManager | null {
++  return extensionManagerInstance;
++}
++
+ export default class ExtensionManager {
+   private registeredCancelCallbackMap: Map<string, () => void> = new Map();
+   private extensionMap: Map<number, Extensions.Extension> = new Map();
+@@ -22,10 +29,66 @@ export default class ExtensionManager {
+   private codeObservers: Array<Extensions.ManifestObserver> = [];
+ 
+   constructor() {
++    extensionManagerInstance = this;
+     this.reload();
++    if (isMinFigmaEngine()) {
++      void this.ensureEnginePlugin();
++    }
+     this.registerEvents();
+   }
+ 
++  /** Engine mode: runPluginByName dispatches run-local-plugin straight to the
++   *  tab when the SPA has not pushed its plugin menu (hidden window). */
++  public findLocalExtensionIdByName(name: string): number | null {
++    const needle = name.trim().toLowerCase();
++    for (const [id, entry] of this.extensionMap) {
++      if ((entry.lastKnownName || "").trim().toLowerCase() === needle) return id;
++    }
++    return null;
++  }
++
++  private async ensureEnginePlugin(): Promise<void> {
++    const pluginPath = enginePluginPath();
++    if (!pluginPath) return;
++    const resolved = resolve(pluginPath);
++    const exists = this.pathExists(resolved);
++    if (exists?.existed) return;
++
++    let manifestName = "Min Figma Bridge";
++    let manifestId = "min-figma-bridge";
++    try {
++      const raw = await fs.promises.readFile(resolve(resolved, MANIFEST_FILE_NAME), "utf8");
++      const parsed = JSON.parse(raw) as Extensions.ManifestFile;
++      if (parsed?.name) manifestName = parsed.name;
++      if (parsed?.id) manifestId = parsed.id;
++    } catch (error) {
++      logger.warn("[engine] failed to read plugin manifest", error);
++      return;
++    }
++
++    const files = [MANIFEST_FILE_NAME, "code.js", "ui.html"].filter((name) => {
++      try {
++        fs.accessSync(resolve(resolved, name));
++        return true;
++      } catch {
++        return false;
++      }
++    });
++
++    const id = this.generateFileId();
++    this.extensionMap.set(id, {
++      path: resolved,
++      observeFiles: new Map(files.map((name): [string, any] => [name, null])),
++      lastKnownName: manifestName,
++      lastKnownPluginId: manifestId,
++      cachedContainsWidget: false,
++    });
++    this.addWatcher(id);
++    this.notifyFileAdded(id);
++    await this.save();
++    logger.info(`[engine] registered local plugin ${manifestName} from ${resolved}`);
++  }
++
+   public getPath(id: number): string {
+     const entry = this.extensionMap.get(id);
+ 
+diff --git a/src/main/Ui/MainTab.ts b/src/main/Ui/MainTab.ts
+old mode 100644
+new mode 100755
+index d81135c..e3a2132
+--- a/src/main/Ui/MainTab.ts
++++ b/src/main/Ui/MainTab.ts
+@@ -8,6 +8,7 @@ import {
+   type DidCreateWindowDetails,
+   type Event,
+   type HandlerDetails,
++  type WebContents,
+ } from "electron";
+ 
+ import { LOGIN_PAGE, RECENT_FILES } from "Const";
+@@ -20,7 +21,8 @@ import {
+   isDev,
+   isFigmaRunUrl,
+   isFileBrowserUrl,
+-  isAppAuthRedeem,
++  isFigmaAppAuthCallback,
++  isAppAuthGrandLink,
+   isFigmaDocLink,
+   isFigmaBoardLink,
+   isFigmaDesignLink,
+@@ -37,6 +39,7 @@ export default class MainTab {
+       nodeIntegration: false,
+       webgl: true,
+       contextIsolation: false,
++      backgroundThrottling: false,
+       zoomFactor: 1,
+       preload: isDev ? preloadMainScriptPathDev : preloadMainScriptPathProd,
+     },
+@@ -91,20 +94,106 @@ export default class MainTab {
+   public updateScale(scale: number) {
+     this.view.webContents.setZoomFactor(scale);
+   }
++
++  private consumeAppAuthCallback(
++    url: string,
++    event?: Event,
++    popup?: BrowserWindow,
++    allowHttp = false,
++  ): boolean {
++    if (!isFigmaAppAuthCallback(url)) return false;
++    // A top-level HTTPS redeem is the fallback used when the login page has
++    // not created the Figma desktop bridge yet. Let that request reach Figma
++    // so the server can mint the session; custom figma:// callbacks and
++    // callbacks coming from an auth popup are handled by the engine.
++    if (!allowHttp && /^https?:\/\//i.test(url)) return false;
++    event?.preventDefault();
++    app.emit("handleAppAuthRedeem", url);
++    popup?.close();
++    return true;
++  }
++
++  private isFigmaHost(url: string): boolean {
++    const parsed = parseURL(url);
++    return !!parsed && /(^|\.)figma\.com$/i.test(parsed.hostname);
++  }
++
++  /** Keep the Google/SAML popup alive through /login OAuth hops. Adopt it
++   *  once Figma sends the session to files/home (or a file), so we reuse the
++   *  engine window that showed login instead of leaving a second Figma chrome. */
++  private shouldAdoptAuthPopupUrl(url: string): boolean {
++    if (isFigmaAppAuthCallback(url)) return true;
++    if (isAppAuthGrandLink(url)) return false;
++    if (!this.isFigmaHost(url) && !/^figma:/i.test(url)) return false;
++    const path = parseURL(url)?.pathname || "";
++    if (
++      path === "/login" ||
++      path.startsWith("/login/") ||
++      path.includes("/oauth") ||
++      path.includes("/callback")
++    ) {
++      return false;
++    }
++    if (path.startsWith("/app_auth/")) return false;
++    // The post-login landing page is not always /files/recent. Depending on
++    // the account and rollout, Figma can land on /, /dashboard, or another
++    // authenticated Figma route. All of those belong in MainTab.
++    return true;
++  }
++
++  private adoptAuthPopupUrl(url: string, event?: Event, popup?: BrowserWindow) {
++    event?.preventDefault();
++    popup?.close();
++    if (isFigmaAppAuthCallback(url)) {
++      app.emit("handleAppAuthRedeem", url);
++      return;
++    }
++    if (isFileBrowserUrl(url)) {
++      this.view.webContents.loadURL(url);
++      return;
++    }
++    if (isFigmaRunUrl(url)) {
++      this.view.webContents.loadURL(RECENT_FILES);
++      app.emit("openUrlInNewTab", url);
++      return;
++    }
++    this.view.webContents.loadURL(url);
++  }
++
++  private attachAppAuthInterceptor(contents: WebContents, popup?: BrowserWindow) {
++    const onUrl = (event: Event, url: string) => {
++      if (this.consumeAppAuthCallback(url, event, popup, true)) return;
++      if (popup && this.shouldAdoptAuthPopupUrl(url)) {
++        this.adoptAuthPopupUrl(url, event, popup);
++      }
++    };
++    contents.on("will-navigate", onUrl);
++    contents.on("will-redirect", onUrl);
++    contents.on("did-navigate", (_event, url: string) => {
++      if (popup && !popup.isDestroyed() && this.shouldAdoptAuthPopupUrl(url)) {
++        this.adoptAuthPopupUrl(url, undefined, popup);
++      }
++    });
++  }
++
+   private onMainTabWillNavigate(event: Event, url: string) {
++    if (this.consumeAppAuthCallback(url, event)) return;
++    if (isAppAuthGrandLink(url)) {
++      event.preventDefault();
++      return;
++    }
+     if (isFigmaRunUrl(url) && !isFileBrowserUrl(url)) {
++      const fromLogin = parseURL(this.getUrl())?.pathname === "/login";
+       app.emit("openUrlInNewTab", url);
+-
+       event.preventDefault();
++      if (fromLogin) this.loadUrl(RECENT_FILES);
+     }
+   }
+   private onDomReady(_event: Event) {}
+   private onMainWindowWillNavigate(event: Event & { sender?: Electron.WebContents }, url: string) {
++    if (this.consumeAppAuthCallback(url, event)) return;
+     if (event?.sender) {
+       const currentUrl = event.sender.getURL();
+-      if (isAppAuthRedeem(url)) {
+-        return;
+-      }
+ 
+       if (url === currentUrl) {
+         event.preventDefault();
+@@ -114,7 +203,10 @@ export default class MainTab {
+       const from = parseURL(currentUrl);
+       const to = parseURL(url);
+ 
+-      if (from?.pathname === "/login") {
++      // Grant URLs are opened as a Min tab via startAppAuth. Everything else
++      // from /login (especially /files after a successful sign-in) must stay
++      // in this same MainTab — do not spawn a second Figma window.
++      if (from?.pathname === "/login" && isAppAuthGrandLink(url)) {
+         event.preventDefault();
+         return;
+       }
+@@ -135,6 +227,10 @@ export default class MainTab {
+       return;
+     }
+     if (isFigmaBoardLink(url) || isFigmaDesignLink(url)) {
++      const fromLogin = event?.sender
++        ? parseURL(event.sender.getURL())?.pathname === "/login"
++        : false;
++      if (fromLogin) return;
+       app.emit("openUrlInNewTab", url);
+       event.preventDefault();
+       return;
+@@ -144,7 +240,12 @@ export default class MainTab {
+     const { url } = details;
+     logger.debug("newWindow, url: ", url);
+ 
+-    if (/start_google_sso/.test(url)) return;
++    if (this.consumeAppAuthCallback(url, undefined, window, true)) return;
++
++    if (/start_google_sso/.test(url)) {
++      this.attachAppAuthInterceptor(window.webContents, window);
++      return;
++    }
+ 
+     if (isFileBrowserUrl(url)) {
+       window.close();
+@@ -153,6 +254,10 @@ export default class MainTab {
+     }
+ 
+     if (isFigmaRunUrl(url)) {
++      if (this.consumeAppAuthCallback(url)) {
++        window.close();
++        return;
++      }
+       if (isFigmaBoardLink(url) || isFigmaDesignLink(url)) {
+         window.destroy();
+       }
+@@ -172,6 +277,10 @@ export default class MainTab {
+       `[MainTab] window.open url="${url}" frameName="${details.frameName}" disposition="${details.disposition}" features="${details.features}"`,
+     );
+ 
++    if (this.consumeAppAuthCallback(url, undefined, undefined, true)) {
++      return { action: "deny" as const };
++    }
++
+     if (url.startsWith("https://accounts.google.com/") && /start_google_sso/.test(url)) {
+       return { action: "allow" as const };
+     }
+@@ -201,6 +310,8 @@ export default class MainTab {
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     (this.view.webContents as any).on("will-navigate", this.onMainWindowWillNavigate.bind(this));
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
++    (this.view.webContents as any).on("will-redirect", this.onMainWindowWillNavigate.bind(this));
++    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     (this.view.webContents as any).on("dom-ready", this.onDomReady.bind(this));
+     this.view.webContents.on("did-create-window", this.onNewWindow.bind(this));
+   }
+diff --git a/src/main/Ui/Tab.ts b/src/main/Ui/Tab.ts
+old mode 100644
+new mode 100755
+index 0a87bb5..8132a8e
+--- a/src/main/Ui/Tab.ts
++++ b/src/main/Ui/Tab.ts
+@@ -14,7 +14,8 @@ import { preloadScriptPathDev, preloadScriptPathProd } from "Utils/Main";
+ import {
+   isDev,
+   isFigmaRunUrl,
+-  isAppAuthRedeem,
++  isFigmaAppAuthCallback,
++  isAppAuthGrandLink,
+   isFigmaDocLink,
+   isFileBrowserUrl,
+   isExternallyOpenableUrl,
+@@ -131,6 +132,7 @@ export default class Tab {
+         nodeIntegration: false,
+         webgl: true,
+         contextIsolation: false,
++        backgroundThrottling: false,
+         zoomFactor: 1,
+         preload: isDev ? preloadScriptPathDev : preloadScriptPathProd,
+       },
+@@ -143,6 +145,30 @@ export default class Tab {
+   public updateScale(scale: number) {
+     this.view.webContents.setZoomFactor(scale);
+   }
++  private consumeAppAuthCallback(
++    url: string,
++    event?: Event,
++    popup?: BrowserWindow,
++    allowHttp = false,
++  ): boolean {
++    if (!isFigmaAppAuthCallback(url)) return false;
++    // Keep the top-level HTTPS fallback navigable so Figma can mint the
++    // session when the login page has no desktop bridge yet.
++    if (!allowHttp && /^https?:\/\//i.test(url)) return false;
++    event?.preventDefault();
++    app.emit("handleAppAuthRedeem", url);
++    popup?.close();
++    return true;
++  }
++
++  private attachAppAuthInterceptor(contents: WebContents, popup?: BrowserWindow) {
++    const onUrl = (event: Event, url: string) => {
++      this.consumeAppAuthCallback(url, event, popup, true);
++    };
++    contents.on("will-navigate", onUrl);
++    contents.on("will-redirect", onUrl);
++  }
++
+   private onDomReady(_event: Event) {}
+   private onDidNavigateInPage(_event: Event, newUrl: string, isMainFrame: boolean) {
+     if (!isMainFrame) return;
+@@ -159,9 +185,7 @@ export default class Tab {
+     if (!event.sender || event.sender.isDestroyed()) return;
+     const currentUrl = event.sender.getURL();
+ 
+-    if (isAppAuthRedeem(newUrl)) {
+-      return;
+-    }
++    if (this.consumeAppAuthCallback(newUrl, event)) return;
+ 
+     if (newUrl === currentUrl) {
+       event.preventDefault();
+@@ -184,7 +208,7 @@ export default class Tab {
+     const from = parseURL(currentUrl);
+     const to = parseURL(newUrl);
+ 
+-    if (from?.pathname === "/login") {
++    if (from?.pathname === "/login" && isAppAuthGrandLink(newUrl)) {
+       event.preventDefault();
+       return;
+     }
+@@ -202,11 +226,17 @@ export default class Tab {
+     const url = details.url;
+     logger.debug("newWindow, url: ", url);
+ 
+-    if (/start_google_sso/.test(url)) return;
++    if (this.consumeAppAuthCallback(url, undefined, window, true)) return;
++
++    if (/start_google_sso/.test(url)) {
++      this.attachAppAuthInterceptor(window.webContents, window);
++      return;
++    }
+ 
+     window.close();
+ 
+     if (isFigmaRunUrl(url)) {
++      if (this.consumeAppAuthCallback(url)) return;
+       app.emit("openUrlInNewTab", url);
+       return;
+     }
+@@ -280,6 +310,10 @@ export default class Tab {
+       `[Tab ${this.id}] window.open url="${url}" frameName="${details.frameName}" disposition="${details.disposition}" features="${details.features}"`,
+     );
+ 
++    if (this.consumeAppAuthCallback(url, undefined, undefined, true)) {
++      return { action: "deny" as const };
++    }
++
+     if (isFigmaRunUrl(url)) {
+       app.emit("openUrlInNewTab", url);
+       return { action: "deny" as const };
+@@ -299,6 +333,7 @@ export default class Tab {
+     (this.view.webContents as any).setWindowOpenHandler(this.windowOpenHandler.bind(this));
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     (this.view.webContents as any).on("will-navigate", this.onMainWindowWillNavigate.bind(this));
++    (this.view.webContents as any).on("will-redirect", this.onMainWindowWillNavigate.bind(this));
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     (this.view.webContents as any).on("did-navigate-in-page", this.onDidNavigateInPage.bind(this));
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+diff --git a/src/main/Ui/WarmTabManager.ts b/src/main/Ui/WarmTabManager.ts
+old mode 100644
+new mode 100755
+index c839e1a..0fd64e6
+--- a/src/main/Ui/WarmTabManager.ts
++++ b/src/main/Ui/WarmTabManager.ts
+@@ -1,5 +1,6 @@
+ import { NEW_PROJECT_TAB_URL } from "Const";
+ import { logger } from "../Logger";
++import { isMinFigmaEngine } from "../engineMode";
+ import Tab from "./Tab";
+ 
+ /**
+@@ -61,6 +62,7 @@ export class WarmTabManager {
+    * warm tab is scheduled once a user id is known (first boot included).
+    */
+   onUserIdChanged(previousId: string | undefined, newId: string): void {
++    if (isMinFigmaEngine()) return;
+     // Skip when previousId is undefined (first boot) or equal (the warm tab's
+     // own setUser cascade after it bootstraps).
+     if (previousId && previousId !== newId && this.warmTab) {
+@@ -111,6 +113,7 @@ export class WarmTabManager {
+ 
+   /** On window focus: re-warm if the tab died or aged past the TTL. */
+   refreshIfStale(): void {
++    if (isMinFigmaEngine()) return;
+     const isAlive = this.warmTab && !this.warmTab.view.webContents.isDestroyed();
+     const isStale = Date.now() - this.warmTabCreatedAt > WarmTabManager.WARM_TAB_TTL;
+ 
+@@ -135,6 +138,7 @@ export class WarmTabManager {
+   }
+ 
+   private scheduleWarmTab(delayMs: number): void {
++    if (isMinFigmaEngine()) return;
+     if (this.warmTabScheduled) return;
+     this.warmTabScheduled = true;
+     setTimeout(() => {
+@@ -144,6 +148,7 @@ export class WarmTabManager {
+   }
+ 
+   private initWarmTab(): void {
++    if (isMinFigmaEngine()) return;
+     const userId = this.host.getUserId();
+     if (!userId) return;
+ 
+diff --git a/src/main/Ui/Window.ts b/src/main/Ui/Window.ts
+old mode 100644
+new mode 100755
+index c2e5603..2b4c7a5
+--- a/src/main/Ui/Window.ts
++++ b/src/main/Ui/Window.ts
+@@ -10,8 +10,21 @@ import { WarmTabManager } from "./WarmTabManager";
+ import { WindowGeometry } from "./WindowGeometry";
+ import { logger } from "../Logger";
+ 
+-import { HOMEPAGE, TOPPANELHEIGHT, NEW_PROJECT_TAB_URL, NEW_FILE_TAB_TITLE } from "Const";
++import {
++  HOMEPAGE,
++  TOPPANELHEIGHT,
++  NEW_PROJECT_TAB_URL,
++  NEW_FILE_TAB_TITLE,
++  RECENT_FILES,
++} from "Const";
+ import { WINDOW_DEFAULT_OPTIONS } from "Const/window";
++import {
++  isEngineWindowVisible,
++  isEngineProcessQuitting,
++  isMinFigmaEngine,
++  hideEngineBrowserWindow,
++  trackEngineWindowVisibility,
++} from "../engineMode";
+ import {
+   isDev,
+   isCommunityUrl,
+@@ -49,6 +62,7 @@ export default class Window {
+ 
+   private _userId: string;
+   private shown = false;
++  private panelHasLoaded = false;
+   private static readonly SHOW_FALLBACK_MS = 3000;
+ 
+   // Loading skeleton is cleared by the Figma SPA's setLoading(false) signal.
+@@ -67,6 +81,11 @@ export default class Window {
+     this.window = new BrowserWindow({
+       ...WINDOW_DEFAULT_OPTIONS,
+       ...state,
++      show: !isMinFigmaEngine(),
++      skipTaskbar: isMinFigmaEngine(),
++      transparent: isMinFigmaEngine(),
++      backgroundColor: isMinFigmaEngine() ? "#00000000" : undefined,
++      paintWhenInitiallyHidden: true,
+       webPreferences: WINDOW_DEFAULT_OPTIONS.webPreferences,
+     });
+     this.geometry = new WindowGeometry(this.window);
+@@ -93,6 +112,7 @@ export default class Window {
+     this.updateTabsBounds();
+ 
+     this.registerEvents();
++    if (isMinFigmaEngine()) trackEngineWindowVisibility(this.window);
+ 
+     this.window.loadURL(isDev ? panelUrlDev : panelUrlProd);
+     if (isDev) toggleDetachedDevTools(this.window.webContents);
+@@ -108,6 +128,7 @@ export default class Window {
+ 
+   private revealIfHidden() {
+     if (this.shown || this.window.isDestroyed()) return;
++    if (isMinFigmaEngine() && !isEngineWindowVisible()) return;
+     this.shown = true;
+     this.window.show();
+   }
+@@ -607,11 +628,10 @@ export default class Window {
+       this.window.webContents.once("did-finish-load", () => this.restoreTabs(tabs));
+     }
+ 
++    // Engine mode keeps the window hidden (show:false), so restoring the real
++    // bounds here cannot flash anything on screen.
+     this.win.setBounds({ x, y, width, height });
+-
+-    if (isMaximized) {
+-      this.win.maximize();
+-    }
++    if (isMaximized) this.win.maximize();
+   }
+ 
+   public setLoading(event: IpcMainEvent, args: WebApi.SetLoading) {
+@@ -657,8 +677,26 @@ export default class Window {
+       });
+     }
+ 
++    if (this.panelHasLoaded) return;
++    this.panelHasLoaded = true;
+     this.setFocusToMainTab();
+   }
++
++  /** Show the live tab (open file or recents), not a fresh /login load. */
++  public revealEngineContent() {
++    this.updateTabsBounds();
++    const lastId = this.tabManager.lastFocusedTab;
++    const mainId = this.tabManager.mainTab.id;
++    if (lastId && lastId !== mainId && this.tabManager.getById(lastId)) {
++      this.setTabFocus(lastId);
++    } else {
++      this.setFocusToMainTab();
++    }
++    const mainUrl = this.tabManager.mainTab.getUrl() || "";
++    if (/\/login(?:\/|$|\?)/.test(mainUrl)) {
++      this.tabManager.mainTab.loadUrl(RECENT_FILES);
++    }
++  }
+   public setMenu(menu: Menu) {
+     this.window.setMenu(menu);
+   }
+@@ -969,10 +1007,37 @@ export default class Window {
+     this.pushSettingsToPanel();
+     this.setFigmaTheme(getResolvedFigmaTheme());
+     this.showHandler(null);
++    // Engine mode never reveals from here — the window stays hidden until Min
++    // sends an explicit show RPC (login or the user's Show engine button).
+     this.revealIfHidden();
+   }
+ 
++  public dispatchPluginMenuAction(pluginMenuAction: Menu.MenuAction, fileKey?: string): boolean {
++    const re = /figma\.com\/(?:design|file|proto|board|deck)\//i;
++    for (const tab of this.tabManager.getAll().values()) {
++      const url = tab.getUrl() || tab.url || "";
++      if (re.test(url) && tab.view && !tab.view.webContents.isDestroyed()) {
++        if (fileKey) {
++          const match = url.match(/figma\.com\/(?:design|file|proto|board|deck)\/([A-Za-z0-9]+)/i);
++          if (!match || match[1] !== fileKey) continue;
++          // Do not send while the target renderer is still navigating. The
++          // IPC message would be lost before the Figma bridge is ready.
++          if (tab.view.webContents.isLoading()) continue;
++        }
++        tab.view.webContents.send("handlePluginMenuAction", pluginMenuAction);
++        return true;
++      }
++    }
++    if (fileKey) return false;
++    this.tabManager.handlePluginMenuAction(pluginMenuAction);
++    return true;
++  }
++
+   public close() {
++    if (isMinFigmaEngine() && !isEngineProcessQuitting()) {
++      hideEngineBrowserWindow(this.window);
++      return;
++    }
+     // Snapshot state while tabs are still alive. tabManager.closeAll()
+     // below clears the tabs map; without this explicit call the snapshot
+     // taken by the `close` event handler would see tabs:[] and overwrite
+@@ -994,7 +1059,14 @@ export default class Window {
+   private registerEvents() {
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     (this.window as any).on("show", this.showHandler.bind(this));
+-    this.window.on("close", this.cacheStateBeforeClose.bind(this));
++    this.window.on("close", (event) => {
++      if (isMinFigmaEngine() && !isEngineProcessQuitting()) {
++        event.preventDefault();
++        hideEngineBrowserWindow(this.window);
++        return;
++      }
++      this.cacheStateBeforeClose();
++    });
+     this.window.on("resize", this.updateTabsBounds.bind(this));
+     this.window.on("maximize", () => setTimeout(this.updateAllTabsBounds.bind(this), 100));
+     this.window.on("unmaximize", () => setTimeout(this.updateAllTabsBounds.bind(this), 100));
+diff --git a/src/main/Ui/WindowManager.ts b/src/main/Ui/WindowManager.ts
+index b1f4a02..8f1c3b0 100755
+--- a/src/main/Ui/WindowManager.ts
++++ b/src/main/Ui/WindowManager.ts
+@@ -12,6 +12,8 @@ import { isPreviewAnchor } from "Utils/Main/tabPreview";
+ import { isMenuAnchor } from "Utils/Main/menuPosition";
+ import { ipcRegistry } from "Main/controllers/registry";
+ import { logger } from "Main/Logger";
++import { isMinFigmaEngine, isEngineProcessQuitting } from "../engineMode";
++import { getExtensionManager } from "../ExtensionManager";
+ 
+ export default class WindowManager {
+   private menuManager: MenuManager;
+@@ -21,6 +23,11 @@ export default class WindowManager {
+   // Set by TrayManager: with a tray icon the process outlives its last window.
+   private keepAliveWithoutWindows = false;
+   private closedTabs: Map<string, Types.SavedTab> = new Map();
++  // Plugin menu data is per tab: the file tab's panel reports the dev-plugin
++  // entries, the main tab (recents) does not. A single shared slot let the
++  // main tab overwrite the file tab's data and made runPluginByName flaky.
++  private pluginMenuDataByTab: Map<number, { items: Menu.MenuItem[]; at: number }> = new Map();
++  private handledAppAuthSecrets: Map<string, number> = new Map();
+ 
+   constructor() {
+     this.menuManager = new MenuManager();
+@@ -151,6 +158,16 @@ export default class WindowManager {
+     const gSecret = new URL(normalized, HOMEPAGE).searchParams.get("g_secret");
+     if (!gSecret) return false;
+ 
++    const handledAt = this.handledAppAuthSecrets.get(gSecret);
++    if (handledAt && Date.now() - handledAt < 30_000) return true;
++    const now = Date.now();
++    this.handledAppAuthSecrets.set(gSecret, now);
++    setTimeout(() => {
++      if (this.handledAppAuthSecrets.get(gSecret) === now) {
++        this.handledAppAuthSecrets.delete(gSecret);
++      }
++    }, 30_000);
++
+     window.completeFigmaAuthInMainTab(gSecret);
+     return true;
+   };
+@@ -220,18 +237,28 @@ export default class WindowManager {
+     // Force initial bounds update now that the window is registered
+     window.updateTabsBounds();
+ 
+-    if (windowState.x === -1 || windowState.y === -1) {
+-      window.win.center();
+-      const bounds = window.win.getBounds();
+-      windowState.x = bounds.x;
+-      windowState.y = bounds.y;
++    if (!isMinFigmaEngine()) {
++      if (windowState.x === -1 || windowState.y === -1) {
++        window.win.center();
++        const bounds = window.win.getBounds();
++        windowState.x = bounds.x;
++        windowState.y = bounds.y;
++      }
++      window.focus();
+     }
+-
+-    window.focus();
+     window.setMenu(menu);
+   }
+ 
+   public restoreState() {
++    if (isMinFigmaEngine()) {
++      // Real-size window created hidden (show:false in the Window
++      // constructor) — the first Show engine restores a sane layout.
++      this.newWindow({
++        ...WINDOW_DEFAULT_OPTIONS,
++        tabs: [],
++      });
++      return;
++    }
+     if (
+       !storage.settings.app.windowsState ||
+       Object.keys(storage.settings.app.windowsState).length === 0
+@@ -424,6 +451,7 @@ export default class WindowManager {
+     window.addTab(tabInfo.url, tabInfo.title);
+   }
+   private handleCloseTab(window: Window, tabId: number) {
++    this.pluginMenuDataByTab.delete(tabId);
+     const tabInfo = window.getTabInfo(tabId);
+ 
+     if (tabInfo && tabInfo.title !== NEW_FILE_TAB_TITLE) {
+@@ -521,6 +549,11 @@ export default class WindowManager {
+ 
+   private windowClose(windowId: number) {
+     const window = this.windows.get(windowId);
++    if (!window) return;
++    if (isMinFigmaEngine() && !isEngineProcessQuitting()) {
++      window.close();
++      return;
++    }
+ 
+     window.close();
+ 
+@@ -642,11 +675,107 @@ export default class WindowManager {
+     const tabId = event.sender.id;
+     const window = this.getWindowByWebContentsId(tabId);
+ 
++    if (Array.isArray(state?.pluginMenuData)) {
++      this.pluginMenuDataByTab.set(tabId, { items: state.pluginMenuData, at: Date.now() });
++    }
++
+     this.menuManager.setTabMenu(tabId, state);
+ 
+     this.needUpdateMenu(window.id, tabId);
+   }
+ 
++  public findPluginMenuAction(pluginName: string, fileKey?: string): Menu.MenuAction | null {
++    const needle = pluginName.toLowerCase();
++    const walk = (items: Menu.MenuItem[] | undefined): Menu.MenuAction | null => {
++      if (!items) return null;
++      for (const item of items) {
++        const label = this.pluginMenuLabel(item.name).toLowerCase();
++        if (label.includes(needle) && item.menuAction) return item.menuAction;
++        const nested = walk(item.submenu);
++        if (nested) return nested;
++      }
++      return null;
++    };
++    // Newest reporter first — the file tab that just loaded is the one Min
++    // wants to run the plugin in.
++    const entries = [...this.pluginMenuDataByTab.entries()].sort((a, b) => b[1].at - a[1].at);
++    const window = fileKey ? this.getLastFocusedWindow() : undefined;
++    for (const [tabId, entry] of entries) {
++      if (fileKey) {
++        const tab = window?.tabs.get(tabId);
++        const url = tab?.view?.webContents?.getURL?.() || tab?.url || "";
++        const match = url.match(/figma\.com\/(?:design|file|proto|board|deck)\/([A-Za-z0-9]+)/i);
++        if (!match || match[1] !== fileKey) continue;
++      }
++      const action = walk(entry.items);
++      if (action) return action;
++    }
++    return null;
++  }
++
++  public describePluginMenu(pluginName: string): {
++    tabs: number;
++    matched: boolean;
++    ageMs: number | null;
++    labels: string[];
++    matchedAction: Menu.MenuAction | null;
++  } {
++    let newest = 0;
++    const labels: string[] = [];
++    const collect = (items: Menu.MenuItem[] | undefined): void => {
++      if (!items) return;
++      for (const item of items) {
++        const label = this.pluginMenuLabel(item.name);
++        if (label) labels.push(label);
++        collect(item.submenu);
++      }
++    };
++    for (const entry of this.pluginMenuDataByTab.values()) {
++      if (entry.at > newest) newest = entry.at;
++      collect(entry.items);
++    }
++    return {
++      tabs: this.pluginMenuDataByTab.size,
++      matched: !!this.findPluginMenuAction(pluginName),
++      ageMs: newest ? Date.now() - newest : null,
++      labels: labels.slice(0, 60),
++      matchedAction: this.findPluginMenuAction(pluginName),
++    };
++  }
++
++  public runPluginByName(pluginName: string, fileKey?: string): boolean {
++    const window = this.getLastFocusedWindow();
++    if (!window) return false;
++    const action = this.findPluginMenuAction(pluginName, fileKey);
++    if (action) return window.dispatchPluginMenuAction(action, fileKey);
++    // The SPA only pushes its full plugin menu after the window has been
++    // shown/focused; a never-shown engine window reports a stub menu. Local
++    // dev plugins don't need that menu — dispatch run-local-plugin directly.
++    const localFileId = getExtensionManager()?.findLocalExtensionIdByName(pluginName);
++    if (localFileId == null) {
++      const debug = this.describePluginMenu(pluginName);
++      logger.warn(
++        `[engine] plugin not found in menu or local extensions: ${pluginName} (tabsWithMenuData=${debug.tabs}, ageMs=${debug.ageMs})`,
++      );
++      return false;
++    }
++    logger.info(
++      `[engine] dispatching run-local-plugin directly for ${pluginName} (localFileId=${localFileId})`,
++    );
++    return window.dispatchPluginMenuAction(
++      { type: "run-local-plugin", localFileId } as Menu.MenuAction,
++      fileKey,
++    );
++  }
++
++  private pluginMenuLabel(itemName: Menu.MenuItemName | undefined): string {
++    if (typeof itemName === "string") return itemName;
++    if (!itemName) return "";
++    if (itemName.type === "plugin-name") return itemName.plugin;
++    if (itemName.type === "string-key") return itemName.string;
++    return "";
++  }
++
+   private setIsInVoiceCall(event: IpcMainEvent, isInVoiceCall: boolean) {
+     const window = this.windows.get(this.lastFocusedwindowId);
+     const tabId = event.sender.id;
+@@ -832,6 +961,7 @@ export default class WindowManager {
+     app.on("focusLastWindow", this.focusLastWindow.bind(this));
+     app.on("requestBoundsForTabView", this.sendWindowBoundsToTabs.bind(this));
+     app.on("openUrlInNewTab", this.openUrlInNewTab.bind(this));
++    app.on("handleAppAuthRedeem", this.tryHandleAppAuthRedeemUrl.bind(this));
+     app.on("openUrlFromCommunity", this.openUrlFromCommunity.bind(this));
+     app.on("windowFocus", this.windowFocus.bind(this));
+     app.on("windowClose", this.windowClose.bind(this));
+diff --git a/src/main/applyChromiumSwitches.ts b/src/main/applyChromiumSwitches.ts
+old mode 100644
+new mode 100755
+index 9e3807b..2ed74fa
+--- a/src/main/applyChromiumSwitches.ts
++++ b/src/main/applyChromiumSwitches.ts
+@@ -186,6 +186,9 @@ function applyDefaultOptimizations(
+   app.commandLine.appendSwitch("enable-native-gpu-memory-buffers");
+   app.commandLine.appendSwitch("disable-background-timer-throttling");
+   app.commandLine.appendSwitch("disable-renderer-backgrounding");
++  if (process.env.MIN_FIGMA_ENGINE === "1") {
++    app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
++  }
+ 
+   logger.info(
+     `Applied default performance optimizations for Linux (session: ${isWayland ? "Wayland" : "X11"}${
+diff --git a/src/main/controllers/AuthController.ts b/src/main/controllers/AuthController.ts
+old mode 100644
+new mode 100755
+index dd58b69..ca890ec
+--- a/src/main/controllers/AuthController.ts
++++ b/src/main/controllers/AuthController.ts
+@@ -3,6 +3,7 @@
+  */
+ import type { IpcMainEvent } from "electron";
+ import { session, shell } from "electron";
++import http from "node:http";
+ 
+ import * as Const from "Const";
+ import { request } from "Utils/Main";
+@@ -10,8 +11,71 @@ import { isAppAuthGrandLink } from "Utils/Common";
+ import { storage } from "../Storage";
+ import { logger } from "../Logger";
+ import { ipcRegistry } from "./registry";
++import { isMinFigmaEngine, revealEngineWindow } from "../engineMode";
+ import type WindowManager from "../Ui/WindowManager";
+ 
++const MIN_BRIDGE_PORT = 44178;
++const MIN_BRIDGE_TOKEN = "min-figma-bridge-local";
++
++function makeAppAuthGrantUrl(grantPath: string): string | null {
++  try {
++    const rawPath = String(grantPath || "").trim();
++    // Figma has emitted both "/app_auth/…" and "//app_auth/…" over time.
++    // Treat those as path references; otherwise URL() interprets the latter
++    // as a different hostname.
++    const input = /^https?:\/\//i.test(rawPath) ? rawPath : `/${rawPath.replace(/^\/+/, "")}`;
++    const url = new URL(input, `${Const.HOMEPAGE}/`);
++    if (
++      !/^https?:$/i.test(url.protocol) ||
++      !/(^|\.)figma\.com$/i.test(url.hostname) ||
++      !/^\/app_auth\/[^/]+\/grant/.test(url.pathname)
++    ) {
++      return null;
++    }
++    if (!url.searchParams.has("desktop_protocol")) {
++      url.searchParams.set("desktop_protocol", "figma");
++    }
++    return url.toString();
++  } catch {
++    return null;
++  }
++}
++
++function openGrantInMin(url: string): Promise<void> {
++  const payload = JSON.stringify({ url });
++  return new Promise((resolve, reject) => {
++    const req = http.request(
++      {
++        host: "127.0.0.1",
++        port: MIN_BRIDGE_PORT,
++        path: "/auth/open",
++        method: "POST",
++        headers: {
++          "Content-Type": "application/json",
++          "X-Min-Figma-Bridge": MIN_BRIDGE_TOKEN,
++          "Content-Length": Buffer.byteLength(payload),
++        },
++        timeout: 2500,
++      },
++      (res) => {
++        res.resume();
++        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
++          resolve();
++          return;
++        }
++        reject(new Error(`min auth open ${res.statusCode}`));
++      },
++    );
++    req.on("error", reject);
++    req.on("timeout", () => {
++      req.destroy();
++      reject(new Error("min auth open timeout"));
++    });
++    req.write(payload);
++    req.end();
++  });
++}
++
+ export default class AuthController {
+   constructor(private windowManager: WindowManager) {
+     this.register();
+@@ -35,11 +99,32 @@ export default class AuthController {
+   }
+ 
+   private startAppAuth(_: IpcMainEvent, data: { grantPath: string }) {
+-    if (isAppAuthGrandLink(data.grantPath)) {
+-      const url = `${Const.HOMEPAGE}${data.grantPath}?desktop_protocol=figma`;
++    if (!data || !isAppAuthGrandLink(data.grantPath)) return;
++    const url = makeAppAuthGrantUrl(data.grantPath);
++    if (!url) {
++      logger.warn("[engine-auth] invalid grant path", data.grantPath);
++      return;
++    }
+ 
+-      shell.openExternal(url);
++    // Engine mode: open the grant page as a Min tab. The figma:// redeem
++    // callback is intercepted by Min and sent back to this process, instead
++    // of the official Figma desktop (shell.openExternal) or this window.
++    if (isMinFigmaEngine()) {
++      // The login page is already visible when this callback fires. Reveal
++      // without replacing it with /files/recent, otherwise the navigation
++      // races the auth request and Figma shows its generic error page.
++      revealEngineWindow(this.windowManager, false);
++      void openGrantInMin(url).catch((error) => {
++        logger.warn("[engine-auth] Min tab open failed, opening grant in engine", error);
++        // Keep the callback inside this engine if Min was closed or its
++        // bridge is temporarily unavailable. Opening the grant externally
++        // sends the one-time callback to another Figma installation.
++        this.windowManager.openUrl(url);
++      });
++      return;
+     }
++
++    shell.openExternal(url);
+   }
+ 
+   private finishAppAuth(event: IpcMainEvent, data: { redirectURL?: string | null }) {
+diff --git a/src/main/index.ts b/src/main/index.ts
+index 8a77e80..f7eb70c 100755
+--- a/src/main/index.ts
++++ b/src/main/index.ts
+@@ -21,7 +21,14 @@ import { applyChromiumSwitches, shouldRelaunchUnderX11 } from "./applyChromiumSw
+ // it honours XDG_CONFIG_HOME and sandboxed/redirected paths, respects an e2e --user-data-dir,
+ // and matches what Storage.ts uses. Hardcoding ~/.config/figma-linux-next would read a stale
+ // file whenever those differ. app.getPath works before app.ready once the name is set.
+-app.setName("figma-linux-next");
++if (process.env.MIN_FIGMA_ENGINE === "1") {
++  app.setName("min-figma-engine");
++  if (process.env.MIN_FIGMA_USER_DATA) {
++    app.setPath("userData", process.env.MIN_FIGMA_USER_DATA);
++  }
++} else {
++  app.setName("figma-linux-next");
++}
+ 
+ let savedSettings: {
+   app?: Partial<Types.SettingsInterface["app"]>;
+diff --git a/src/renderer/DesktopAPI/webBinding.ts b/src/renderer/DesktopAPI/webBinding.ts
+old mode 100644
+new mode 100755
+index 168383c..f01cfeb
+--- a/src/renderer/DesktopAPI/webBinding.ts
++++ b/src/renderer/DesktopAPI/webBinding.ts
+@@ -154,9 +154,12 @@ const initWebBindings = (): void => {
+   // finish the redeem with full session/CSRF context. The bridge target name
+   // is the channel the page listens on. When the bridge isn't ready yet
+   // (e.g., the login page hasn't established it), fall back to a top-level
+-  // navigation so the server still mints a session.
++  // navigation so the server still mints a session. The initial login page
++  // can expose webPort before it has installed its message handler, so use
++  // the same direct path there instead of dropping the one-time secret.
+   E.ipcRenderer.on("figma:complete-auth", (_: IpcRendererEvent, gSecret: string, path?: string) => {
+-    if (webPort) {
++    const isLoginPage = /^\/login(?:\/|$)/.test(window.location.pathname);
++    if (webPort && !isLoginPage) {
+       const args: { gSecret: string; path?: string } = { gSecret };
+       if (path) args.path = path;
+       webPort.postMessage({ name: "redeemAppAuth", args });
+diff --git a/src/utils/Common/url.ts b/src/utils/Common/url.ts
+old mode 100644
+new mode 100755
+index 13d1210..5c5ea94
+--- a/src/utils/Common/url.ts
++++ b/src/utils/Common/url.ts
+@@ -78,10 +78,49 @@ export const normalizeUrl = (url: string): string => {
+   return url.replace(/^figma:\//, HOMEPAGE);
+ };
+ 
+-export const isAppAuthGrandLink = (url: string) => /\/app_auth\/.*\/grant/.test(url);
+-export const isAppAuthRedeem = (url: string) => /\/app_auth\/redeem\?g_secret=.+/.test(url);
++export const isAppAuthGrandLink = (url: string) => /\/app_auth\/.*\/grant/.test(String(url || ""));
+ 
+-export const isAppAuthLink = (url: string) => /figma:\/\/app_auth\/redeem\?g_secret=.*/.test(url);
++const parseAppAuthUrl = (url: string): URL | undefined => {
++  const value = String(url || "").trim();
++  if (!value) return undefined;
++
++  // A relative redirect can have zero, one, or two leading slashes. Normalize
++  // it before URL() so "//app_auth/…" is not interpreted as a hostname.
++  const input = /^(?:https?:|figma:)/i.test(value) ? value : `/${value.replace(/^\/+/, "")}`;
++  try {
++    return new URL(input, `${HOMEPAGE}/`);
++  } catch {
++    return undefined;
++  }
++};
++
++const isAppAuthRedeemPath = (url: string): boolean => {
++  const parsed = parseAppAuthUrl(url);
++  if (!parsed) return false;
++
++  const pathname = parsed.pathname.replace(/\/+/g, "/");
++  const protocol = parsed.protocol.toLowerCase();
++  const isFigmaProtocol =
++    protocol === "figma:" &&
++    ((parsed.hostname.toLowerCase() === "app_auth" && pathname === "/redeem") ||
++      pathname === "/app_auth/redeem");
++  const isFigmaWeb =
++    /^(https?:)$/.test(protocol) &&
++    /(^|\.)figma\.com$/i.test(parsed.hostname) &&
++    pathname === "/app_auth/redeem";
++
++  return (isFigmaProtocol || isFigmaWeb) && !!parsed.searchParams.get("g_secret");
++};
++
++export const isAppAuthRedeem = (url: string) => isAppAuthRedeemPath(url);
++
++export const isAppAuthLink = (url: string) => {
++  const parsed = parseAppAuthUrl(url);
++  if (parsed?.protocol.toLowerCase() !== "figma:") return false;
++  return isAppAuthRedeemPath(url);
++};
++
++export const isFigmaAppAuthCallback = (url: string) => isAppAuthRedeem(url);
+ 
+ // Deprecated or legacy checks, kept for compatibility but should use isFigmaRunUrl
+ export const isRecentFilesLink = (url: string) =>
+diff --git a/tests/unit/utils/Common/url.test.ts b/tests/unit/utils/Common/url.test.ts
+old mode 100644
+new mode 100755
+index 075c975..634b7b9
+--- a/tests/unit/utils/Common/url.test.ts
++++ b/tests/unit/utils/Common/url.test.ts
+@@ -9,6 +9,9 @@ import {
+   isExternallyOpenableUrl,
+   getEditorTypeFromUrl,
+   normalizeEditorType,
++  isAppAuthRedeem,
++  isAppAuthLink,
++  isFigmaAppAuthCallback,
+ } from "Utils/Common/url";
+ import { HOMEPAGE } from "Const";
+ 
+@@ -353,6 +356,31 @@ describe("isExternallyOpenableUrl", () => {
+   });
+ });
+ 
++describe("Figma app authentication callbacks", () => {
++  test("accepts custom-protocol callbacks with either slash form", () => {
++    expect(isAppAuthLink("figma://app_auth/redeem?g_secret=secret")).toBe(true);
++    expect(isAppAuthLink("figma:///app_auth/redeem?g_secret=secret")).toBe(true);
++    expect(isFigmaAppAuthCallback("figma://app_auth/redeem?g_secret=secret")).toBe(true);
++  });
++
++  test("accepts HTTPS and relative redeem callbacks with query parameters", () => {
++    expect(
++      isAppAuthRedeem(
++        "https://www.figma.com/app_auth/redeem?desktop_protocol=figma&g_secret=secret",
++      ),
++    ).toBe(true);
++    expect(isAppAuthRedeem("/app_auth/redeem?g_secret=secret")).toBe(true);
++    expect(isAppAuthRedeem("//app_auth/redeem?g_secret=secret")).toBe(true);
++  });
++
++  test("rejects callbacks from another host or without a secret", () => {
++    expect(isFigmaAppAuthCallback("https://example.com/app_auth/redeem?g_secret=secret")).toBe(
++      false,
++    );
++    expect(isFigmaAppAuthCallback("figma://app_auth/redeem")).toBe(false);
++  });
++});
++
+ describe("Figma Motion export queue (issue #41)", () => {
+   // Real URL captured from the app log when pressing "Export video".
+   const EXPORT_URL = "https://www.figma.com/export/5gUR7P3cw4YMjkslNtUHP6?fuid=745592650552274914";

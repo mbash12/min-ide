@@ -23,7 +23,9 @@ export function enginePluginPath(): string | null {
 }
 
 export function parseFigmaFileKey(rawUrl: string): string | null {
-  const match = String(rawUrl || "").match(/figma\.com\/(?:design|file|proto|board|deck)\/([A-Za-z0-9]+)/i);
+  const match = String(rawUrl || "").match(
+    /figma\.com\/(?:design|file|proto|board|deck)\/([A-Za-z0-9]+)/i,
+  );
   return match ? match[1] : null;
 }
 
@@ -274,7 +276,7 @@ async function hasFigmaSessionCookie(): Promise<boolean> {
 }
 
 export function startEngineControl(deps: EngineControlDeps): http.Server {
-  app.on("before-quit", function () {
+  app.on("before-quit", () => {
     markEngineProcessQuitting();
   });
   const port = engineControlPort();
@@ -294,9 +296,11 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
           let loading = false;
           if (window) {
             try {
-              const tab = window.getTabInfo(window.getLatestFocusedTabId());
+              const tabId = window.getLatestFocusedTabId();
+              const tab = window.getTabInfo(tabId);
               currentUrl = tab?.url || "";
-              const webContents = tab?.webContents || window.win?.webContents;
+              const webContents =
+                window.tabs.get(tabId)?.view?.webContents ?? window.win?.webContents;
               loading = !!webContents?.isLoading();
             } catch {
               /* tab vanished mid-read — report empty url, not a 500 */
@@ -349,7 +353,10 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
             const name = String(params.name || ENGINE_PLUGIN_NAME);
             const fileKey = typeof params.fileKey === "string" ? params.fileKey : undefined;
             const ran = deps.windowManager.runPluginByName(name, fileKey);
-            json(res, 200, { ok: ran, error: ran ? undefined : `plugin menu item not ready: ${name}` });
+            json(res, 200, {
+              ok: ran,
+              error: ran ? undefined : `plugin menu item not ready: ${name}`,
+            });
             return;
           }
 
@@ -398,9 +405,9 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
               const menuReady = targetFileKey
                 ? !!deps.windowManager.findPluginMenuAction(ENGINE_PLUGIN_NAME, targetFileKey)
                 : deps.windowManager.describePluginMenu(ENGINE_PLUGIN_NAME).matched;
-              const loading = !!window
-                .getTabInfo(window.getLatestFocusedTabId())
-                ?.webContents?.isLoading?.();
+              const loading = !!window.tabs
+                .get(window.getLatestFocusedTabId())
+                ?.view?.webContents?.isLoading?.();
               if (menuReady && !loading) {
                 if (!matchedSince) matchedSince = Date.now();
                 if (Date.now() - matchedSince < 1200) continue;
