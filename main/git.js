@@ -33,29 +33,75 @@ function isSafeGitRef (value) {
   return true
 }
 
+/* Runs git without blocking the main process: spawn + kill-on-timeout.
+GIT_TERMINAL_PROMPT=0 makes remote operations (pull/push/fetch) fail fast
+instead of waiting on a credential prompt that can never be answered. */
+var GIT_TIMEOUT_MS = 15000
+var GIT_MAX_BUFFER = 10 * 1024 * 1024
+
 function runGit (cwd, args, options) {
-  if (!childProcess) return { stdout: '', stderr: 'child_process not available', status: 1 }
   options = options || {}
-  try {
-    var result = childProcess.spawnSync('git', args, {
-      cwd: cwd,
-      encoding: 'utf8',
-      timeout: 15000,
-      maxBuffer: 10 * 1024 * 1024,
-      env: Object.assign({}, process.env, options.env || {})
-    })
-    return {
-      stdout: result.stdout || '',
-      stderr: result.stderr || '',
-      status: result.status,
-      error: result.error || null
+  return new Promise(function (resolve) {
+    if (!childProcess) {
+      resolve({ stdout: '', stderr: 'child_process not available', status: 1 })
+      return
     }
-  } catch (err) {
-    return { stdout: '', stderr: err.message || String(err), status: 1, error: err }
-  }
+    var proc
+    try {
+      proc = childProcess.spawn('git', args, {
+        cwd: cwd,
+        env: Object.assign({}, process.env, { GIT_TERMINAL_PROMPT: '0' }, options.env || {})
+      })
+    } catch (err) {
+      resolve({ stdout: '', stderr: err.message || String(err), status: 1, error: err })
+      return
+    }
+    var stdout = ''
+    var stderr = ''
+    var settled = false
+    var timedOut = false
+    var finish = function (result) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    var kill = function () {
+      try { proc.kill('SIGKILL') } catch (e) {}
+    }
+    var timer = setTimeout(function () {
+      timedOut = true
+      kill()
+    }, options.timeout || GIT_TIMEOUT_MS)
+    proc.stdout.on('data', function (d) {
+      if (stdout.length >= GIT_MAX_BUFFER) return
+      stdout += d
+      if (stdout.length > GIT_MAX_BUFFER) {
+        stdout = stdout.slice(0, GIT_MAX_BUFFER)
+        kill()
+      }
+    })
+    proc.stderr.on('data', function (d) {
+      if (stderr.length >= GIT_MAX_BUFFER) return
+      stderr += d
+      if (stderr.length > GIT_MAX_BUFFER) {
+        stderr = stderr.slice(0, GIT_MAX_BUFFER)
+      }
+    })
+    proc.on('error', function (err) {
+      finish({ stdout: stdout, stderr: stderr || err.message || String(err), status: 1, error: err })
+    })
+    proc.on('close', function (code) {
+      finish({
+        stdout: stdout,
+        stderr: timedOut ? (stderr + '\ngit timed out').trim() : stderr,
+        status: timedOut ? 1 : code
+      })
+    })
+  })
 }
 
-function findGitRoot (startPath) {
+async function findGitRoot (startPath) {
   if (!isDirectoryPath(startPath)) return null
   var current = path.resolve(startPath)
   while (true) {
@@ -68,7 +114,7 @@ function findGitRoot (startPath) {
     current = parent
   }
   // fallback: ask git rev-parse
-  var r = runGit(startPath, ['rev-parse', '--show-toplevel'])
+  var r = await runGit(startPath, ['rev-parse', '--show-toplevel'])
   if (r.status === 0) {
     var p = r.stdout.trim()
     if (p && isDirectoryPath(p)) return p
@@ -173,44 +219,44 @@ function unstagedStatus (y) {
   return y
 }
 
-function getStatus (cwd) {
-  var r = runGit(cwd, ['status', '--porcelain=v1', '-b', '--untracked-files=all'])
+async function getStatus (cwd) {
+  var r = await runGit(cwd, ['status', '--porcelain=v1', '-b', '--untracked-files=all'])
   if (r.status !== 0) {
     return { error: r.stderr || 'git status failed', raw: r.stdout + r.stderr }
   }
   var parsed = parsePorcelain(cwd, r.stdout)
   // get branch if not found via porcelain header, try rev-parse
   if (!parsed.branch) {
-    var br = runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    var br = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
     if (br.status === 0) {
       var b = br.stdout.trim()
       if (b && b !== 'HEAD') parsed.branch = b
     }
   }
   // recent commit message?
-  var log = runGit(cwd, ['log', '-1', '--pretty=%B'])
+  var log = await runGit(cwd, ['log', '-1', '--pretty=%B'])
   if (log.status === 0) {
     parsed.lastCommitMessage = log.stdout.trim()
   }
   return parsed
 }
 
-ipc.handle('gitIsRepo', function (e, cwd) {
+ipc.handle('gitIsRepo', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return { isRepo: false }
-  var r = runGit(cwd, ['rev-parse', '--is-inside-work-tree'])
-  return { isRepo: r.status === 0 && r.stdout.trim() === 'true', gitRoot: findGitRoot(cwd) }
+  var r = await runGit(cwd, ['rev-parse', '--is-inside-work-tree'])
+  return { isRepo: r.status === 0 && r.stdout.trim() === 'true', gitRoot: await findGitRoot(cwd) }
 })
 
-ipc.handle('gitStatus', function (e, cwd) {
+ipc.handle('gitStatus', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) {
     return { error: 'Invalid path', isRepo: false }
   }
-  var isRepoCheck = runGit(cwd, ['rev-parse', '--is-inside-work-tree'])
+  var isRepoCheck = await runGit(cwd, ['rev-parse', '--is-inside-work-tree'])
   if (isRepoCheck.status !== 0 || isRepoCheck.stdout.trim() !== 'true') {
     return { isRepo: false }
   }
-  var gitRoot = findGitRoot(cwd) || cwd
-  var status = getStatus(gitRoot)
+  var gitRoot = (await findGitRoot(cwd)) || cwd
+  var status = await getStatus(gitRoot)
   if (status.error) return { isRepo: true, error: status.error, gitRoot: gitRoot }
   status.isRepo = true
   status.gitRoot = gitRoot
@@ -218,125 +264,126 @@ ipc.handle('gitStatus', function (e, cwd) {
   return status
 })
 
-ipc.handle('gitInit', function (e, cwd) {
+ipc.handle('gitInit', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
-  var r = runGit(cwd, ['init'])
+  var r = await runGit(cwd, ['init'])
   if (r.status !== 0) return r.stderr || 'git init failed'
   return null
 })
 
-ipc.handle('gitStage', function (e, cwd, files) {
+ipc.handle('gitStage', async function (e, cwd, files) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   var safe = sanitizeRepoFiles(cwd, files)
   if (!safe) return 'Invalid path'
-  var r = runGit(cwd, ['add', '--', ...safe])
+  var r = await runGit(cwd, ['add', '--', ...safe])
   if (r.status !== 0) return r.stderr || 'git add failed'
   return null
 })
 
-ipc.handle('gitStageAll', function (e, cwd) {
+ipc.handle('gitStageAll', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
-  var r = runGit(cwd, ['add', '-A'])
+  var r = await runGit(cwd, ['add', '-A'])
   if (r.status !== 0) return r.stderr || 'git add failed'
   return null
 })
 
-ipc.handle('gitUnstage', function (e, cwd, files) {
+ipc.handle('gitUnstage', async function (e, cwd, files) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   var safe = sanitizeRepoFiles(cwd, files)
   if (!safe) return 'Invalid path'
   // try git restore --staged, fallback to git reset
-  var r = runGit(cwd, ['restore', '--staged', '--', ...safe])
+  var r = await runGit(cwd, ['restore', '--staged', '--', ...safe])
   if (r.status !== 0) {
-    r = runGit(cwd, ['reset', 'HEAD', '--', ...safe])
+    r = await runGit(cwd, ['reset', 'HEAD', '--', ...safe])
   }
   if (r.status !== 0) return r.stderr || 'git unstage failed'
   return null
 })
 
-ipc.handle('gitUnstageAll', function (e, cwd) {
+ipc.handle('gitUnstageAll', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
-  var r = runGit(cwd, ['reset', 'HEAD', '--', '.'])
+  var r = await runGit(cwd, ['reset', 'HEAD', '--', '.'])
   // if no commits yet, reset fails; try restore --staged
   if (r.status !== 0) {
-    r = runGit(cwd, ['restore', '--staged', '.'])
+    r = await runGit(cwd, ['restore', '--staged', '.'])
     if (r.status !== 0) return r.stderr || 'git reset failed'
   }
   return null
 })
 
-ipc.handle('gitDiscard', function (e, cwd, files) {
+ipc.handle('gitDiscard', async function (e, cwd, files) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   var safe = sanitizeRepoFiles(cwd, files)
   if (!safe) return 'Invalid path'
   var root = path.resolve(cwd)
   // for untracked, remove file
   // for modified, restore
-  var r = runGit(cwd, ['restore', '--', ...safe])
+  var r = await runGit(cwd, ['restore', '--', ...safe])
   if (r.status !== 0) {
-    r = runGit(cwd, ['checkout', '--', ...safe])
+    r = await runGit(cwd, ['checkout', '--', ...safe])
   }
   if (r.status !== 0) {
     // fallback: checkout with HEAD
-    r = runGit(cwd, ['checkout', 'HEAD', '--', ...safe])
+    r = await runGit(cwd, ['checkout', 'HEAD', '--', ...safe])
   }
   // Also need to handle untracked after discard failure - delete files
   // Try to remove untracked if still failing
   if (r.status !== 0) {
     // check if any file is untracked and delete
     var hadError = false
-    safe.forEach(function (f) {
+    for (var i = 0; i < safe.length; i++) {
+      var f = safe[i]
       var full = path.resolve(root, f)
       if (!isPathInside(root, full)) {
         hadError = true
-        return
+        continue
       }
       try {
-        var stat = fs.lstatSync(full)
+        var stat = await fs.promises.lstat(full)
         if (stat.isDirectory()) {
-          fs.rmSync(full, { recursive: true, force: true })
+          await fs.promises.rm(full, { recursive: true, force: true })
         } else {
-          fs.unlinkSync(full)
+          await fs.promises.unlink(full)
         }
       } catch (err) {
         // try git clean for untracked
-        var cr = runGit(cwd, ['clean', '-f', '--', f])
+        var cr = await runGit(cwd, ['clean', '-f', '--', f])
         if (cr.status !== 0) hadError = true
       }
-    })
+    }
     if (hadError) return r.stderr || 'git discard failed'
     return null
   }
   return null
 })
 
-ipc.handle('gitDiscardAll', function (e, cwd) {
+ipc.handle('gitDiscardAll', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   // discard all unstaged changes + remove untracked? VSCode discards unstaged, not untracked, but we can offer
-  var r = runGit(cwd, ['restore', '.'])
+  var r = await runGit(cwd, ['restore', '.'])
   if (r.status !== 0) {
-    r = runGit(cwd, ['checkout', '--', '.'])
+    r = await runGit(cwd, ['checkout', '--', '.'])
   }
   if (r.status !== 0) return r.stderr || 'git discard failed'
   return null
 })
 
-ipc.handle('gitCommit', function (e, cwd, message) {
+ipc.handle('gitCommit', async function (e, cwd, message) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   if (!message || !message.trim()) return 'Commit message required'
-  var r = runGit(cwd, ['commit', '-m', message.trim()])
+  var r = await runGit(cwd, ['commit', '-m', message.trim()])
   if (r.status !== 0) return r.stderr || r.stdout || 'git commit failed'
   return null
 })
 
-ipc.handle('gitDiff', function (e, cwd, filePath, staged) {
+ipc.handle('gitDiff', async function (e, cwd, filePath, staged) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
   var safe = sanitizeRepoFiles(cwd, [filePath])
   if (!safe) return { error: 'Invalid path' }
   var args = ['diff', '--no-color']
   if (staged) args.push('--staged')
   args.push('--', safe[0])
-  var r = runGit(cwd, args)
+  var r = await runGit(cwd, args)
   if (r.status !== 0) return { error: r.stderr || 'git diff failed' }
   return { diff: r.stdout }
 })
@@ -347,8 +394,8 @@ picked in Pro Settings) overrides the agent's own provider+model. */
 ipc.handle('gitGenerateCommitMessage', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
 
-  var diffResult = runGit(cwd, ['diff', '--staged', '--no-color', '--stat'])
-  var patchResult = runGit(cwd, ['diff', '--staged', '--no-color', '--unified=2'])
+  var diffResult = await runGit(cwd, ['diff', '--staged', '--no-color', '--stat'])
+  var patchResult = await runGit(cwd, ['diff', '--staged', '--no-color', '--unified=2'])
   if (patchResult.status !== 0) return { error: patchResult.stderr || 'Could not read staged changes.' }
   if (!patchResult.stdout.trim()) return { error: 'Stage changes before generating a commit message.' }
 
@@ -408,38 +455,38 @@ ipc.handle('gitGenerateCommitMessage', async function (e, cwd) {
 })
 
 /* full diff of a single commit (for the graph's detail view) */
-ipc.handle('gitCommitDiff', function (e, cwd, hash) {
+ipc.handle('gitCommitDiff', async function (e, cwd, hash) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
   if (!isSafeGitRef(hash)) return { error: 'Commit hash required' }
-  var r = runGit(cwd, ['show', '--no-color', '--format=', '--no-renames', hash])
+  var r = await runGit(cwd, ['show', '--no-color', '--format=', '--no-renames', hash])
   if (r.status !== 0) {
     // fall back to plain git show for root commits / exotic cases
-    r = runGit(cwd, ['show', '--no-color', hash])
+    r = await runGit(cwd, ['show', '--no-color', hash])
   }
   if (r.status !== 0) return { error: r.stderr || 'git show failed' }
   return { diff: r.stdout }
 })
 
-ipc.handle('gitLog', function (e, cwd, limit) {
+ipc.handle('gitLog', async function (e, cwd, limit) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
   var lim = String(limit || 20)
-  var r = runGit(cwd, ['log', '--oneline', '-n', lim])
+  var r = await runGit(cwd, ['log', '--oneline', '-n', lim])
   if (r.status !== 0) return { error: r.stderr || 'git log failed' }
   return { log: r.stdout }
 })
 
-ipc.handle('gitBranch', function (e, cwd) {
+ipc.handle('gitBranch', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
-  var r = runGit(cwd, ['branch', '--show-current'])
+  var r = await runGit(cwd, ['branch', '--show-current'])
   if (r.status === 0 && r.stdout.trim()) return { branch: r.stdout.trim() }
-  var r2 = runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  var r2 = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
   if (r2.status === 0) return { branch: r2.stdout.trim() }
   return { error: r.stderr }
 })
 
-ipc.handle('gitBranches', function (e, cwd) {
+ipc.handle('gitBranches', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
-  var r = runGit(cwd, ['branch', '-a'])
+  var r = await runGit(cwd, ['branch', '-a'])
   if (r.status !== 0) return { error: r.stderr || 'git branch failed' }
   var lines = r.stdout.split('\n').filter(Boolean)
   var branches = lines.map(function (line) {
@@ -452,26 +499,26 @@ ipc.handle('gitBranches', function (e, cwd) {
   var current = null
   branches.forEach(function (b) { if (b.isCurrent) current = b.name })
   if (!current) {
-    var rc = runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    var rc = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
     if (rc.status === 0) current = rc.stdout.trim()
   }
   return { branches: branches, current: current }
 })
 
-ipc.handle('gitGraph', function (e, cwd, limit) {
+ipc.handle('gitGraph', async function (e, cwd, limit) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
   var lim = String(limit || 30)
-  var r = runGit(cwd, ['log', '--graph', '--oneline', '--all', '--decorate', '-n', lim])
+  var r = await runGit(cwd, ['log', '--graph', '--oneline', '--all', '--decorate', '-n', lim])
   if (r.status !== 0) return { error: r.stderr || 'git log failed' }
   return { graph: r.stdout }
 })
 
-ipc.handle('gitLogDetailed', function (e, cwd, limit) {
+ipc.handle('gitLogDetailed', async function (e, cwd, limit) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
   var lim = String(limit || 20)
   // --topo-order keeps the same order as git log --graph, so graph rows can
   // be paired with commits by index
-  var r = runGit(cwd, ['log', '--topo-order', '--pretty=format:%H%x00%h%x00%s%x00%an%x00%ar%x00%D', '-n', lim])
+  var r = await runGit(cwd, ['log', '--topo-order', '--pretty=format:%H%x00%h%x00%s%x00%an%x00%ar%x00%D', '-n', lim])
   if (r.status !== 0) return { error: r.stderr || 'git log failed' }
   var commits = r.stdout.split('\n').filter(Boolean).map(function (line) {
     var parts = line.split('\x00')
@@ -480,100 +527,100 @@ ipc.handle('gitLogDetailed', function (e, cwd, limit) {
   return { commits: commits }
 })
 
-ipc.handle('gitPull', function (e, cwd) {
+ipc.handle('gitPull', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
-  var r = runGit(cwd, ['pull'])
+  var r = await runGit(cwd, ['pull'], { timeout: 120000 })
   if (r.status !== 0) return r.stderr || r.stdout || 'git pull failed'
   return null
 })
 
-ipc.handle('gitPush', function (e, cwd) {
+ipc.handle('gitPush', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
-  var r = runGit(cwd, ['push'])
+  var r = await runGit(cwd, ['push'], { timeout: 120000 })
   if (r.status !== 0) return r.stderr || r.stdout || 'git push failed'
   return null
 })
 
-ipc.handle('gitFetch', function (e, cwd) {
+ipc.handle('gitFetch', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
-  var r = runGit(cwd, ['fetch', '--all', '--prune'])
+  var r = await runGit(cwd, ['fetch', '--all', '--prune'], { timeout: 120000 })
   if (r.status !== 0) return r.stderr || r.stdout || 'git fetch failed'
   return null
 })
 
-ipc.handle('gitSync', function (e, cwd) {
+ipc.handle('gitSync', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
-  var r1 = runGit(cwd, ['pull'])
+  var r1 = await runGit(cwd, ['pull'], { timeout: 120000 })
   if (r1.status !== 0) return r1.stderr || r1.stdout || 'git pull failed'
-  var r2 = runGit(cwd, ['push'])
+  var r2 = await runGit(cwd, ['push'], { timeout: 120000 })
   if (r2.status !== 0) return r2.stderr || r2.stdout || 'git push failed'
   return null
 })
 
-ipc.handle('gitCheckout', function (e, cwd, branch) {
+ipc.handle('gitCheckout', async function (e, cwd, branch) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   if (!isSafeGitRef(branch)) return 'Branch name required'
-  var r = runGit(cwd, ['checkout', branch])
+  var r = await runGit(cwd, ['checkout', branch])
   if (r.status !== 0) return r.stderr || r.stdout || 'git checkout failed'
   return null
 })
 
 /* checks out a specific commit (detached HEAD) */
-ipc.handle('gitCheckoutCommit', function (e, cwd, hash) {
+ipc.handle('gitCheckoutCommit', async function (e, cwd, hash) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   if (!isSafeGitRef(hash)) return 'Commit hash required'
-  var r = runGit(cwd, ['checkout', hash])
+  var r = await runGit(cwd, ['checkout', hash])
   if (r.status !== 0) return r.stderr || r.stdout || 'git checkout failed'
   return null
 })
 
 /* reverts a commit by creating a new commit with the inverse changes */
-ipc.handle('gitRevertCommit', function (e, cwd, hash) {
+ipc.handle('gitRevertCommit', async function (e, cwd, hash) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   if (!isSafeGitRef(hash)) return 'Commit hash required'
-  var r = runGit(cwd, ['revert', '--no-edit', hash])
+  var r = await runGit(cwd, ['revert', '--no-edit', hash])
   if (r.status !== 0) return r.stderr || r.stdout || 'git revert failed'
   return null
 })
 
-ipc.handle('gitCreateBranch', function (e, cwd, branch) {
+ipc.handle('gitCreateBranch', async function (e, cwd, branch) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   if (!isSafeGitRef(branch)) return 'Branch name required'
-  var r = runGit(cwd, ['checkout', '-b', branch])
+  var r = await runGit(cwd, ['checkout', '-b', branch])
   if (r.status !== 0) return r.stderr || r.stdout || 'git create branch failed'
   return null
 })
 
 /* creates a branch pointing at a specific commit without checking it out */
-ipc.handle('gitCreateBranchAt', function (e, cwd, branch, hash) {
+ipc.handle('gitCreateBranchAt', async function (e, cwd, branch, hash) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   if (!isSafeGitRef(branch)) return 'Branch name required'
   if (!isSafeGitRef(hash)) return 'Commit hash required'
-  var r = runGit(cwd, ['branch', branch, hash])
+  var r = await runGit(cwd, ['branch', branch, hash])
   if (r.status !== 0) return r.stderr || r.stdout || 'git create branch failed'
   return null
 })
 
-ipc.handle('gitDeleteBranch', function (e, cwd, branch, force) {
+ipc.handle('gitDeleteBranch', async function (e, cwd, branch, force) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   if (!isSafeGitRef(branch)) return 'Branch name required'
   var args = ['branch', force ? '-D' : '-d', branch]
-  var r = runGit(cwd, args)
+  var r = await runGit(cwd, args)
   if (r.status !== 0) return r.stderr || r.stdout || 'git delete branch failed'
   return null
 })
 
-ipc.handle('gitStash', function (e, cwd, message) {
+ipc.handle('gitStash', async function (e, cwd, message) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   var args = ['stash', 'push', '-m', message || 'WIP']
-  var r = runGit(cwd, args)
+  var r = await runGit(cwd, args)
   if (r.status !== 0) return r.stderr || r.stdout || 'git stash failed'
   return null
 })
 
-ipc.handle('gitStashPop', function (e, cwd) {
+ipc.handle('gitStashPop', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
-  var r = runGit(cwd, ['stash', 'pop'])
+  var r = await runGit(cwd, ['stash', 'pop'])
   if (r.status !== 0) return r.stderr || r.stdout || 'git stash pop failed'
   return null
 })

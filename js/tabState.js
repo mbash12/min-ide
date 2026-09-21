@@ -12,6 +12,10 @@ function initialize () {
   throwaway seed, except event subscriptions go to the store and are never
   lost. */
   const emptyTaskList = new TaskList()
+  /* Bind once per (list, method): binding on every property access churned
+  GC on hot paths like tasks.getSelected(). WeakMap keys let caches die
+  with their workspace. */
+  const boundMethodCache = new WeakMap()
   window.tasks = new Proxy({}, {
     get: function (_, prop) {
       if (prop === 'on') {
@@ -23,7 +27,18 @@ function initialize () {
       const ws = window.workspaces.getSelected()
       const list = (ws && ws.tasks) || emptyTaskList
       const value = list[prop]
-      return typeof value === 'function' ? value.bind(list) : value
+      if (typeof value !== 'function') {
+        return value
+      }
+      let cache = boundMethodCache.get(list)
+      if (!cache) {
+        cache = {}
+        boundMethodCache.set(list, cache)
+      }
+      if (!cache[prop]) {
+        cache[prop] = value.bind(list)
+      }
+      return cache[prop]
     },
     set: function (_, prop, value) {
       const ws = window.workspaces.getSelected()

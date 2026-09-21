@@ -196,6 +196,15 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
         var popupId = Math.random().toString()
         temporaryPopupViews[popupId] = view
 
+        /* Popups that are closed before the renderer adopts them (or whose
+        did-create-popup notification is lost) would otherwise leak their
+        WebContentsView in the map forever. */
+        view.webContents.once('destroyed', function () {
+          if (temporaryPopupViews[popupId] === view) {
+            delete temporaryPopupViews[popupId]
+          }
+        })
+
         const eventTarget = getWindowFromViewContents(view.webContents) || windows.getCurrent()
 
         getWindowWebContents(eventTarget).send('view-event', {

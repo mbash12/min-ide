@@ -17,6 +17,11 @@ class ProtonPass {
     this.lastCallList = {}
     this.defaultShareId = null
     this.name = 'Proton Pass'
+    /* _getLoginItems decrypts every item in every vault, so results are
+    cached briefly and in-flight calls are shared between consumers. */
+    this.itemsCache = null
+    this.itemsCacheTime = 0
+    this.itemsInFlight = null
   }
 
   getDownloadLink () {
@@ -126,7 +131,14 @@ class ProtonPass {
   }
 
   // Returns all login items (with decrypted content) across every vault.
-  async _getLoginItems () {
+  static get ITEMS_CACHE_TTL () { return 60000 }
+
+  _invalidateItemsCache () {
+    this.itemsCache = null
+    this.itemsCacheTime = 0
+  }
+
+  async _getLoginItemsUncached () {
     const vaults = await this._listVaults()
     const items = []
 
@@ -145,6 +157,25 @@ class ProtonPass {
     }
 
     return items
+  }
+
+  async _getLoginItems () {
+    if (this.itemsCache && (Date.now() - this.itemsCacheTime) < ProtonPass.ITEMS_CACHE_TTL) {
+      return this.itemsCache
+    }
+    if (this.itemsInFlight) {
+      return this.itemsInFlight
+    }
+    this.itemsInFlight = this._getLoginItemsUncached().then(items => {
+      this.itemsCache = items
+      this.itemsCacheTime = Date.now()
+      this.itemsInFlight = null
+      return items
+    }).catch(err => {
+      this.itemsInFlight = null
+      throw err
+    })
+    return this.itemsInFlight
   }
 
   // Converts a serialized pass-cli item into a credential, or returns null
@@ -241,6 +272,13 @@ class ProtonPass {
   signInAndSave (path = this.path) {
     return new Promise((resolve, reject) => {
       const loginProcess = spawn(path, ['login'])
+      /* The flow needs the user to complete a web sign-in, so it gets a
+      generous window - but not forever: an abandoned login used to leave a
+      pending promise (and a running CLI process) indefinitely. */
+      const timeout = setTimeout(() => {
+        try { loginProcess.kill() } catch (e) {}
+        reject(new Error('Proton Pass sign-in timed out'))
+      }, 5 * 60 * 1000)
 
       let output = ''
       let urlOpened = false
@@ -259,6 +297,7 @@ class ProtonPass {
       loginProcess.stderr.on('data', onData)
 
       loginProcess.on('close', (code) => {
+        clearTimeout(timeout)
         if (code === 0) {
           resolve(true)
         } else {
@@ -266,7 +305,10 @@ class ProtonPass {
         }
       })
 
-      loginProcess.on('error', reject)
+      loginProcess.on('error', (err) => {
+        clearTimeout(timeout)
+        reject(err)
+      })
     })
   }
 
@@ -294,8 +336,17 @@ class ProtonPass {
       throw new Error('No Proton Pass vault available')
     }
 
-    const process = new ProcessSpawner(this.path, ['item', 'create', 'login', '--share-id', shareId, '--title', domain, '--username', username, '--password', password, '--url', 'https://' + domain])
-    await process.execute()
+    /* The credential goes in via a stdin JSON template rather than a
+    --password flag, which would expose it in the process list. */
+    const template = JSON.stringify({
+      title: domain,
+      username: username,
+      password: password,
+      urls: ['https://' + domain]
+    })
+    const process = new ProcessSpawner(this.path, ['item', 'create', 'login', '--share-id', shareId, '--from-template', '-'])
+    await process.executeSyncInAsyncContext(template)
+    this._invalidateItemsCache()
   }
 
   async deleteCredential (domain, username) {
@@ -308,6 +359,7 @@ class ProtonPass {
         await process.execute()
       }
     }
+    this._invalidateItemsCache()
   }
 
   async importCredentials (fileContents) {

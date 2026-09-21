@@ -388,6 +388,11 @@ function applyProfileDeleted (profileId) {
   splitView.clearAll()
   affectedTasks.forEach(function (entry) {
     entry.task.tabs.get().forEach(function (tab) {
+      /* Only web views depend on the deleted profile's partition; editors,
+      terminals and other internal surfaces must be left running. */
+      if ((tab.kind || 'web') !== 'web') {
+        return
+      }
       editorView.allowDiscard(tab.id)
       webviews.destroy(tab.id)
     })
@@ -615,34 +620,28 @@ workspaces.on('workspace-selected', function () {
   setWindowTitle()
 })
 
-// Title subscriptions live on the WorkspaceStore (stable reference) and on
-// each TaskList at creation time. window.tasks is re-pointed on every
-// workspace switch, so task-level subscriptions must be attached per list.
-function subscribeTaskList (taskList) {
-  taskList.on('task-updated', function (id, key) {
-    if (key === 'name') {
-      const selected = window.tasks.getSelected()
-      if (selected && id === selected.id) {
-        setWindowTitle()
-      }
-    }
-  })
-
-  taskList.on('tab-selected', function () {
-    setWindowTitle()
-  })
-
-  taskList.on('tab-updated', function (id, key) {
-    if (key === 'title') {
+// Title subscriptions live on the WorkspaceStore (stable reference). The
+// store re-emits inner TaskList/TabList events for every workspace -
+// including ones added with emit=false during session restore, which the
+// previous 'workspace-added' subscription never saw. window.tasks is
+// re-pointed on every workspace switch, so listeners must not be attached
+// per list.
+workspaces.on('task-updated', function (id, key) {
+  if (key === 'name') {
+    const selected = window.tasks.getSelected()
+    if (selected && id === selected.id) {
       setWindowTitle()
     }
-  })
-}
+  }
+})
 
-workspaces.on('workspace-added', function (id) {
-  const ws = workspaces.get(id)
-  if (ws) {
-    subscribeTaskList(ws.tasks)
+workspaces.on('tab-selected', function () {
+  setWindowTitle()
+})
+
+workspaces.on('tab-updated', function (id, key) {
+  if (key === 'title') {
+    setWindowTitle()
   }
 })
 

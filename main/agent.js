@@ -97,15 +97,41 @@ function loadPiSdk () {
 function loadTypebox () {
   if (!typeboxPromise) {
     const { pathToFileURL } = require('url')
-    const typeboxFile = require('path').join(
-      __dirname,
-      'node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/index.mjs'
-    )
-    typeboxPromise = import(pathToFileURL(typeboxFile).href).then(function (mod) {
-      const Type = (mod && mod.Type) || (mod && mod.default)
-      if (!Type) throw new Error('typebox did not load correctly')
-      return Type
-    })
+    const pathMod = require('path')
+    const fsMod = require('fs')
+    /* The SDK used to vendor typebox at a fixed nested path; newer installs
+    may hoist it or rename the package, so try several candidates. */
+    const candidates = [
+      'node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/index.mjs',
+      'node_modules/typebox/build/index.mjs',
+      'node_modules/@sinclair/typebox/build/index.mjs'
+    ]
+    let typeboxFile = null
+    for (const rel of candidates) {
+      const p = pathMod.join(__dirname, rel)
+      try {
+        if (fsMod.existsSync(p)) {
+          typeboxFile = p
+          break
+        }
+      } catch (e) {}
+    }
+    if (!typeboxFile) {
+      try {
+        /* last resort: let Node's resolution find it (works when the SDK is
+        a real dependency and typebox is a regular hoisted package) */
+        typeboxFile = require.resolve('typebox/build/index.mjs', { paths: [__dirname] })
+      } catch (e) {}
+    }
+    if (!typeboxFile) {
+      typeboxPromise = Promise.reject(new Error('typebox could not be located; agent tools disabled'))
+    } else {
+      typeboxPromise = import(pathToFileURL(typeboxFile).href).then(function (mod) {
+        const Type = (mod && mod.Type) || (mod && mod.default)
+        if (!Type) throw new Error('typebox did not load correctly')
+        return Type
+      })
+    }
   }
   return typeboxPromise
 }
@@ -457,7 +483,14 @@ function prefsFor (sessionKey) {
   return prefsByCwd.get(sessionKey) || {}
 }
 
+const MAX_SESSION_PREFS = 500
 function setSessionPrefs (sessionKey, prefs) {
+  /* bound the map: session keys include ephemeral cwd-derived ids that are
+  otherwise never cleaned up */
+  if (!prefsByCwd.has(sessionKey) && prefsByCwd.size >= MAX_SESSION_PREFS) {
+    const oldest = prefsByCwd.keys().next().value
+    prefsByCwd.delete(oldest)
+  }
   prefsByCwd.set(sessionKey, prefs)
   scheduleAgentPrefsSave()
 }
@@ -518,6 +551,15 @@ async function destroySession (sessionKey) {
   try {
     if (entry.session) entry.session.dispose()
   } catch (e) {}
+  /* ModelRuntime has no dispose in current SDKs, but drop the reference and
+  call dispose if a future version adds one so resources don't accumulate
+  across model/session switches. */
+  try {
+    if (entry.modelRuntime && typeof entry.modelRuntime.dispose === 'function') {
+      entry.modelRuntime.dispose()
+    }
+  } catch (e) {}
+  entry.modelRuntime = null
   agentSessions.delete(sessionKey)
 }
 
@@ -577,8 +619,16 @@ function broadcastAgentEvent (data, sessionKey, taskId) {
     sessionKey: sessionKey
   }, data)
   agentSenders.forEach(function (sender) {
-    if (!sender.isDestroyed()) {
+    /* remove dead senders instead of just skipping them - the 'destroyed'
+    listener may not have run yet when a window closes mid-stream */
+    if (sender.isDestroyed()) {
+      agentSenders.delete(sender)
+      return
+    }
+    try {
       sender.send('agent-event', payload)
+    } catch (e) {
+      agentSenders.delete(sender)
     }
   })
 }
@@ -595,10 +645,14 @@ function ensureSession (taskId, cwd, options, toolWorkspaceId) {
     if (pending.signature === signature) return pending.promise
     // A deliberate open/create request must not be swallowed by an earlier
     // automatic restore. Serialize the distinct operation and re-evaluate the
-    // live session/config when the first initialization finishes.
-    return pending.promise.then(function () {
+    // live session/config when the first initialization finishes. Run it on
+    // both settle paths: a rejected init must not eat the new request.
+    const serialized = pending.promise.then(function () {
+      return ensureSession(taskId, cwd, options, toolWorkspaceId)
+    }, function () {
       return ensureSession(taskId, cwd, options, toolWorkspaceId)
     })
+    return serialized
   }
 
   const promise = ensureSessionInternal(taskId, cwd, options, toolWorkspaceId)

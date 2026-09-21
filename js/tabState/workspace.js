@@ -44,18 +44,14 @@ class WorkspaceStore {
     this.events.push({ name, fn })
   }
 
+  /* Emit synchronously like upstream TaskList: batching callbacks through
+  setTimeout made listeners run a tick late, which broke any code that emits
+  and then reads state assuming subscribers already ran. Cross-window
+  batching still happens in windowSync's pendingEvents queue. */
   emit (name, ...data) {
     this.events.forEach(listener => {
       if (listener.name === name || listener.name === '*') {
-        this.pendingCallbacks.push([listener.fn, (listener.name === '*' ? [name] : []).concat(data)])
-
-        if (!this.pendingCallbackTimeout) {
-          this.pendingCallbackTimeout = setTimeout(() => {
-            this.pendingCallbacks.forEach(t => t[0].apply(this, t[1]))
-            this.pendingCallbacks = []
-            this.pendingCallbackTimeout = null
-          }, 0)
-        }
+        listener.fn.apply(this, (listener.name === '*' ? [name] : []).concat(data))
       }
     })
   }

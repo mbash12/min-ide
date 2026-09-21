@@ -48,13 +48,17 @@ const windowSync = {
         if (
           (event[0] === 'task-destroyed' && event[1] === priorSelectedTask) ||
           (event[0] === 'workspace-destroyed' && event[1] === priorSelectedWorkspace) ||
-          (event[0] === 'tab-destroyed' && event[2] === priorSelectedTask && tasks.getSelected().tabs.count() === 1)
+          (event[0] === 'tab-destroyed' && event[2] === priorSelectedTask && selectedTask && selectedTask.tabs.count() === 1)
         ) {
           ipc.invoke('close')
           ipc.removeAllListeners('tab-state-change-receive')
           return
         }
 
+        /* Events can reference tasks/workspaces that were never synced here
+        (created and destroyed between this window's state snapshot and now),
+        so every lookup is guarded - one stale event must not drop the rest
+        of the batch. */
         switch (event[0]) {
           case 'workspace-added':
             workspaces.add(event[2], event[3], false)
@@ -66,69 +70,84 @@ const windowSync = {
             workspaces.destroy(event[1], false)
             break
           case 'workspace-updated': {
+            const ws = workspaces.get(event[1])
+            if (!ws) break
             var wsObj = {}
             wsObj[event[2]] = event[3]
             workspaces.update(event[1], wsObj, false)
             // the workspace was archived by another window: destroy its views
             if (event[2] === 'archived') {
-              const ws = workspaces.get(event[1])
               browserUI.splitView.clearAll()
-              if (ws) {
-                ws.tasks.forEach(function (task) {
-                  task.tabs.get().forEach(function (tab) {
-                    editorView.allowDiscard(tab.id)
-                    webviews.destroy(tab.id)
-                  })
+              ws.tasks.forEach(function (task) {
+                task.tabs.get().forEach(function (tab) {
+                  editorView.allowDiscard(tab.id)
+                  webviews.destroy(tab.id)
                 })
-              }
+              })
             }
             break
           }
           case 'task-added': {
-            const homeList = event[4] ? workspaces.get(event[4]).tasks : tasks
+            const homeWs = event[4] && workspaces.get(event[4])
+            const homeList = homeWs ? homeWs.tasks : tasks
             homeList.add(event[2], event[3], false)
             break
           }
-          case 'task-selected':
-            getTaskList(event[1]).setSelected(event[1], false, sourceWindowId)
-            break
-          case 'task-destroyed':
-            getTaskList(event[1]).destroy(event[1], false)
-            break
-          case 'task-moved': {
-            const movedList = getTaskList(event[1])
-            movedList.reorder(event[2], event[3])
+          case 'task-selected': {
+            const list = getTaskList(event[1])
+            if (list) list.setSelected(event[1], false, sourceWindowId)
             break
           }
-          case 'tab-added':
-            workspaces.findTask(event[4]).tabs.add(event[2], event[3], false)
+          case 'task-destroyed': {
+            const list = getTaskList(event[1])
+            if (list) list.destroy(event[1], false)
             break
+          }
+          case 'task-moved': {
+            const movedList = getTaskList(event[1])
+            if (movedList) movedList.reorder(event[2], event[3])
+            break
+          }
+          case 'tab-added': {
+            const task = workspaces.findTask(event[4])
+            if (task) task.tabs.add(event[2], event[3], false)
+            break
+          }
           case 'tab-updated': {
+            const task = workspaces.findTask(event[4])
+            if (!task) break
             var obj = {}
             obj[event[2]] = event[3]
-            workspaces.findTask(event[4]).tabs.update(event[1], obj, false)
+            task.tabs.update(event[1], obj, false)
             break
           }
           case 'task-updated': {
+            const list = getTaskList(event[1])
+            if (!list) break
             var taskObj = {}
             taskObj[event[2]] = event[3]
-            getTaskList(event[1]).update(event[1], taskObj, false)
+            list.update(event[1], taskObj, false)
             break
           }
-          case 'tab-selected':
-            workspaces.findTask(event[2]).tabs.setSelected(event[1], false)
+          case 'tab-selected': {
+            const task = workspaces.findTask(event[2])
+            if (task) task.tabs.setSelected(event[1], false)
             break
-          case 'tab-destroyed':
-            workspaces.findTask(event[2]).tabs.destroy(event[1], false)
+          }
+          case 'tab-destroyed': {
+            const task = workspaces.findTask(event[2])
+            if (task) task.tabs.destroy(event[1], false)
             break
-          case 'tab-splice':
-            workspaces.findTask(event[1]).tabs.spliceNoEmit(...event.slice(2))
+          }
+          case 'tab-splice': {
+            const task = workspaces.findTask(event[1])
+            if (task) task.tabs.spliceNoEmit(...event.slice(2))
             break
+          }
           case 'state-sync-change':
             break
           default:
-            console.warn(arguments)
-            throw new Error('unimplemented event')
+            console.warn('windowSync: ignoring unhandled event', event[0])
         }
 
         // UI updates
@@ -167,10 +186,11 @@ const windowSync = {
         }
         // if a tab was added or removed from our task, force a rerender
         if (
-          (event[0] === 'tab-splice' && event[1] === priorSelectedTask) ||
-          (event[0] === 'tab-destroyed' && event[2] === priorSelectedTask)
+          selectedTask &&
+          ((event[0] === 'tab-splice' && event[1] === priorSelectedTask) ||
+          (event[0] === 'tab-destroyed' && event[2] === priorSelectedTask))
         ) {
-          browserUI.switchToTask(tasks.getSelected().id)
+          browserUI.switchToTask(selectedTask.id)
           browserUI.switchToTab(tabs.getSelected())
         }
       })

@@ -35,10 +35,63 @@ const KV_SCOPES = [
   'provider_config'
 ]
 
-const db = new DatabaseSync(dbFilePath)
-db.exec('PRAGMA journal_mode = WAL')
+/* Open the database. A corrupt or otherwise unreadable min.db previously
+crashed the main process on every launch; instead we quarantine the file
+and retry once with a fresh database so the app stays usable. */
+function openDatabase () {
+  try {
+    const handle = new DatabaseSync(dbFilePath)
+    handle.exec('PRAGMA journal_mode = WAL')
+    handle.exec('PRAGMA synchronous = NORMAL')
+    return handle
+  } catch (err) {
+    console.error('[dbService] failed to open database:', err)
+  }
+  try {
+    if (fs.existsSync(dbFilePath)) {
+      const quarantinePath = dbFilePath + '.corrupt-' + Date.now()
+      fs.renameSync(dbFilePath, quarantinePath)
+      console.warn('[dbService] quarantined unreadable database to', quarantinePath)
+      const handle = new DatabaseSync(dbFilePath)
+      handle.exec('PRAGMA journal_mode = WAL')
+      handle.exec('PRAGMA synchronous = NORMAL')
+      return handle
+    }
+  } catch (retryErr) {
+    console.error('[dbService] retry after quarantine failed:', retryErr)
+  }
+  /* Last resort: an in-memory database keeps the app running (session data
+  just won't persist) instead of crashing the main process. */
+  try {
+    const handle = new DatabaseSync(':memory:')
+    console.warn('[dbService] using in-memory database; changes will not persist')
+    return handle
+  } catch (memErr) {
+    console.error('[dbService] failed to open in-memory database:', memErr)
+    return null
+  }
+}
 
-db.exec(`
+const openedDb = openDatabase()
+const db = openedDb || {
+  /* Even an in-memory fallback can fail in pathological environments; a
+  no-op stub keeps the rest of the service (and the app) from crashing. */
+  exec () {},
+  prepare () {
+    return {
+      get: function () { return undefined },
+      all: function () { return [] },
+      run: function () { return {} }
+    }
+  },
+  close () {}
+}
+if (!openedDb) {
+  console.error('[dbService] continuing without persistent database')
+}
+
+if (db) {
+  db.exec(`
 CREATE TABLE IF NOT EXISTS user_preferences (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -102,7 +155,8 @@ CREATE TABLE IF NOT EXISTS kv_store (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (scope, key)
 );
-`)
+  `)
+}
 
 /* One-time import of the legacy JSON store (custom_app_data.db). The file is
  * kept as <name>.migrated so a rollback only requires deleting min.db. */
@@ -425,7 +479,9 @@ function rowToDocument (row) {
   }
 }
 
-const docListStmt = db.prepare('SELECT * FROM documents WHERE workspace_id = ?')
+/* Only the metadata columns are fetched for listing; markdown bodies can
+be up to 1 MB each and are loaded lazily via docGetStmt. */
+const docListStmt = db.prepare('SELECT id, workspace_id, title, private, created_at, updated_at FROM documents WHERE workspace_id = ?')
 const docGetStmt = db.prepare('SELECT * FROM documents WHERE workspace_id = ? AND id = ?')
 const docInsertStmt = db.prepare('INSERT INTO documents (id, workspace_id, title, markdown, private, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
 const docUpdateStmt = db.prepare('UPDATE documents SET title = ?, markdown = ?, private = ?, updated_at = ? WHERE workspace_id = ? AND id = ?')
@@ -731,7 +787,9 @@ function cloneNote (note) {
   return Object.assign({}, note)
 }
 
-const noteListStmt = db.prepare('SELECT * FROM notes')
+/* Metadata-only listing, same reason as docListStmt: note bodies can be
+large and are fetched individually via noteGetStmt. */
+const noteListStmt = db.prepare('SELECT id, title, created_at, updated_at FROM notes')
 const noteGetStmt = db.prepare('SELECT * FROM notes WHERE id = ?')
 const noteInsertStmt = db.prepare('INSERT INTO notes (id, title, markdown, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
 const noteUpdateStmt = db.prepare('UPDATE notes SET title = ?, markdown = ?, updated_at = ? WHERE id = ?')
@@ -875,6 +933,10 @@ const actInsertStmt = db.prepare('INSERT INTO tab_activities (id, workspace_id, 
 const actAllStmt = db.prepare('SELECT * FROM tab_activities ORDER BY timestamp DESC LIMIT ?')
 const actWsStmt = db.prepare('SELECT * FROM tab_activities WHERE workspace_id = ? ORDER BY timestamp DESC LIMIT ?')
 const actPruneStmt = db.prepare('DELETE FROM tab_activities WHERE id NOT IN (SELECT id FROM tab_activities ORDER BY timestamp DESC LIMIT ?)')
+/* The prune is a full table scan; running it on every insert is wasteful,
+so it only runs periodically while still bounding the table size. */
+let activityPruneCounter = 0
+const ACTIVITY_PRUNE_EVERY = 50
 
 function logTabActivity (activity) {
   if (!activity || !activity.url) return null
@@ -889,7 +951,10 @@ function logTabActivity (activity) {
   }
   actInsertStmt.run(entry.id, entry.workspace_id, entry.tab_id, entry.url, entry.title, JSON.stringify(entry.metadata), entry.timestamp)
   // keep the last N entries
-  actPruneStmt.run(TAB_ACTIVITY_KEEP)
+  if (++activityPruneCounter >= ACTIVITY_PRUNE_EVERY) {
+    activityPruneCounter = 0
+    actPruneStmt.run(TAB_ACTIVITY_KEEP)
+  }
   return entry
 }
 

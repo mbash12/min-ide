@@ -6,6 +6,9 @@ from any UI window or webview page.
 
 const pendingCalls = {}
 let callCounter = 0
+/* A lost response would leave the promise pending forever, so each relayed
+call gets a timeout that rejects and drops it. */
+const PENDING_CALL_TIMEOUT_MS = 30000
 
 if (typeof window !== 'undefined') {
   window.addEventListener('message', function (e) {
@@ -13,6 +16,7 @@ if (typeof window !== 'undefined') {
       const pending = pendingCalls[e.data.callId]
       if (pending) {
         delete pendingCalls[e.data.callId]
+        clearTimeout(pending.timer)
         if (e.data.error) {
           pending.reject(new Error(e.data.error))
         } else {
@@ -37,7 +41,14 @@ function invokeDB (action, payload) {
 
     // Otherwise relay via postMessage (for webviews)
     const callId = 'call-' + (++callCounter) + '-' + Date.now()
-    pendingCalls[callId] = { resolve, reject }
+    const timer = setTimeout(function () {
+      const pending = pendingCalls[callId]
+      if (pending) {
+        delete pendingCalls[callId]
+        pending.reject(new Error('dbInvoke timed out: ' + action))
+      }
+    }, PENDING_CALL_TIMEOUT_MS)
+    pendingCalls[callId] = { resolve, reject, timer }
     window.postMessage({
       message: 'dbInvoke',
       callId: callId,

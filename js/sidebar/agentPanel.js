@@ -773,6 +773,40 @@ function fillFormattedText (el, text) {
   agentMarkdown.render(el, text)
 }
 
+/* Streaming markdown is expensive: marked.parse + DOMPurify over the whole
+accumulated message on every token delta is O(n^2) for long replies, so
+during a stream we render at a fixed cadence and always do one final full
+render when the stream ends. */
+let streamRenderTimer = null
+let streamRenderEl = null
+let streamRenderText = ''
+const STREAM_RENDER_MS = 100
+
+function scheduleStreamingRender (el, text) {
+  streamRenderEl = el
+  streamRenderText = text
+  if (streamRenderTimer) return
+  streamRenderTimer = setTimeout(function () {
+    streamRenderTimer = null
+    if (streamRenderEl) {
+      fillFormattedText(streamRenderEl, streamRenderText)
+      scrollToEnd()
+    }
+  }, STREAM_RENDER_MS)
+}
+
+function flushStreamingRender () {
+  if (streamRenderTimer) {
+    clearTimeout(streamRenderTimer)
+    streamRenderTimer = null
+  }
+  if (streamRenderEl) {
+    fillFormattedText(streamRenderEl, streamRenderText)
+    streamRenderEl = null
+    streamRenderText = ''
+  }
+}
+
 function toolIconClass (name) {
   const n = (name || '').toLowerCase()
   if (n === 'bash' || n === 'terminal' || n === 'shell') return 'codicon-terminal'
@@ -1340,14 +1374,16 @@ function applyEvent (ev) {
           if (active) currentAssistantEl = makeAssistantBubble()
         }
         conv.assistantMsg.text += ev.delta
-        if (active && currentAssistantEl) fillFormattedText(currentAssistantEl, conv.assistantMsg.text)
-        if (active) scrollToEnd()
+        if (active && currentAssistantEl) scheduleStreamingRender(currentAssistantEl, conv.assistantMsg.text)
       }
       break
     case 'tool_start':
       if (conv.assistantMsg) conv.assistantMsg = null
       conv.thinking = ''
-      if (active) renderThinking('')
+      if (active) {
+        flushStreamingRender()
+        renderThinking('')
+      }
       var toolsGroup = ensureToolsGroup(conv)
       toolsGroup.items.push({
         name: ev.toolName || 'tool',
@@ -1394,6 +1430,7 @@ function applyEvent (ev) {
       conv.assistantMsg = null
       conv.thinking = ''
       if (active) {
+        flushStreamingRender()
         renderThinking('')
         currentAssistantEl = null
         setStreamingUI(false)
@@ -1403,6 +1440,7 @@ function applyEvent (ev) {
       conv.assistantMsg = null
       conv.thinking = ''
       if (active) {
+        flushStreamingRender()
         renderThinking('')
         currentAssistantEl = null
         setStreamingUI(false)
@@ -1414,6 +1452,8 @@ function applyEvent (ev) {
       conv.assistantMsg = null
       conv.thinking = ''
       if (active) {
+        streamRenderEl = null
+        streamRenderText = ''
         currentSessionPath = null
         syncSessionOwnership(getActiveTaskId(), null)
         clearActiveConversation()

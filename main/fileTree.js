@@ -28,8 +28,9 @@ function isSafeEntryName (name) {
     name.indexOf('\0') === -1
 }
 
-function getDirectoryEntries (dirPath) {
-  return fs.readdirSync(dirPath, { withFileTypes: true })
+async function getDirectoryEntries (dirPath) {
+  const entries = await fs.promises.readdir(dirPath, { withFileTypes: true })
+  return entries
     .map(function (entry) {
       return {
         name: entry.name,
@@ -49,11 +50,15 @@ function isDirectoryPath (dirPath) {
   return typeof dirPath === 'string' && fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()
 }
 
-ipc.handle('readDirectory', function (e, dirPath) {
+ipc.handle('readDirectory', async function (e, dirPath) {
   if (!isDirectoryPath(dirPath)) {
     return null
   }
-  return getDirectoryEntries(dirPath)
+  try {
+    return await getDirectoryEntries(dirPath)
+  } catch (err) {
+    return null
+  }
 })
 
 /* Whether a workspace's stored folder is still usable. A path that is empty,
@@ -66,7 +71,7 @@ ipc.handle('workspacePathStatus', function (e, dirPath) {
 
 /* creates an empty file or directory. Returns null on success, or an error
 message string on failure. */
-ipc.handle('fileTreeCreate', function (e, workspaceRoot, parentPath, name, type) {
+ipc.handle('fileTreeCreate', async function (e, workspaceRoot, parentPath, name, type) {
   if (!isDirectoryPath(workspaceRoot) || !isDirectoryPath(parentPath) || !isSafeEntryName(name && name.trim())) {
     return 'Invalid name'
   }
@@ -82,9 +87,9 @@ ipc.handle('fileTreeCreate', function (e, workspaceRoot, parentPath, name, type)
   }
   try {
     if (type === 'directory') {
-      fs.mkdirSync(target)
+      await fs.promises.mkdir(target)
     } else {
-      fs.writeFileSync(target, '')
+      await fs.promises.writeFile(target, '')
     }
     return null
   } catch (err) {
@@ -94,7 +99,7 @@ ipc.handle('fileTreeCreate', function (e, workspaceRoot, parentPath, name, type)
 
 /* renames a file or directory. Returns null on success, or an error message
 string on failure. */
-ipc.handle('fileTreeRename', function (e, workspaceRoot, oldPath, newName) {
+ipc.handle('fileTreeRename', async function (e, workspaceRoot, oldPath, newName) {
   const cleanName = typeof newName === 'string' ? newName.trim() : ''
   if (!isDirectoryPath(workspaceRoot) || !isSafeEntryName(cleanName) || !oldPath) {
     return 'Invalid name'
@@ -113,7 +118,7 @@ ipc.handle('fileTreeRename', function (e, workspaceRoot, oldPath, newName) {
     return 'Name already exists'
   }
   try {
-    fs.renameSync(oldPath, newPath)
+    await fs.promises.rename(oldPath, newPath)
     return null
   } catch (err) {
     return err.message || 'Failed to rename'
@@ -122,7 +127,7 @@ ipc.handle('fileTreeRename', function (e, workspaceRoot, oldPath, newName) {
 
 /* moves a file or directory into a target directory. Returns null on
 success, or an error message string on failure. */
-ipc.handle('fileTreeMove', function (e, workspaceRoot, sourcePath, targetDir) {
+ipc.handle('fileTreeMove', async function (e, workspaceRoot, sourcePath, targetDir) {
   if (!isDirectoryPath(workspaceRoot) || !isDirectoryPath(targetDir) || !sourcePath) {
     return 'Invalid destination'
   }
@@ -140,7 +145,7 @@ ipc.handle('fileTreeMove', function (e, workspaceRoot, sourcePath, targetDir) {
     return 'Name already exists in destination'
   }
   try {
-    fs.renameSync(sourcePath, newPath)
+    await fs.promises.rename(sourcePath, newPath)
     return null
   } catch (err) {
     return err.message || 'Failed to move'
@@ -149,7 +154,7 @@ ipc.handle('fileTreeMove', function (e, workspaceRoot, sourcePath, targetDir) {
 
 /* deletes a file or directory (recursively). Returns null on success, or an
 error message string on failure. */
-ipc.handle('fileTreeDelete', function (e, workspaceRoot, targetPath) {
+ipc.handle('fileTreeDelete', async function (e, workspaceRoot, targetPath) {
   if (!isDirectoryPath(workspaceRoot) || !targetPath || !isPathInside(workspaceRoot, targetPath)) {
     return 'Invalid path'
   }
@@ -157,11 +162,11 @@ ipc.handle('fileTreeDelete', function (e, workspaceRoot, targetPath) {
     return 'Cannot delete the workspace folder'
   }
   try {
-    const stat = fs.lstatSync(targetPath)
+    const stat = await fs.promises.lstat(targetPath)
     if (stat.isDirectory()) {
-      fs.rmSync(targetPath, { recursive: true, force: true })
+      await fs.promises.rm(targetPath, { recursive: true, force: true })
     } else {
-      fs.unlinkSync(targetPath)
+      await fs.promises.unlink(targetPath)
     }
     return null
   } catch (err) {
@@ -172,28 +177,34 @@ ipc.handle('fileTreeDelete', function (e, workspaceRoot, targetPath) {
 /* searches a directory recursively for names containing the query. Returns
 an array of { path, isDirectory } objects (limited to a few thousand
 results). Well-known heavy directories are skipped so large workspaces
-(e.g. node_modules) do not dominate the results. */
-ipc.handle('fileTreeSearch', function (e, rootPath, query) {
+(e.g. node_modules) do not dominate the results. Fully async so a big tree
+never blocks the main process; a newer search supersedes an in-flight one. */
+let fileTreeSearchGeneration = 0
+ipc.handle('fileTreeSearch', async function (e, rootPath, query) {
+  const generation = ++fileTreeSearchGeneration
   if (!isDirectoryPath(rootPath) || typeof query !== 'string' || !query.trim()) {
     return []
   }
   const searchRoot = path.resolve(rootPath)
   const needle = query.toLowerCase()
   const results = []
-  const walk = function (dir, depth) {
-    if (depth > 12 || results.length > 2000) {
+  const superseded = function () {
+    return generation !== fileTreeSearchGeneration
+  }
+  const walk = async function (dir, depth) {
+    if (depth > 12 || results.length > 2000 || superseded()) {
       return
     }
     let entries
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
+      entries = await fs.promises.readdir(dir, { withFileTypes: true })
     } catch (err) {
       return
     }
-    entries.forEach(function (entry) {
-      if (results.length > 2000) return
+    for (const entry of entries) {
+      if (results.length > 2000 || superseded()) return
       const full = path.join(dir, entry.name)
-      if (!isPathInside(searchRoot, full)) return
+      if (!isPathInside(searchRoot, full)) continue
       if (entry.name.toLowerCase().includes(needle) && !entry.isDirectory()) {
         results.push({
           path: full,
@@ -201,12 +212,12 @@ ipc.handle('fileTreeSearch', function (e, rootPath, query) {
         })
       }
       if (entry.isDirectory() && !isSkippedDirectory(entry.name)) {
-        walk(full, depth + 1)
+        await walk(full, depth + 1)
       }
-    })
+    }
   }
-  walk(searchRoot, 0)
-  return results
+  await walk(searchRoot, 0)
+  return superseded() ? [] : results
 })
 
 /* directories that are skipped by the recursive search: caches, build

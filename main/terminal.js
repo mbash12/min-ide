@@ -13,6 +13,9 @@ tail = rolling output buffer, cwd = last known shell directory, shell =
 the spawned shell path. Survives view destruction; cleared on tab close. */
 const terminalSessions = {} // tab id: {tail, cwd, shell}
 const MAX_TERMINAL_TAIL = 128 * 1024
+/* sender ids that already have a 'destroyed' listener attached - restart
+re-enters terminal-create on the same view and must not stack listeners */
+const terminalDestroyedListeners = new Set()
 
 function getShell () {
   const configured = settings.get('terminalShell')
@@ -61,13 +64,17 @@ function destroyTerminal (senderId) {
 /* reads the shell's live working directory: /proc on Linux, lsof on macOS.
 Returns null elsewhere or once the process is gone - callers keep the last
 recorded value then. */
-function readPtyCwd (pid) {
+async function readPtyCwd (pid) {
   try {
     if (process.platform === 'linux') {
-      return fs.readlinkSync('/proc/' + pid + '/cwd') || null
+      return (await fs.promises.readlink('/proc/' + pid + '/cwd')) || null
     }
     if (process.platform === 'darwin') {
-      const out = require('child_process').execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 1000 }).toString()
+      const out = await new Promise(function (resolve) {
+        require('child_process').execFile('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 1000 }, function (err, stdout) {
+          resolve(err ? '' : (stdout || '').toString())
+        })
+      })
       const match = out.match(/\nn(.+)/)
       return match ? match[1] : null
     }
@@ -110,13 +117,33 @@ ipc.on('terminal-create', function (e, data) {
     }
   }
 
+  /* Output is batched into one IPC per tick (~16 ms): heavy output used to
+  send a message per pty chunk, flooding the renderer and the IPC bridge.
+  The tail only slices once it overshoots the cap, avoiding an O(tail)
+  copy per chunk. */
+  let pendingOutput = ''
+  let flushTimer = null
+  const flushOutput = function () {
+    flushTimer = null
+    if (!pendingOutput) return
+    const data = pendingOutput
+    pendingOutput = ''
+    if (!e.sender.isDestroyed()) {
+      e.sender.send('terminal-data', data)
+    }
+  }
   term.onData(function (output) {
     const session = tabId && terminalSessions[tabId]
     if (session) {
-      session.tail = (session.tail + output).slice(-MAX_TERMINAL_TAIL)
+      session.tail += output
+      if (session.tail.length > MAX_TERMINAL_TAIL * 2) {
+        session.tail = session.tail.slice(-MAX_TERMINAL_TAIL)
+      }
     }
-    if (!e.sender.isDestroyed()) {
-      e.sender.send('terminal-data', output)
+    pendingOutput += output
+    if (!flushTimer) {
+      flushTimer = setTimeout(flushOutput, 16)
+      if (flushTimer.unref) flushTimer.unref()
     }
   })
 
@@ -126,6 +153,14 @@ ipc.on('terminal-create', function (e, data) {
     trigger the "session ended" overlay over the new session */
     if (terminalProcesses[e.sender.id] === term) {
       delete terminalProcesses[e.sender.id]
+      if (flushTimer) {
+        clearTimeout(flushTimer)
+        flushOutput()
+      }
+      const session = tabId && terminalSessions[tabId]
+      if (session && session.tail.length > MAX_TERMINAL_TAIL) {
+        session.tail = session.tail.slice(-MAX_TERMINAL_TAIL)
+      }
       if (!e.sender.isDestroyed()) {
         e.sender.send('terminal-exit')
       }
@@ -133,9 +168,13 @@ ipc.on('terminal-create', function (e, data) {
   })
 
   // clean up when the view (or the whole window) goes away
-  e.sender.once('destroyed', function () {
-    destroyTerminal(e.sender.id)
-  })
+  if (!terminalDestroyedListeners.has(e.sender.id)) {
+    terminalDestroyedListeners.add(e.sender.id)
+    e.sender.once('destroyed', function () {
+      terminalDestroyedListeners.delete(e.sender.id)
+      destroyTerminal(e.sender.id)
+    })
+  }
 })
 
 ipc.on('terminal-write', function (e, data) {
@@ -161,7 +200,7 @@ ipc.on('terminal-destroy', function (e) {
 /* the renderer polls this to persist terminal state onto the tab record.
 Works even after the view is destroyed (archive) - the session record keeps
 the last known cwd and the captured tail. */
-ipc.handle('terminal-get-state', function (e, tabId) {
+ipc.handle('terminal-get-state', async function (e, tabId, includeTail) {
   const session = tabId && terminalSessions[tabId]
   if (!session) {
     return null
@@ -169,12 +208,20 @@ ipc.handle('terminal-get-state', function (e, tabId) {
   const view = viewMap[tabId]
   const term = view && terminalProcesses[view.webContents.id]
   if (term) {
-    const cwd = readPtyCwd(term.pid)
+    const cwd = await readPtyCwd(term.pid)
     if (cwd) {
       session.cwd = cwd
     }
   }
-  return { cwd: session.cwd, shell: session.shell, tail: session.tail }
+  /* the tail is large, so it only crosses IPC when the caller actually wants
+  to persist it (default true for backwards compatibility) */
+  if (includeTail === false) {
+    return { cwd: session.cwd, shell: session.shell }
+  }
+  const tail = session.tail.length > MAX_TERMINAL_TAIL
+    ? session.tail.slice(-MAX_TERMINAL_TAIL)
+    : session.tail
+  return { cwd: session.cwd, shell: session.shell, tail: tail }
 })
 
 /* a terminal tab being closed is the only thing that drops the session

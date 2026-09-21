@@ -42,6 +42,12 @@ The values refresh even for hidden or destroyed views, because main keeps a
 session record per tab id. */
 
 const TERMINAL_STATE_POLL_MS = 15000
+/* Scrollback is large (up to 128 KB/tab) and ends up in the session blob
+and cross-window sync, so it persists on a slower cadence than cwd/shell
+and is capped tighter than the in-main tail. */
+const TERMINAL_SCROLLBACK_EVERY = 4
+const MAX_PERSISTED_SCROLLBACK = 64 * 1024
+let scrollbackPollCounter = 0
 
 function forEachTerminalTab (fn) {
   if (typeof workspaces === 'undefined' || !workspaces.forEach) {
@@ -59,8 +65,9 @@ function forEachTerminalTab (fn) {
 }
 
 function refreshTerminalStates () {
+  const includeScrollback = (++scrollbackPollCounter % TERMINAL_SCROLLBACK_EVERY) === 0
   forEachTerminalTab(function (task, tab) {
-    ipc.invoke('terminal-get-state', tab.id).then(function (state) {
+    ipc.invoke('terminal-get-state', tab.id, includeScrollback).then(function (state) {
       if (!state) {
         return
       }
@@ -68,8 +75,13 @@ function refreshTerminalStates () {
       if (state.cwd && state.cwd !== tab.resource) {
         update.resource = state.cwd
       }
-      if (typeof state.tail === 'string' && state.tail !== (tab.terminalScrollback || '')) {
-        update.terminalScrollback = state.tail
+      if (includeScrollback && typeof state.tail === 'string') {
+        const tail = state.tail.length > MAX_PERSISTED_SCROLLBACK
+          ? state.tail.slice(-MAX_PERSISTED_SCROLLBACK)
+          : state.tail
+        if (tail !== (tab.terminalScrollback || '')) {
+          update.terminalScrollback = tail
+        }
       }
       if (state.shell && state.shell !== tab.terminalShell) {
         update.terminalShell = state.shell

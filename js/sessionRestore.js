@@ -47,11 +47,19 @@ const sessionRestore = {
 
     if (forceSave === true || stateString !== sessionRestore.previousState) {
       /* the central DB is the source of truth; the JSON file stays as an
-      async crash-backup, and localStorage keeps its legacy copy */
-      try {
-        ipc.sendSync('db:kvSetSync', { scope: 'workspace_state', key: 'session', value: data })
-      } catch (e) {
-        console.warn('failed to save session to DB', e)
+      async crash-backup, and localStorage keeps its legacy copy. The DB
+      write is async except on unload, where only a synchronous write is
+      guaranteed to land before the renderer goes away. */
+      if (sync === true) {
+        try {
+          ipc.sendSync('db:kvSetSync', { scope: 'workspace_state', key: 'session', value: data })
+        } catch (e) {
+          console.warn('failed to save session to DB', e)
+        }
+      } else {
+        ipc.invoke('db:kvSet', { scope: 'workspace_state', key: 'session', value: data }).catch(function (e) {
+          console.warn('failed to save session to DB', e)
+        })
       }
       try {
         localStorage.setItem('taskRestoreData', JSON.stringify(data))
