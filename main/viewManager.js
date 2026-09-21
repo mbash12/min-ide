@@ -188,6 +188,9 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
         if (viewStateMap[id] && viewStateMap[id].partition) {
           popupPrefs.partition = viewStateMap[id].partition
         }
+        if (typeof applyUAForURL === 'function') {
+          applyUAForURL(options.webContents, details.url)
+        }
         const view = new WebContentsView({ webPreferences: popupPrefs, webContents: options.webContents })
 
         var popupId = Math.random().toString()
@@ -591,6 +594,9 @@ function loadURLInView (id, url, win) {
     if (win && (id === windows.getState(win).selectedView || (windows.getState(win).splitPaneIds && windows.getState(win).splitPaneIds.includes(id)))) {
       win.getContentView().addChildView(viewMap[id])
     }
+  }
+  if (typeof applyUAForURL === 'function') {
+    applyUAForURL(viewMap[id].webContents, url)
   }
   viewMap[id].webContents.loadURL(url)
   viewStateMap[id].loadedInitialURL = true

@@ -20,7 +20,7 @@ if (process.isMainFrame) {
 `)
 }
 
-if ((window.location.hostname === 'google.com' || window.location.hostname.endsWith('.google.com')) && window.location.hostname !== 'hangouts.google.com' && window.location.hostname !== 'drive.google.com') {
+if ((window.location.hostname === 'google.com' || window.location.hostname.endsWith('.google.com')) && window.location.hostname !== 'hangouts.google.com' && window.location.hostname !== 'drive.google.com' && window.location.hostname !== 'accounts.google.com') {
   /* define window.chrome
      this is necessary because some websites (such as the Google Drive file viewer, see issue #378) check for a
      Chrome user agent, and then do things like if(chrome.<module>) {}

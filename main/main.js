@@ -63,6 +63,7 @@ if (isDevelopmentMode) {
 
 // workaround for flicker when focusing app (https://github.com/electron/electron/issues/17942)
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows', 'true')
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
 
 var userDataPath = app.getPath('userData')
 

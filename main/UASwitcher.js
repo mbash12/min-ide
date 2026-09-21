@@ -42,27 +42,72 @@ function getFirefoxUA () {
   return rootUA.replace(/FXVERSION/g, fxVersion)
 }
 
+function isGoogleAccountURL (urlStr) {
+  if (!urlStr) return false
+  try {
+    const url = new URL(urlStr)
+    return url.hostname === 'accounts.google.com' ||
+      url.hostname.endsWith('.accounts.google.com') ||
+      url.hostname === 'accounts.youtube.com'
+  } catch (e) {
+    return false
+  }
+}
+
 /*
 Google blocks signin in some cases unless a custom UA is used
 see https://github.com/minbrowser/min/issues/868
 */
 function enableGoogleUASwitcher (ses) {
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
-    if (!hasCustomUserAgent && details.url.includes('accounts.google.com')) {
-      const url = new URL(details.url)
-
-      if (url.hostname === 'accounts.google.com') {
-        details.requestHeaders['User-Agent'] = getFirefoxUA()
-      }
+    const isGoogle = !hasCustomUserAgent && isGoogleAccountURL(details.url)
+    if (isGoogle) {
+      details.requestHeaders['User-Agent'] = getFirefoxUA()
     }
 
-    const chromiumVersion = process.versions.chrome.split('.')[0]
-    details.requestHeaders['SEC-CH-UA'] = `"Chromium";v="${chromiumVersion}", " Not A;Brand";v="99"`
-    details.requestHeaders['SEC-CH-UA-MOBILE'] = '?0'
+    const currentUA = details.requestHeaders['User-Agent'] || ''
+    const isFirefox = /Firefox\/\S+/i.test(currentUA)
+
+    if (isFirefox || isGoogle) {
+      for (const key of Object.keys(details.requestHeaders)) {
+        if (key.toLowerCase().startsWith('sec-ch-')) {
+          delete details.requestHeaders[key]
+        }
+      }
+    } else {
+      const chromiumVersion = process.versions.chrome.split('.')[0]
+      details.requestHeaders['SEC-CH-UA'] = `"Chromium";v="${chromiumVersion}", " Not A;Brand";v="99"`
+      details.requestHeaders['SEC-CH-UA-MOBILE'] = '?0'
+    }
 
     callback({ cancel: false, requestHeaders: details.requestHeaders })
   })
 }
+
+function applyUAForURL (webContents, urlStr) {
+  if (hasCustomUserAgent || !webContents || webContents.isDestroyed()) return
+  if (!urlStr || (!urlStr.startsWith('http://') && !urlStr.startsWith('https://'))) return
+
+  if (isGoogleAccountURL(urlStr)) {
+    webContents.setUserAgent(getFirefoxUA())
+  } else {
+    webContents.setUserAgent(newUserAgent)
+  }
+}
+
+app.on('web-contents-created', function (event, contents) {
+  contents.on('will-navigate', function (e, url) {
+    applyUAForURL(contents, url)
+  })
+  contents.on('will-redirect', function (e, url) {
+    applyUAForURL(contents, url)
+  })
+  contents.on('did-start-navigation', function (e, url, isInPlace, isMainFrame) {
+    if (isMainFrame) {
+      applyUAForURL(contents, url)
+    }
+  })
+})
 
 app.once('ready', function () {
   enableGoogleUASwitcher(session.defaultSession)
