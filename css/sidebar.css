@@ -1351,7 +1351,6 @@ body.dark-mode .git-graph-diff-hunk {
   font-size: 13px;
   line-height: 1.4;
 }
-.sidebar-panel .git-section-title,
 .sidebar-panel .file-tree-label,
 .sidebar-panel .git-branch-name,
 .sidebar-panel .git-file-label {
@@ -3076,7 +3075,7 @@ body.dark-mode #sidebar-panel-git .git-commit-input {
   padding: 0 6px 0 2px;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   opacity: 1;
 }
@@ -3673,8 +3672,6 @@ drawer, and agent popovers (which mount on document.body) */
 }
 
 #sidebar .file-tree-title,
-#sidebar .git-title,
-#sidebar .git-section-header,
 #sidebar .design-section-label,
 #sidebar .design-result-tab,
 #sidebar .design-context-title,
