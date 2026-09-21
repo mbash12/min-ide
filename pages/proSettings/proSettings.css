@@ -337,6 +337,62 @@ body.dark-mode .pro-select option {
   background: var(--ps-hover);
 }
 
+/* ---------- searchable select ---------- */
+
+/* text input + filtered dropdown driving a hidden select; the input keeps
+the native select's chevron so it reads as the same control */
+.pro-search-select {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+/* double-class + element beats `.pro-field-row input[type='text']` (which
+resets background and width) so the chevron and full width survive */
+.pro-search-select input.pro-search-select-input {
+  width: 100%;
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+}
+.pro-search-select-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--ps-input-bg);
+  border: 1px solid var(--ps-border-strong);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  z-index: 40;
+}
+.pro-search-select-item {
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pro-search-select-item:hover,
+.pro-search-select-item.active {
+  background: var(--ps-hover);
+}
+.pro-search-select-item.selected {
+  color: var(--ps-accent);
+  font-weight: 500;
+}
+.pro-search-select-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--ps-text-muted);
+}
+
 /* ---------- buttons ---------- */
 
 .pro-actions-row {

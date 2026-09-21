@@ -77,6 +77,172 @@ function dbInvoke (action, payload, callback) {
   window.postMessage({ message: 'dbInvoke', callId: callId, action: action, payload: payload }, window.location.toString())
 }
 
+/* searchable wrapper for <select>s: hides the select and drives it through
+a text input + filtered dropdown. Callers keep reading select.value and
+listening for 'change'; options may be repopulated at any time.
+
+Closed state shows the selected label as the input's placeholder; opening
+clears the input so typing filters from scratch. */
+function makeSearchableSelect (select) {
+  var wrap = document.createElement('div')
+  wrap.className = 'pro-search-select'
+
+  var input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'pro-input pro-search-select-input'
+  input.autocomplete = 'off'
+  input.spellcheck = false
+
+  var list = document.createElement('div')
+  list.className = 'pro-search-select-list'
+  list.hidden = true
+
+  select.parentNode.insertBefore(wrap, select)
+  wrap.appendChild(select)
+  select.style.display = 'none'
+  wrap.appendChild(input)
+  wrap.appendChild(list)
+
+  var activeIndex = -1
+  var isOpen = false
+
+  function selectedLabel () {
+    var opt = select.selectedOptions && select.selectedOptions[0]
+    return opt ? opt.textContent : ''
+  }
+
+  function sync () {
+    input.disabled = select.disabled
+    if (!isOpen) {
+      input.value = ''
+      input.placeholder = selectedLabel()
+    }
+  }
+
+  function onDocMousedown (e) {
+    if (!wrap.contains(e.target)) closeList()
+  }
+
+  function closeList () {
+    if (!isOpen) return
+    isOpen = false
+    list.hidden = true
+    input.value = ''
+    input.placeholder = selectedLabel()
+    document.removeEventListener('mousedown', onDocMousedown, true)
+  }
+
+  function renderList (filter) {
+    list.textContent = ''
+    var q = (filter || '').toLowerCase()
+    var shown = 0
+    activeIndex = -1
+    Array.from(select.options).forEach(function (opt) {
+      if (shown >= 200) return
+      if (q && opt.textContent.toLowerCase().indexOf(q) === -1) return
+      var item = document.createElement('div')
+      item.className = 'pro-search-select-item'
+      item.dataset.value = opt.value
+      item.textContent = opt.textContent
+      if (opt.value === select.value) {
+        item.classList.add('selected')
+        activeIndex = shown
+      }
+      item.addEventListener('mousedown', function (e) {
+        e.preventDefault() // keep focus on the input so pick() lands first
+        pick(opt.value)
+      })
+      list.appendChild(item)
+      shown++
+    })
+    if (!shown) {
+      var empty = document.createElement('div')
+      empty.className = 'pro-search-select-empty'
+      empty.textContent = l('proSettingsSearchNoResults')
+      list.appendChild(empty)
+    }
+  }
+
+  function openList () {
+    if (isOpen || select.disabled) return
+    isOpen = true
+    input.placeholder = selectedLabel()
+    renderList(input.value)
+    list.hidden = false
+    document.addEventListener('mousedown', onDocMousedown, true)
+    var selected = list.querySelector('.pro-search-select-item.selected')
+    if (selected) selected.scrollIntoView({ block: 'nearest' })
+  }
+
+  function pick (value) {
+    select.value = value
+    select.dispatchEvent(new Event('change'))
+    closeList()
+  }
+
+  function moveActive (delta) {
+    var items = list.querySelectorAll('.pro-search-select-item')
+    if (!items.length) return
+    activeIndex = (activeIndex + delta + items.length) % items.length
+    items.forEach(function (item, i) { item.classList.toggle('active', i === activeIndex) })
+    items[activeIndex].scrollIntoView({ block: 'nearest' })
+  }
+
+  input.addEventListener('mousedown', function (e) {
+    if (isOpen) {
+      // clicking the field while open toggles closed; preventDefault keeps
+      // focus so the list doesn't immediately reopen via the focus handler
+      e.preventDefault()
+      closeList()
+      return
+    }
+    if (document.activeElement === input) {
+      // already focused (e.g. just closed by clicking the field) — the focus
+      // event won't refire, so open explicitly
+      e.preventDefault()
+      openList()
+    }
+    // otherwise let the default focus happen; the focus handler opens
+  })
+  input.addEventListener('focus', function () {
+    openList()
+  })
+  input.addEventListener('input', function () {
+    if (!isOpen) openList()
+    renderList(input.value)
+  })
+  input.addEventListener('blur', closeList)
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (!isOpen) { openList(); return }
+      moveActive(1)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (!isOpen) return
+      moveActive(-1)
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (!isOpen) { openList(); return }
+      var items = list.querySelectorAll('.pro-search-select-item')
+      var target = items[activeIndex] || items[0]
+      if (target) pick(target.dataset.value)
+    } else if (e.key === 'Escape') {
+      if (isOpen) {
+        e.preventDefault()
+        e.stopPropagation() // don't let it close the whole dialog too
+        closeList()
+      }
+    }
+  })
+
+  // options may be repopulated async — keep the placeholder in sync
+  new window.MutationObserver(sync).observe(select, { childList: true })
+
+  sync()
+  return { sync: sync, input: input }
+}
+
 /* CRUD list of configured providers: rows show the masked key with
 test/remove actions, and an add row offers every provider the installed SDK
 knows (probed live via agentListProviders). Keys live in the central DB under
@@ -218,6 +384,7 @@ var addLink = document.getElementById('provider-add-link')
 var addError = document.getElementById('provider-add-error')
 var addConfirm = document.getElementById('provider-add-confirm')
 addKey.placeholder = l('proSettingsApiKeyPlaceholder')
+var addSelectSearch = makeSearchableSelect(addSelect)
 
 function updateAddLink () {
   var link = PROVIDER_LINKS[addSelect.value]
@@ -240,6 +407,7 @@ function openAddDialog () {
   })
   addSelect.disabled = !unconfigured.length
   addConfirm.disabled = !unconfigured.length
+  addSelectSearch.sync()
   addKey.value = ''
   addError.hidden = true
   updateAddLink()
@@ -297,6 +465,33 @@ agentCall('agentListProviders', {}, function (providers) {
     }
     renderProviders()
   })
+})
+
+/* commit message model: 'provider/model' stored in ai_config.commitModel.
+Empty option follows the agent's own provider+model. */
+var commitModelSelect = document.getElementById('commit-model')
+var commitModelSearch = makeSearchableSelect(commitModelSelect)
+
+agentCall('agentFetchModels', {}, function (models) {
+  commitModelSelect.textContent = ''
+  var defaultOpt = document.createElement('option')
+  defaultOpt.value = ''
+  defaultOpt.textContent = l('proSettingsCommitModelDefault')
+  commitModelSelect.appendChild(defaultOpt)
+  ;(models || []).forEach(function (m) {
+    var opt = document.createElement('option')
+    opt.value = m.provider + '/' + m.id
+    opt.textContent = m.providerLabel + ' / ' + m.name
+    commitModelSelect.appendChild(opt)
+  })
+  dbInvoke('db:kvGet', { scope: 'ai_config', key: 'commitModel' }, function (value) {
+    commitModelSelect.value = value || ''
+    commitModelSearch.sync()
+  })
+})
+
+commitModelSelect.addEventListener('change', function () {
+  dbInvoke('db:kvSet', { scope: 'ai_config', key: 'commitModel', value: commitModelSelect.value || null })
 })
 
 /* =====================================================================
@@ -711,10 +906,11 @@ function bindCheckboxField (inputId, key) {
   })
 }
 
-function bindSelectField (inputId, key, fallback) {
+function bindSelectField (inputId, key, fallback, widget) {
   var el = document.getElementById(inputId)
   settings.get(key, function (value) {
     el.value = value || fallback
+    if (widget) widget.sync()
   })
   el.addEventListener('change', function () {
     settings.set(key, el.value)
@@ -730,6 +926,7 @@ bindTextField('terminal-shell', 'terminalShell')
 
 /* workspace defaults: pick which profile a new workspace starts on */
 var defaultProfileSelect = document.getElementById('workspace-default-profile')
+var defaultProfileSearch = makeSearchableSelect(defaultProfileSelect)
 function populateDefaultProfileSelect () {
   defaultProfileSelect.textContent = ''
   var noneOpt = document.createElement('option')
@@ -744,6 +941,7 @@ function populateDefaultProfileSelect () {
   })
   settings.get('defaultWorkspaceProfile', function (value) {
     defaultProfileSelect.value = value || ''
+    defaultProfileSearch.sync()
   })
 }
 defaultProfileSelect.addEventListener('change', function () {
@@ -751,7 +949,8 @@ defaultProfileSelect.addEventListener('change', function () {
 })
 populateDefaultProfileSelect()
 
-bindSelectField('docs-default-mode', 'docsDefaultMode', 'wysiwyg')
+var docsModeSearch = makeSearchableSelect(document.getElementById('docs-default-mode'))
+bindSelectField('docs-default-mode', 'docsDefaultMode', 'wysiwyg', docsModeSearch)
 
 /* =====================================================================
    Figma engine (global controls)

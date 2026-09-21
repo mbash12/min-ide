@@ -137,6 +137,11 @@
     "proSettingsDocsModeLabel": "Mode editor bawaan",
     "proSettingsModeWysiwyg": "WYSIWYG",
     "proSettingsModeMarkdown": "Markdown (source)",
+    "proSettingsCommitHeading": "Pesan Commit",
+    "proSettingsCommitDescription": "Dipakai aksi Generate Commit Message di panel Git untuk staged changes.",
+    "proSettingsCommitModelLabel": "Model pesan commit",
+    "proSettingsCommitModelDefault": "Sama dengan model agent",
+    "proSettingsSearchNoResults": "Tidak ada hasil",
     "workspacesHeading": "Workspaces",
     "defaultWorkspaceName": "Workspace %n", //this is the name used for newly-created workspaces; %n is replaced with a number ("workspace 1", "workspace 2", etc)
     "workspaceNameLabel": "Nama",

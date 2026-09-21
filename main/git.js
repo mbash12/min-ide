@@ -1,4 +1,4 @@
-/* global fs, path, ipc, isPathInside, net, settings */
+/* global fs, path, ipc, isPathInside, getProviderApiKey, getAgentSetting, loadPiSdk, installProviderKeys, PROVIDER_LABELS */
 /* git integration for the sidebar Source Control panel.
 fs, path and ipc are provided by main.js (concatenated bundle).
 Uses the system `git` binary via child_process.
@@ -341,17 +341,25 @@ ipc.handle('gitDiff', function (e, cwd, filePath, staged) {
   return { diff: r.stdout }
 })
 
+/* commit message generation goes through the pi SDK ModelRuntime so any
+configured provider works. The 'commitModel' setting ('provider/model',
+picked in Pro Settings) overrides the agent's own provider+model. */
 ipc.handle('gitGenerateCommitMessage', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
-  var key = getProviderApiKey()
-  if (!key) return { error: 'Set an OpenRouter API key in Pro Settings first.' }
 
   var diffResult = runGit(cwd, ['diff', '--staged', '--no-color', '--stat'])
   var patchResult = runGit(cwd, ['diff', '--staged', '--no-color', '--unified=2'])
   if (patchResult.status !== 0) return { error: patchResult.stderr || 'Could not read staged changes.' }
   if (!patchResult.stdout.trim()) return { error: 'Stage changes before generating a commit message.' }
 
-  var model = getAgentSetting('agentModel') || 'anthropic/claude-3.5-sonnet'
+  var commitModel = getAgentSetting('commitModel')
+  var provider = getAgentSetting('agentProvider') || 'openrouter'
+  var modelId = getAgentSetting('agentModel') || 'anthropic/claude-3.5-sonnet'
+  if (commitModel && commitModel.indexOf('/') !== -1) {
+    provider = commitModel.slice(0, commitModel.indexOf('/'))
+    modelId = commitModel.slice(commitModel.indexOf('/') + 1)
+  }
+
   var promptText = [
     'Write one concise Git commit message for the staged changes below.',
     'Use an imperative subject, preferably Conventional Commits when appropriate.',
@@ -363,24 +371,34 @@ ipc.handle('gitGenerateCommitMessage', async function (e, cwd) {
   ].join('\n')
 
   try {
-    var response = await net.fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + key,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: [{ role: 'user', content: promptText }],
-        temperature: 0.2,
-        max_tokens: 120
-      })
-    })
-    var body = await response.json()
-    if (!response.ok) {
-      return { error: (body && body.error && body.error.message) || ('HTTP ' + response.status) }
+    var sdk = await loadPiSdk()
+    var modelRuntime = await sdk.ModelRuntime.create()
+    await installProviderKeys(modelRuntime)
+
+    var model = null
+    if (getProviderApiKey(provider)) {
+      try { model = modelRuntime.getModel(provider, modelId) } catch (modelErr) {}
     }
-    var message = body && body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content
+    if (!model && !commitModel) {
+      // nothing explicitly picked and the preferred provider has no key —
+      // use whichever configured provider actually has models available
+      var available = (await modelRuntime.getAvailable()) || []
+      model = available[0] || null
+    }
+    if (!model) {
+      return { error: 'No usable AI model. Add a provider API key in Pro Settings, or pick a commit message model there.' }
+    }
+    provider = model.provider
+
+    var response = await modelRuntime.completeSimple(model, {
+      messages: [{ role: 'user', content: promptText, timestamp: Date.now() }]
+    })
+    if (response.errorMessage || response.stopReason === 'error') {
+      return { error: (PROVIDER_LABELS[provider] || provider) + ': ' + (response.errorMessage || 'the model request failed.') }
+    }
+    var message = (response.content || []).filter(function (c) {
+      return c && c.type === 'text'
+    }).map(function (c) { return c.text }).join('\n')
     message = String(message || '').trim().replace(/^```(?:text)?\s*|\s*```$/g, '').trim()
     if (!message) return { error: 'The model returned an empty commit message.' }
     return { message: message }
