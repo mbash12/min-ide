@@ -3163,6 +3163,17 @@ body.dark-mode #sidebar-panel-git .git-commit-input {
   overflow: hidden;
   border-top: 0;
 }
+/* a collapsed graph shrinks to its header so Changes gets the space; the
+   second selector keeps it collapsed even when the Changes view is too */
+#sidebar-panel-git > .git-graph-section.git-split-view.collapsed,
+#sidebar-panel-git .git-changes-view.collapsed + .git-view-splitter + .git-graph-section.git-split-view.collapsed {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+}
+#sidebar-panel-git .git-view-splitter:has(+ .git-graph-section.collapsed) {
+  display: none;
+}
 #sidebar-panel-git .git-view-splitter {
   position: relative;
   z-index: 2;

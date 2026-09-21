@@ -1,4 +1,4 @@
-/* global ipc, l, tasks, empty, MutationObserver, prompt, electron */
+/* global ipc, l, empty, MutationObserver, prompt, electron */
 /* Source Control (git) panel for the sidebar.
    Shows git status for the current workspace path, mirroring VSCode's
    Source Control view: branch header, commit box, and grouped file lists
@@ -25,8 +25,17 @@ let currentLogDetailed = null
 
 const collapsedSections = new Set()
 let graphScrollTop = 0
+let graphViewHeight = 0 // splitter-dragged height; 0 = CSS default
 let graphExpandedCommit = null // hash of the commit whose diff is shown
 let renderToken = 0 // invalidates stale async renders (diff loading)
+let lastRenderKey = null // data signature of the last render; skips no-op re-renders
+
+/* identifies what the panel would render right now; the periodic refresh
+   only rebuilds the DOM when this changes, so open diffs, scroll positions
+   and the commit box aren't torn down by a no-op poll */
+function renderKey () {
+  return currentWorkspaceId + '|' + JSON.stringify([currentStatus, currentGraph, currentLogDetailed])
+}
 
 let currentWorkspaceId = null
 
@@ -63,6 +72,7 @@ async function loadSavedState (workspaceId) {
       ;(state.collapsedSections || []).forEach(function (s) { collapsedSections.add(s) })
       commitMessage = state.commitMessage || ''
       graphScrollTop = state.graphScrollTop || 0
+      graphViewHeight = state.graphViewHeight || 0
       graphExpandedCommit = state.graphExpandedCommit || null
     } else {
       // first run for this workspace: Branches & Graph start collapsed
@@ -80,6 +90,7 @@ async function persistState () {
     collapsedSections: Array.from(collapsedSections),
     commitMessage: commitMessage,
     graphScrollTop: graphScrollTop,
+    graphViewHeight: graphViewHeight,
     graphExpandedCommit: graphExpandedCommit
   }
   await uiStateDB.setGitPanelState(key, state)
@@ -116,6 +127,7 @@ function onWorkspaceSelected (workspaceId) {
   collapsedSections.clear()
   defaultCollapsedSections.forEach(function (section) { collapsedSections.add(section) })
   graphScrollTop = 0
+  graphViewHeight = 0
   graphExpandedCommit = null
   loadSavedState(nextWorkspaceId).then(function () {
     if (nextWorkspaceId === currentWorkspaceId) refresh()
@@ -898,7 +910,7 @@ function diffMessage (text) {
   return el
 }
 
-async function buildDiffViewer (commit) {
+function buildDiffViewer (commit) {
   const wrap = document.createElement('div')
   wrap.className = 'git-graph-diff'
   const loading = document.createElement('div')
@@ -909,25 +921,20 @@ async function buildDiffViewer (commit) {
   // render the diff when it arrives; if the panel has been re-rendered
   // meanwhile, the stale nodes are discarded with the rest of the panel
   const token = renderToken
-  try {
-    const result = await ipc.invoke('gitCommitDiff', currentGitRoot, commit.hash)
-    if (token !== renderToken) return wrap
+  ipc.invoke('gitCommitDiff', currentGitRoot, commit.hash).then(function (result) {
+    if (token !== renderToken) return
     empty(wrap)
     if (!result || result.error || !result.diff) {
       wrap.appendChild(diffMessage(result && result.error ? result.error : 'No diff'))
-      return wrap
+      return
     }
     const rows = renderDiffRows(result.diff)
-    if (rows) {
-      wrap.appendChild(rows)
-    } else {
-      wrap.appendChild(diffMessage('No changes in this commit'))
-    }
-  } catch (e) {
-    if (token !== renderToken) return wrap
+    wrap.appendChild(rows || diffMessage('No changes in this commit'))
+  }).catch(function (e) {
+    if (token !== renderToken) return
     empty(wrap)
     wrap.appendChild(diffMessage(e.message || 'Failed to load diff'))
-  }
+  })
   return wrap
 }
 
@@ -972,13 +979,26 @@ function buildGraphSection () {
   const section = document.createElement('div')
   section.className = 'git-section git-graph-section'
   section.dataset.section = sectionKey
+  // re-apply the splitter-dragged height; renders rebuild this element, so
+  // without this the view snaps back to the CSS default on every refresh
+  if (graphViewHeight > 0 && !collapsedSections.has(sectionKey)) {
+    section.style.flexBasis = graphViewHeight + 'px'
+  }
 
   const header = document.createElement('div')
   header.className = 'git-section-header'
   header.addEventListener('click', function () {
     if (collapsedSections.has(sectionKey)) collapsedSections.delete(sectionKey)
     else collapsedSections.add(sectionKey)
-    section.classList.toggle('collapsed', collapsedSections.has(sectionKey))
+    const collapsed = collapsedSections.has(sectionKey)
+    section.classList.toggle('collapsed', collapsed)
+    // a splitter-dragged flexBasis would keep the collapsed view tall;
+    // drop it so the section shrinks to just its header
+    if (collapsed) {
+      section.style.flexBasis = ''
+    } else if (graphViewHeight > 0) {
+      section.style.flexBasis = graphViewHeight + 'px'
+    }
     persistStateSoon()
   })
   const chevron = document.createElement('span')
@@ -1192,6 +1212,10 @@ function buildViewSplitter (graphView) {
       document.removeEventListener('mousemove', resize)
       document.removeEventListener('mouseup', stop)
       document.body.classList.remove('is-resizing-git-views')
+      // remember the dragged height; render() rebuilds the graph element
+      // and would otherwise lose it on the next refresh
+      graphViewHeight = Math.round(graphView.getBoundingClientRect().height)
+      persistStateSoon()
     }
 
     document.addEventListener('mousemove', resize)
@@ -1208,7 +1232,7 @@ async function refresh () {
   if (!wsPath) {
     currentGitRoot = null
     currentStatus = null
-    render()
+    if (renderKey() !== lastRenderKey) render()
     return
   }
   isLoading = true
@@ -1246,12 +1270,13 @@ async function refresh () {
     }
   }
   if (generation === refreshGeneration && getWorkspacePath() === wsPath) {
-    render()
+    if (renderKey() !== lastRenderKey) render()
   }
 }
 
 function render () {
   renderToken++
+  lastRenderKey = renderKey()
   empty(panel)
 
   const wsPath = getWorkspacePath()
