@@ -47,6 +47,12 @@ window.addEventListener('message', function (e) {
     })
   }
 
+  if (e.data && e.data.message === 'agentListTools') {
+    ipc.invoke('agent-list-tools', { cwd: e.data.cwd }).then(function (result) {
+      window.postMessage({ message: 'agentListToolsResult', result: result }, window.location.toString())
+    })
+  }
+
   if (e.data && e.data.message === 'figmaEngine') {
     var allowed = ['status', 'start', 'stop', 'setVisible', 'revealLogin', 'hide']
     if (allowed.indexOf(e.data.action) === -1) return

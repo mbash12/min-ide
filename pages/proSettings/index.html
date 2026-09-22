@@ -15,6 +15,7 @@
     <div class="pro-layout">
       <nav class="pro-tabs">
         <button class="pro-tab active" data-tab="provider"><i class="i carbon:api"></i><span data-string="proSettingsTabProvider"></span></button>
+        <button class="pro-tab" data-tab="tools"><i class="i carbon:tools"></i><span data-string="proSettingsTabTools"></span></button>
         <button class="pro-tab" data-tab="profiles"><i class="i carbon:user-multiple"></i><span data-string="proSettingsTabProfiles"></span></button>
         <button class="pro-tab" data-tab="editor"><i class="i carbon:code"></i><span data-string="proSettingsTabEditor"></span></button>
         <button class="pro-tab" data-tab="terminal"><i class="i carbon:terminal"></i><span data-string="proSettingsTabTerminal"></span></button>
@@ -56,6 +57,34 @@
         </section>
 
         <footer class="pro-footer" data-string="proSettingsFooterNote"></footer>
+      </section>
+
+      <!-- ===== tools tab ===== -->
+      <section class="pro-panel" id="panel-tools">
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsToolsHeading"></span>
+            <button id="tools-refresh" class="pro-icon-button" data-label="proSettingsToolsRefresh"><i class="i carbon:renew"></i></button>
+          </div>
+          <p class="pro-description" data-string="proSettingsToolsDescription"></p>
+          <div class="pro-field-card" id="tools-builtin-list"></div>
+        </section>
+
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsMinToolsHeading"></span>
+          </div>
+          <p class="pro-description" data-string="proSettingsMinToolsDescription"></p>
+          <div class="pro-field-card" id="tools-custom-list"></div>
+        </section>
+
+        <section class="pro-section">
+          <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsSkillsHeading"></span>
+          </div>
+          <p class="pro-description" data-string="proSettingsSkillsDescription"></p>
+          <div id="tools-skills-list"></div>
+        </section>
       </section>
 
       <!-- ===== profiles tab ===== -->
@@ -213,6 +242,22 @@
         <div class="pro-actions-row pro-dialog-actions">
           <button id="profile-add-cancel" class="pro-button" data-string="profileClearCancel"></button>
           <button id="profile-add-confirm" class="pro-button pro-button-primary" data-string="taskProfileAdd"></button>
+        </div>
+      </div>
+    </div>
+
+    <div id="tool-detail-overlay" class="pro-overlay" hidden>
+      <div class="pro-dialog" role="dialog" aria-modal="true" aria-labelledby="tool-detail-title">
+        <h2 id="tool-detail-title"></h2>
+        <p id="tool-detail-subtitle" class="pro-tool-subtitle" hidden></p>
+        <p id="tool-detail-description" class="pro-description"></p>
+        <div id="tool-detail-meta" class="pro-kv" hidden></div>
+        <div id="tool-detail-subtools-wrap" hidden>
+          <div class="pro-skill-group-title pro-dialog-label" data-string="proSettingsSubTools"></div>
+          <div id="tool-detail-subtools" class="pro-tool-subtools"></div>
+        </div>
+        <div class="pro-actions-row pro-dialog-actions">
+          <button id="tool-detail-close" class="pro-button pro-button-primary" data-string="closeDialog"></button>
         </div>
       </div>
     </div>

@@ -408,6 +408,7 @@ Gap yang sudah dikerjakan setelah dokumen ini ditulis, dan tidak lagi dihitung d
 15. **Extra settings sections** (§27). Empat tab baru di Pro Settings: Editor (font size/tab size/word wrap), Terminal (font size/shell), Workspace Defaults (profil bawaan workspace baru), Documents (mode editor bawaan). Preferensi sampai ke halaman internal lewat `minViewResource.extra`; shell dibaca langsung di main lewat `settings`.
 16. **Task-scoped preferences** (§2). `task.prefs` — map key/value di record task, masuk whitelist restore dan ikut session restore; API `js/taskPrefs.js` (`get`/`getAll`/`set`) resolve lintas workspace. Siap jadi rumah untuk, mis., session id agent per task.
 17. **AI session model** (§25). History session pindah ke scope workspace (`sessions/workspaces/ws-<hash>`); ownership `task.prefs.agentSession` memberi status `active`/`active in Task X`/`available` di drawer, session milik task lain tidak selectable, dan task yang dihapus otomatis melepas session-nya.
+18. **Tools directory** — tab **Tools** di Pro Settings menampilkan katalog read-only dari apa yang bisa dipakai agent: built-in tools pi SDK (`read`/`bash`/`edit`/`write`/`grep`/`find`/`ls`, deskripsi di-probe live dari factory SDK), custom tools Min (`browser`/`playbook`/`docs`/`figma`), dan skills yang di-discover `sdk.loadSkills` dari `<userData>/pi-agent/skills` (global) + `<workspace>/.pi/skills` (project). Data lewat IPC `agent-list-tools` (relay `agentListTools` di settingsPreload), dimuat lazy saat tab dibuka + tombol refresh.
 
 ## Ditunda
 

@@ -13,6 +13,7 @@ document.title = l('proSettingsTitle') + ' | Min'
 var tabButtons = Array.from(document.querySelectorAll('.pro-tab'))
 var panels = {
   provider: document.getElementById('panel-provider'),
+  tools: document.getElementById('panel-tools'),
   profiles: document.getElementById('panel-profiles'),
   editor: document.getElementById('panel-editor'),
   terminal: document.getElementById('panel-terminal'),
@@ -29,6 +30,7 @@ function selectTab (name) {
   Object.keys(panels).forEach(function (key) {
     panels[key].classList.toggle('active', key === name)
   })
+  if (name === 'tools' && !toolsLoaded) loadAgentTools()
 }
 
 tabButtons.forEach(function (button) {
@@ -1136,3 +1138,261 @@ refreshFigmaStatus()
 setInterval(function () {
   if (document.visibilityState === 'visible' && !figmaBusy) refreshFigmaStatus()
 }, 2500)
+
+/* =====================================================================
+   Tools tab — read-only directory of the agent's tools and skills
+   ===================================================================== */
+
+var toolsLoaded = false
+var toolsBuiltinList = document.getElementById('tools-builtin-list')
+var toolsCustomList = document.getElementById('tools-custom-list')
+var toolsSkillsList = document.getElementById('tools-skills-list')
+var toolsRefreshBtn = document.getElementById('tools-refresh')
+
+/* ---- tool detail dialog (also the future home of per-tool settings) ---- */
+var toolDetailOverlay = document.getElementById('tool-detail-overlay')
+var toolDetailTitle = document.getElementById('tool-detail-title')
+var toolDetailSubtitle = document.getElementById('tool-detail-subtitle')
+var toolDetailDesc = document.getElementById('tool-detail-description')
+var toolDetailMeta = document.getElementById('tool-detail-meta')
+var toolDetailSubWrap = document.getElementById('tool-detail-subtools-wrap')
+var toolDetailSub = document.getElementById('tool-detail-subtools')
+
+function openToolDetail (item) {
+  toolDetailTitle.textContent = item.title
+  toolDetailSubtitle.hidden = !item.subtitle
+  toolDetailSubtitle.textContent = item.subtitle || ''
+  toolDetailDesc.textContent = item.description || ''
+
+  toolDetailMeta.textContent = ''
+  toolDetailMeta.hidden = !(item.meta && item.meta.length)
+  ;(item.meta || []).forEach(function (entry) {
+    var row = document.createElement('div')
+    row.className = 'pro-kv-row'
+    var k = document.createElement('div')
+    k.className = 'pro-kv-k'
+    k.textContent = entry[0]
+    var v = document.createElement('div')
+    v.className = 'pro-kv-v'
+    v.textContent = entry[1]
+    row.appendChild(k)
+    row.appendChild(v)
+    toolDetailMeta.appendChild(row)
+  })
+
+  toolDetailSub.textContent = ''
+  toolDetailSubWrap.hidden = !(item.actions && item.actions.length)
+  ;(item.actions || []).forEach(function (action) {
+    var chip = document.createElement('span')
+    chip.className = 'pro-tool-chip'
+    chip.textContent = action
+    toolDetailSub.appendChild(chip)
+  })
+
+  toolDetailOverlay.hidden = false
+}
+
+function closeToolDetail () {
+  toolDetailOverlay.hidden = true
+}
+
+document.getElementById('tool-detail-close').addEventListener('click', closeToolDetail)
+toolDetailOverlay.addEventListener('click', function (e) {
+  if (e.target === toolDetailOverlay) closeToolDetail()
+})
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape' && !toolDetailOverlay.hidden) closeToolDetail()
+})
+
+/* item shape: { title, name, description, actions, meta } — name is the raw
+tool/skill id shown as a badge when it differs from the title */
+function makeToolItem (item) {
+  var wrap = document.createElement('div')
+  wrap.className = 'pro-tool-item'
+
+  var row = document.createElement('div')
+  row.className = 'pro-tool-row'
+  row.setAttribute('role', 'button')
+  row.tabIndex = 0
+
+  var hasActions = !!(item.actions && item.actions.length)
+  var subtools = null
+  if (hasActions) {
+    var chevron = document.createElement('button')
+    chevron.className = 'pro-tool-chevron'
+    chevron.setAttribute('aria-label', 'expand')
+    var chevronIcon = document.createElement('i')
+    chevronIcon.className = 'i carbon:chevron-right'
+    chevron.appendChild(chevronIcon)
+    chevron.addEventListener('click', function (e) {
+      e.stopPropagation()
+      var expanded = subtools.hidden
+      subtools.hidden = !expanded
+      chevron.classList.toggle('expanded', expanded)
+    })
+    /* keep Enter/Space on the chevron from also triggering the row's
+    open-popup keydown */
+    chevron.addEventListener('keydown', function (e) {
+      e.stopPropagation()
+    })
+    row.appendChild(chevron)
+  } else {
+    var slot = document.createElement('span')
+    slot.className = 'pro-tool-chevron-slot'
+    row.appendChild(slot)
+  }
+
+  var nameEl = document.createElement('span')
+  nameEl.className = 'pro-tool-name'
+  nameEl.textContent = item.title
+  row.appendChild(nameEl)
+
+  if (item.name && item.name !== item.title) {
+    var badge = document.createElement('span')
+    badge.className = 'pro-tool-meta'
+    badge.textContent = item.name
+    row.appendChild(badge)
+  }
+  if (item.badge) {
+    var extra = document.createElement('span')
+    extra.className = 'pro-tool-meta'
+    extra.textContent = item.badge
+    row.appendChild(extra)
+  }
+
+  function open () { openToolDetail(item) }
+  row.addEventListener('click', open)
+  row.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      open()
+    }
+  })
+  wrap.appendChild(row)
+
+  if (hasActions) {
+    subtools = document.createElement('div')
+    subtools.className = 'pro-tool-subtools'
+    subtools.hidden = true
+    item.actions.forEach(function (action) {
+      var chip = document.createElement('span')
+      chip.className = 'pro-tool-chip'
+      chip.textContent = action
+      subtools.appendChild(chip)
+    })
+    wrap.appendChild(subtools)
+  }
+  return wrap
+}
+
+function fillToolList (listEl, items, emptyText) {
+  listEl.textContent = ''
+  if (!items || !items.length) {
+    var empty = document.createElement('div')
+    empty.className = 'pro-tool-empty'
+    empty.textContent = emptyText
+    listEl.appendChild(empty)
+    return
+  }
+  items.forEach(function (item) {
+    listEl.appendChild(makeToolItem(item))
+  })
+}
+
+function renderSkillsGroup (title, dirPath, skills) {
+  var group = document.createElement('div')
+  group.className = 'pro-skill-group'
+
+  var head = document.createElement('div')
+  head.className = 'pro-skill-group-head'
+  var titleEl = document.createElement('span')
+  titleEl.className = 'pro-skill-group-title'
+  titleEl.textContent = title
+  head.appendChild(titleEl)
+  if (dirPath) {
+    var dirEl = document.createElement('span')
+    dirEl.className = 'pro-skill-group-dir'
+    dirEl.textContent = dirPath
+    dirEl.title = dirPath
+    head.appendChild(dirEl)
+  }
+  group.appendChild(head)
+
+  if (!skills.length) {
+    var empty = document.createElement('div')
+    empty.className = 'pro-tool-empty'
+    empty.textContent = l('proSettingsNoSkills')
+    group.appendChild(empty)
+    return group
+  }
+  var card = document.createElement('div')
+  card.className = 'pro-field-card'
+  skills.forEach(function (skill) {
+    card.appendChild(makeToolItem({
+      title: skill.name,
+      name: null,
+      subtitle: skill.path,
+      description: skill.description,
+      badge: skill.disabled ? l('proSettingsSkillManual') : null,
+      meta: [
+        [l('proSettingsSkillScope'), skill.scope === 'project' ? l('proSettingsSkillsProject') : l('proSettingsSkillsGlobal')]
+      ]
+    }))
+  })
+  group.appendChild(card)
+  return group
+}
+
+function renderAgentTools (data) {
+  if (toolsRefreshBtn) toolsRefreshBtn.disabled = false
+  if (!data || data.ok === false) {
+    var msg = (data && data.message) || l('proSettingsToolsUnavailable')
+    fillToolList(toolsBuiltinList, [], msg)
+    fillToolList(toolsCustomList, [], msg)
+    toolsSkillsList.textContent = ''
+    var empty = document.createElement('div')
+    empty.className = 'pro-tool-empty'
+    empty.textContent = msg
+    toolsSkillsList.appendChild(empty)
+    return
+  }
+
+  fillToolList(toolsBuiltinList, (data.builtin || []).map(function (tool) {
+    return { title: tool.name, name: null, description: tool.description }
+  }), l('proSettingsNoTools'))
+  fillToolList(toolsCustomList, (data.custom || []).map(function (tool) {
+    return {
+      title: tool.label || tool.name,
+      name: tool.name,
+      subtitle: tool.name,
+      description: tool.description,
+      actions: tool.actions
+    }
+  }), l('proSettingsNoTools'))
+
+  toolsSkillsList.textContent = ''
+  var skills = data.skills || []
+  var dirs = data.skillDirs || {}
+  toolsSkillsList.appendChild(renderSkillsGroup(
+    l('proSettingsSkillsProject'),
+    dirs.project,
+    skills.filter(function (s) { return s.scope === 'project' })
+  ))
+  toolsSkillsList.appendChild(renderSkillsGroup(
+    l('proSettingsSkillsGlobal'),
+    dirs.user,
+    skills.filter(function (s) { return s.scope !== 'project' })
+  ))
+}
+
+function loadAgentTools () {
+  toolsLoaded = true
+  /* the deep-link selectTab at the top of this file can run before
+  toolsRefreshBtn is assigned below */
+  if (toolsRefreshBtn) toolsRefreshBtn.disabled = true
+  agentCall('agentListTools', {
+    cwd: (window.minViewResource && window.minViewResource.rootPath) || null
+  }, renderAgentTools)
+}
+
+toolsRefreshBtn.addEventListener('click', loadAgentTools)

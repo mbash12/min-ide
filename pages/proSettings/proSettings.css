@@ -608,6 +608,129 @@ body.dark-mode .pro-button-primary {
   color: var(--ps-danger);
 }
 
+/* ---------- tools tab ---------- */
+
+.pro-field-card .pro-tool-item + .pro-tool-item {
+  border-top: 1px solid var(--ps-border);
+}
+.pro-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  margin: 0 -14px; /* hover covers the card's own padding */
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pro-tool-row:hover {
+  background: var(--ps-hover);
+}
+.pro-tool-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ps-accent-soft);
+}
+.pro-tool-chevron,
+.pro-tool-chevron-slot {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pro-tool-chevron {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--ps-text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.pro-tool-chevron:hover {
+  background: var(--ps-active);
+  color: var(--ps-text);
+}
+.pro-tool-chevron .i {
+  font-size: 13px;
+  transition: transform 0.12s;
+}
+.pro-tool-chevron.expanded .i {
+  transform: rotate(90deg);
+}
+.pro-tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.pro-tool-meta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--ps-text-muted);
+  background: var(--ps-hover);
+  padding: 1px 7px;
+  border-radius: 8px;
+}
+.pro-tool-subtools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 2px 0 9px 26px; /* aligns with the tool name, past the chevron */
+}
+.pro-tool-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--ps-text-muted);
+  border: 1px solid var(--ps-border);
+  padding: 1px 8px;
+  border-radius: 8px;
+}
+#tool-detail-subtools {
+  padding-left: 0; /* in the dialog there's no chevron column to align with */
+}
+.pro-tool-subtitle {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--ps-text-muted);
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+.pro-dialog-label {
+  margin: 12px 0 6px;
+}
+.pro-tool-empty {
+  font-size: 12.5px;
+  color: var(--ps-text-muted);
+  padding: 10px 0;
+}
+.pro-field-card > .pro-tool-empty {
+  padding: 10px 0;
+}
+
+.pro-skill-group + .pro-skill-group {
+  margin-top: 16px;
+}
+.pro-skill-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  min-width: 0;
+}
+.pro-skill-group-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.pro-skill-group-dir {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--ps-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 /* ---------- figma / key-value ---------- */
 
 .pro-kv {

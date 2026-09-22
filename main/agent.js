@@ -65,6 +65,19 @@ const PROVIDER_LABELS = {
   'xiaomi-token-plan-sgp': 'Xiaomi MiMo (SGP)'
 }
 const KNOWN_PROVIDERS = Object.keys(PROVIDER_LABELS)
+/* built-in pi tools every session gets; also listed by the Pro Settings
+"Tools" tab, so keep both reads off the same list */
+const AGENT_BUILTIN_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']
+/* tool-name -> sdk factory used to probe each tool's own description */
+const AGENT_BUILTIN_TOOL_FACTORIES = {
+  read: 'createReadTool',
+  bash: 'createBashTool',
+  edit: 'createEditTool',
+  write: 'createWriteTool',
+  grep: 'createGrepTool',
+  find: 'createFindTool',
+  ls: 'createLsTool'
+}
 const agentSenders = new Set() // webContents that should receive agent events
 
 function loadPiSdk () {
@@ -721,7 +734,7 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
     sessionManager = sdk.SessionManager.create(effectiveCwd, sessionDir || undefined)
   }
 
-  const builtinTools = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']
+  const builtinTools = AGENT_BUILTIN_TOOLS
   let customTools = []
   try {
     const Type = await loadTypebox()
@@ -1018,6 +1031,82 @@ ipc.handle('agent-list-providers', async function () {
   } catch (err) {
     return []
   }
+})
+
+/* Pro Settings "Tools" tab: everything a session can use. Builtin tool
+descriptions are probed from the SDK's own tool factories so they track the
+installed version; skills come from the same directories a session scans
+(global <userData>/pi-agent/skills plus <cwd>/.pi/skills). */
+ipc.handle('agent-list-tools', async function (e, data) {
+  const pathMod = require('path')
+  const effectiveCwd = getEffectiveCwd(data && data.cwd)
+  const result = {
+    ok: true,
+    cwd: effectiveCwd,
+    builtin: [],
+    custom: [],
+    skills: [],
+    skillDirs: {}
+  }
+  let sdk = null
+  try {
+    sdk = await loadPiSdk()
+  } catch (err) {
+    result.ok = false
+    result.message = (err && err.message) || String(err)
+    return result
+  }
+
+  AGENT_BUILTIN_TOOLS.forEach(function (name) {
+    let description = ''
+    try {
+      const factory = sdk[AGENT_BUILTIN_TOOL_FACTORIES[name]]
+      const tool = factory && factory(effectiveCwd)
+      description = (tool && tool.description) || ''
+    } catch (err) {}
+    result.builtin.push({ name: name, description: description })
+  })
+
+  try {
+    const Type = await loadTypebox()
+    const customTools = minAgentTools.create(sdk.defineTool, Type, effectiveCwd, null, null)
+    const actionMap = minAgentTools.actions || {}
+    result.custom = customTools.map(function (tool) {
+      return {
+        name: tool.name,
+        label: tool.label || tool.name,
+        description: tool.description || '',
+        actions: actionMap[tool.name] || []
+      }
+    })
+  } catch (err) {}
+
+  try {
+    const agentDir = pathMod.join(require('electron').app.getPath('userData'), 'pi-agent')
+    result.skillDirs = {
+      user: pathMod.join(agentDir, 'skills'),
+      project: pathMod.join(effectiveCwd, '.pi', 'skills')
+    }
+    if (typeof sdk.loadSkills === 'function') {
+      const loaded = sdk.loadSkills({
+        cwd: effectiveCwd,
+        agentDir: agentDir,
+        skillPaths: [],
+        includeDefaults: true
+      })
+      result.skills = (loaded.skills || []).map(function (skill) {
+        return {
+          name: skill.name,
+          description: skill.description || '',
+          path: skill.filePath,
+          scope: (skill.sourceInfo && skill.sourceInfo.scope) || null,
+          disabled: !!skill.disableModelInvocation
+        }
+      })
+    }
+  } catch (err) {}
+
+  return result
 })
 
 ipc.handle('agent-fetch-models', async function () {

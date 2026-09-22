@@ -49,6 +49,14 @@ var BROWSER_ACTIONS = [
 var FIGMA_ACTIONS = ['status', 'node-data', 'extract-text', 'find-text', 'export']
 /* operation names mirror the blueprint's document tools verbatim */
 var DOCS_OPERATIONS = ['listDocuments', 'readDocument', 'editDocument']
+var PLAYBOOK_OPERATIONS = ['list', 'get', 'save', 'run', 'delete']
+/* sub-actions per custom tool, surfaced in the Pro Settings tools directory */
+var MIN_TOOL_ACTIONS = {
+  browser: BROWSER_ACTIONS,
+  playbook: PLAYBOOK_OPERATIONS,
+  docs: DOCS_OPERATIONS,
+  figma: FIGMA_ACTIONS
+}
 
 function minDocsAvailable (workspaceId) {
   if (!workspaceId || workspaceId === 'default') {
@@ -201,7 +209,7 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       'After saving, tell the user they can run it from the Playbook sidebar tab.'
     ],
     parameters: Type.Object({
-      operation: minEnum(Type, ['list', 'get', 'save', 'run', 'delete'], 'Playbook operation'),
+      operation: minEnum(Type, PLAYBOOK_OPERATIONS, 'Playbook operation'),
       name: optStr('Playbook name (slug). Required for get, save, run, delete.'),
       description: optStr('Short description. Used with save.'),
       steps: minOptional(Type, Type.Array(Type.Object({
@@ -443,6 +451,7 @@ function minCustomToolNames (tools) {
 /* used by agent.js in the concatenated main bundle */
 var minAgentTools = {
   create: createMinCustomTools,
-  names: minCustomToolNames
+  names: minCustomToolNames,
+  actions: MIN_TOOL_ACTIONS
 }
 global.minAgentTools = minAgentTools
