@@ -76,11 +76,12 @@ function figmaEngineVendorRoot () {
 function figmaEngineFindElectron (vendorRoot) {
   var candidates = [
     path.join(vendorRoot, 'node_modules', 'electron', 'dist', 'electron'),
+    // Min's Electron is a known-good version — prefer it over an arbitrary
+    // system electron, which could still be a Chromium-148-era build that
+    // rejects Figma's /app_auth/redeem request headers.
+    path.join(__dirname, 'node_modules', 'electron', 'dist', 'electron'),
     '/usr/bin/electron',
-    '/usr/lib/electron/electron',
-    // Min's Electron is a last-resort fallback. Older Chromium 148 builds
-    // have rejected Figma's /app_auth/redeem request headers.
-    path.join(__dirname, 'node_modules', 'electron', 'dist', 'electron')
+    '/usr/lib/electron/electron'
   ]
   if (process.platform === 'win32') {
     candidates.unshift(path.join(vendorRoot, 'node_modules', 'electron', 'dist', 'electron.exe'))
@@ -410,10 +411,25 @@ function figmaEngineClearStaleEngine () {
       port: FIGMA_ENGINE_CONTROL_PORT,
       path: '/status',
       timeout: 800
-    }, function () {
-      // Someone is already serving the control port — a stale engine.
-      req.destroy()
-      figmaEngineKillPortOwner().then(resolve, resolve)
+    }, function (res) {
+      var chunks = []
+      res.on('data', function (chunk) { chunks.push(chunk) })
+      res.on('end', function () {
+        // Only kill the port owner when the response is actually the figma
+        // engine — an unrelated service squatting on the port must not be
+        // SIGTERM'd. pluginMenuAgeMs is a Min-patch-specific status field.
+        var isEngine = false
+        try {
+          var body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+          isEngine = !!(body && body.ok === true && 'pluginMenuAgeMs' in body)
+        } catch (e) {}
+        if (isEngine) {
+          figmaEngineKillPortOwner().then(resolve, resolve)
+        } else {
+          resolve()
+        }
+      })
+      res.on('error', function () { resolve() })
     })
     req.on('error', function () {
       // Nothing on the port — no stale engine to clear.
@@ -459,7 +475,7 @@ async function figmaEngineWaitPlugin (fileKey, timeoutMs) {
   var deadline = Date.now() + (timeoutMs || FIGMA_ENGINE_PLUGIN_WAIT_MS)
   var last = null
   var launched = false
-  var invisiblePrimeActive = false
+  var primeActive = false
   var engineOnTargetFile = async function () {
     try {
       var status = await figmaEngineGetStatus(1500)
@@ -484,9 +500,9 @@ async function figmaEngineWaitPlugin (fileKey, timeoutMs) {
     }
     return false
   }
-  var releaseInvisiblePrime = async function () {
-    if (!invisiblePrimeActive || figmaEngineWindowVisible) return
-    invisiblePrimeActive = false
+  var releasePrime = async function () {
+    if (!primeActive || figmaEngineWindowVisible) return
+    primeActive = false
     try {
       await figmaEngineRpc('hide')
     } catch (e) {}
@@ -503,40 +519,70 @@ async function figmaEngineWaitPlugin (fileKey, timeoutMs) {
       return { ok: true, alreadyConnected: true }
     }
 
-    // Figma does not expose the plugin menu while a renderer has never been
-    // mapped. Activate it off-screen and transparent, without focusing or
-    // changing the user-visible engine state. Keep it mapped until the plugin
-    // has been launched; hiding it before dispatch loses the IPC message on
-    // cold connects.
-    if (!figmaEngineWindowVisible) {
+    var launchedAt = 0
+    var attemptLaunch = async function () {
       try {
-        var primed = await figmaEngineRpc('primeWindow', { keepInvisible: true }, 16000)
-        invisiblePrimeActive = !!(primed && primed.keptInvisible)
-        if (!invisiblePrimeActive && primed && primed.primed === false) {
-          last = { ok: false, error: 'Figma renderer did not activate its plugin runtime' }
-        }
+        last = await figmaEngineRpc('runPlugin', {
+          name: FIGMA_ENGINE_PLUGIN_NAME,
+          fileKey: fileKey
+        })
+        // A successful launch must not be retried — Figma allows only one
+        // CppVm, and a second runPlugin kills the first with
+        // "Cannot create two CppVm objects at the same time". A "menu item
+        // not ready" failure keeps launched=false so the loop retries once
+        // the file tab's panel has reported its plugin menu.
+        launched = !!(last && last.ok)
+        if (launched) launchedAt = Date.now()
       } catch (err) {
         last = { ok: false, error: err.message }
       }
     }
 
+    // A cold engine reports a successful dispatch but drops it silently —
+    // its SPA has no plugin runtime until the window has been mapped once.
+    // Only skip the window when the engine reports it was shown before.
+    var engineWarm = figmaEngineWindowVisible
+    if (!engineWarm) {
+      try {
+        var engineStatus = await figmaEngineGetStatus(1500)
+        engineWarm = !!(engineStatus && engineStatus.everShown)
+      } catch (e) {}
+    }
+    if (engineWarm) await attemptLaunch()
+
     while (Date.now() < deadline) {
       if (await bridgeConnectedForFile()) return { ok: true, alreadyConnected: true }
-      if (!launched) {
+
+      // A "successful" dispatch that produced no plugin on the bridge within
+      // a few seconds was dropped before the runtime existed — treat it as
+      // a miss and fall through to the prime path below.
+      if (launched && launchedAt && Date.now() - launchedAt > 8000 &&
+          !primeActive && !figmaEngineWindowVisible) {
+        launched = false
+        launchedAt = 0
+      }
+
+      // The Figma SPA only exposes its plugin menu once the engine window
+      // has been mapped. Show the real window briefly — no transparency
+      // tricks, they render as a broken frame-only window on several Linux
+      // WMs — and hide it again as soon as the plugin has been dispatched.
+      if (!launched && !primeActive && !figmaEngineWindowVisible) {
         try {
-          last = await figmaEngineRpc('runPlugin', {
-            name: FIGMA_ENGINE_PLUGIN_NAME,
-            fileKey: fileKey
-          })
-          // A successful launch must not be retried — Figma allows only one
-          // CppVm, and a second runPlugin kills the first with
-          // "Cannot create two CppVm objects at the same time". A "menu item
-          // not ready" failure keeps launched=false so the loop retries once
-          // the file tab's panel has reported its plugin menu.
-          launched = !!(last && last.ok)
+          var primed = await figmaEngineRpc('primeWindow', { keepInvisible: true }, 16000)
+          primeActive = !!(primed && primed.keptInvisible)
+          if (!primeActive && primed && primed.primed === false) {
+            last = { ok: false, error: 'Figma renderer did not activate its plugin runtime' }
+          }
         } catch (err) {
           last = { ok: false, error: err.message }
         }
+      }
+
+      if (!launched) {
+        await attemptLaunch()
+        // The dispatch went through — the window can hide again now; the
+        // plugin keeps running because backgroundThrottling is disabled.
+        if (launched) await releasePrime()
       }
       await figmaEngineSleep(800)
     }
@@ -546,7 +592,7 @@ async function figmaEngineWaitPlugin (fileKey, timeoutMs) {
       error: last && last.error ? last.error : 'plugin did not connect'
     }
   } finally {
-    await releaseInvisiblePrime()
+    await releasePrime()
   }
 }
 
@@ -971,10 +1017,11 @@ function figmaEngineRedeemAuth (url) {
 }
 
 ipc.handle('figmaEngine:status', async function (e) {
-  if (e && e.sender && !e.sender.isDestroyed()) {
-    figmaEngineSenders.add(e.sender)
-    e.sender.once('destroyed', function () {
-      figmaEngineSenders.delete(e.sender)
+  if (e && e.sender && !e.sender.isDestroyed() && !figmaEngineSenders.has(e.sender)) {
+    var sender = e.sender
+    figmaEngineSenders.add(sender)
+    sender.once('destroyed', function () {
+      figmaEngineSenders.delete(sender)
     })
   }
   if (figmaEngineChild && !figmaEngineChild.killed) {
