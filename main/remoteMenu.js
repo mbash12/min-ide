@@ -1,7 +1,7 @@
 ipc.on('open-context-menu', function (e, data) {
   var menu = new Menu()
 
-  data.template.forEach(function (section) {
+  data.template.forEach(function (section, index) {
     section.forEach(function (item) {
       var id = item.click
       item.click = function () {
@@ -18,7 +18,11 @@ ipc.on('open-context-menu', function (e, data) {
       }
       menu.append(new MenuItem(item))
     })
-    menu.append(new MenuItem({ type: 'separator' }))
+    // sections are divided, but the last one should not leave a dangling
+    // separator at the bottom of the menu
+    if (index < data.template.length - 1) {
+      menu.append(new MenuItem({ type: 'separator' }))
+    }
   })
   menu.on('menu-will-close', function () {
     e.sender.send('context-menu-will-close', { menuId: data.id })

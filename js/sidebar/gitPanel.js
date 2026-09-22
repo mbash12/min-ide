@@ -496,21 +496,22 @@ function buildFileRow (entry, sectionKey) {
   row.addEventListener('contextmenu', function (e) {
     e.preventDefault()
     const remoteMenu = require('remoteMenuRenderer.js')
+    // one flat section: remoteMenu separates top-level arrays with dividers
     const menu = []
     if (sectionKey === 'staged') {
-      menu.push([{ label: l('gitUnstage') || 'Unstage', click: function () { unstageFiles([entry.path]) } }])
+      menu.push({ label: l('gitUnstage') || 'Unstage', click: function () { unstageFiles([entry.path]) } })
     } else {
-      menu.push([{ label: l('gitStage') || 'Stage', click: function () { stageFiles([entry.path]) } }])
+      menu.push({ label: l('gitStage') || 'Stage', click: function () { stageFiles([entry.path]) } })
     }
-    menu.push([{ label: l('gitDiscard') || 'Discard', click: function () { discardFiles([entry.path]) } }])
-    menu.push([{
+    menu.push({ label: l('gitDiscard') || 'Discard', click: function () { discardFiles([entry.path]) } })
+    menu.push({
       label: l('gitOpenFile') || 'Open File',
       click: function () {
         const editorView = require('editorView.js')
         editorView.openFile(entry.fullPath)
       }
-    }])
-    remoteMenu.open(menu, e.clientX, e.clientY)
+    })
+    remoteMenu.open([menu], e.clientX, e.clientY)
   })
 
   return row
@@ -617,16 +618,16 @@ function showMoreActions (e) {
   const remoteMenu = require('remoteMenuRenderer.js')
   const cwd = currentGitRoot || currentWorkspacePath
   const menu = []
-  menu.push([{ label: l('gitFetch') || 'Fetch', click: async function () { const err = await ipc.invoke('gitFetch', cwd); if (err) alert(err); await refresh() } }])
-  menu.push([{ label: l('gitPull') || 'Pull', click: async function () { const err = await ipc.invoke('gitPull', cwd); if (err) alert(err); await refresh() } }])
-  menu.push([{ label: l('gitPush') || 'Push', click: async function () { const err = await ipc.invoke('gitPush', cwd); if (err) alert(err); await refresh() } }])
-  menu.push([{ label: l('gitSync') || 'Sync', click: async function () { const err = await ipc.invoke('gitSync', cwd); if (err) alert(err); await refresh() } }])
-  menu.push([{ label: l('gitStash') || 'Stash', click: async function () { const msg = prompt(l('gitStashMessage') || 'Stash message', 'WIP'); if (msg === null) return; const err = await ipc.invoke('gitStash', cwd, msg); if (err) alert(err); await refresh() } }])
-  menu.push([{ label: l('gitStashPop') || 'Stash Pop', click: async function () { const err = await ipc.invoke('gitStashPop', cwd); if (err) alert(err); await refresh() } }])
-  menu.push([{ label: l('gitCreateBranch') || 'Create Branch', click: function () { const name = prompt(l('gitBranchName') || 'Branch name'); if (name) { ipc.invoke('gitCreateBranch', cwd, name).then(function (err) { if (err) alert(err); refresh() }) } } }])
+  menu.push({ label: l('gitFetch') || 'Fetch', click: async function () { const err = await ipc.invoke('gitFetch', cwd); if (err) alert(err); await refresh() } })
+  menu.push({ label: l('gitPull') || 'Pull', click: async function () { const err = await ipc.invoke('gitPull', cwd); if (err) alert(err); await refresh() } })
+  menu.push({ label: l('gitPush') || 'Push', click: async function () { const err = await ipc.invoke('gitPush', cwd); if (err) alert(err); await refresh() } })
+  menu.push({ label: l('gitSync') || 'Sync', click: async function () { const err = await ipc.invoke('gitSync', cwd); if (err) alert(err); await refresh() } })
+  menu.push({ label: l('gitStash') || 'Stash', click: async function () { const msg = prompt(l('gitStashMessage') || 'Stash message', 'WIP'); if (msg === null) return; const err = await ipc.invoke('gitStash', cwd, msg); if (err) alert(err); await refresh() } })
+  menu.push({ label: l('gitStashPop') || 'Stash Pop', click: async function () { const err = await ipc.invoke('gitStashPop', cwd); if (err) alert(err); await refresh() } })
+  menu.push({ label: l('gitCreateBranch') || 'Create Branch', click: function () { const name = prompt(l('gitBranchName') || 'Branch name'); if (name) { ipc.invoke('gitCreateBranch', cwd, name).then(function (err) { if (err) alert(err); refresh() }) } } })
   const x = e ? e.clientX : 0
   const y = e ? e.clientY : 0
-  remoteMenu.open(menu, x, y)
+  remoteMenu.open([menu], x, y)
 }
 
 async function showBranchSwitcher (event) {
@@ -1117,7 +1118,7 @@ function buildGraphSection () {
         // undo only makes sense for the tip commit: it deletes HEAD and
         // moves the commit's changes back to the index
         if (commit.refs && commit.refs.indexOf('HEAD') !== -1) {
-          menu.push([{
+          menu.push({
             label: l('gitUndoCommit') || 'Undo Commit',
             click: function () {
               if (!confirm((l('gitUndoCommitConfirm') || 'Undo commit %s? Its changes will move back to Staged Changes.').replace('%s', short))) return
@@ -1126,9 +1127,9 @@ function buildGraphSection () {
                 refresh()
               })
             }
-          }])
+          })
         }
-        menu.push([{
+        menu.push({
           label: l('gitCreateBranchAt') || 'Create Branch from Commit…',
           click: function () {
             const name = prompt(l('gitBranchName') || 'Branch name')
@@ -1148,14 +1149,14 @@ function buildGraphSection () {
               refresh()
             })
           }
-        }])
-        menu.push([{
+        })
+        menu.push({
           label: l('gitCopyHash') || 'Copy Commit Hash',
           click: function () {
             electron.clipboard.writeText(commit.hash)
           }
-        }])
-        remoteMenu.open(menu, e.clientX, e.clientY)
+        })
+        remoteMenu.open([menu], e.clientX, e.clientY)
       })
 
       container.appendChild(row)
