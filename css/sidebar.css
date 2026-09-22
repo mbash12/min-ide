@@ -606,12 +606,9 @@ body.dark-mode .file-tree-children:not([hidden])::before {
 
 .file-tree-chevron {
   flex-shrink: 0;
-  width: 13px;
-  height: 13px;
-  padding: 1px;
+  width: 15px;
+  font-size: 14px !important;
   color: rgba(0, 0, 0, 0.4);
-  transform-box: view-box;
-  transform-origin: center;
   transition: transform 0.1s ease;
 }
 .file-tree-chevron.expanded {
@@ -792,15 +789,6 @@ body.dark-mode .git-commit-input {
 }
 .git-commit-button:hover { background: #1177bb; }
 .git-commit-button:disabled { opacity: 0.5; cursor: default; }
-.git-commit-button.secondary {
-  background: rgba(128,128,128,0.18);
-  color: inherit;
-  font-weight: 400;
-}
-.git-commit-button.secondary:hover { background: rgba(128,128,128,0.28); }
-body.dark-mode .git-commit-button.secondary {
-  background: rgba(255,255,255,0.1);
-}
 
 .git-section {
   border-bottom: 1px solid rgba(0,0,0,0.06);
@@ -2701,7 +2689,7 @@ body.dark-mode #sidebar-panels {
   font-size: 12px;
   font-weight: 400;
 }
-:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs, #sidebar-panel-notes) :is(.sidebar-button.primary, .git-action-button.primary, .git-commit-button:not(.secondary), .design-connect-btn) {
+:is(#sidebar-panel-files, #sidebar-panel-git, #sidebar-panel-playbook, #sidebar-panel-design, #sidebar-panel-docs, #sidebar-panel-notes) :is(.sidebar-button.primary, .git-action-button.primary, .git-commit-button, .design-connect-btn) {
   border-color: #0078d4;
   background: #0078d4;
   color: #fff;
@@ -3040,7 +3028,7 @@ body.dark-mode #sidebar-panel-git .git-commit-input {
 }
 #sidebar-panel-git .git-commit-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
 }
 #sidebar-panel-git .git-commit-button {
@@ -3051,17 +3039,6 @@ body.dark-mode #sidebar-panel-git .git-commit-input {
   font-size: 12px;
   font-weight: 400;
 }
-#sidebar-panel-git .git-commit-button.secondary {
-  width: 28px;
-  max-width: 28px;
-  padding: 0;
-  border: 0;
-  background: #0078d4;
-  color: #fff;
-  font-size: 14px !important;
-}
-#sidebar-panel-git .git-commit-button.secondary:hover { background: #1683d8; }
-
 #sidebar-panel-git .git-section {
   border-bottom: 1px solid var(--vsc-border);
 }

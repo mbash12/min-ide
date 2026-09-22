@@ -154,6 +154,24 @@ function shortStatusLabel (entry) {
   return entry.x || entry.status[0].toUpperCase()
 }
 
+/* turns a unix-seconds timestamp into a compact relative time like
+5m, 3h, 2d, 1w, 6mo or 2y */
+function compactDate (timestamp) {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(timestamp))
+  if (seconds < 60) return 'now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return minutes + 'm'
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return hours + 'h'
+  const days = Math.floor(hours / 24)
+  if (days < 7) return days + 'd'
+  const weeks = Math.floor(days / 7)
+  if (weeks < 5) return weeks + 'w'
+  const months = Math.floor(days / 30)
+  if (months < 12) return months + 'mo'
+  return Math.floor(days / 365) + 'y'
+}
+
 function buildEmptyState (message, actionLabel, actionFn) {
   const wrap = document.createElement('div')
   wrap.className = 'git-empty-state'
@@ -191,7 +209,7 @@ function buildCommitBox () {
   textarea.addEventListener('keydown', function (e) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault()
-      doCommit()
+      commitOrStageAll()
     }
   })
   const inputWrap = document.createElement('div')
@@ -231,40 +249,27 @@ function buildCommitBox () {
   const commitBtn = document.createElement('button')
   commitBtn.className = 'git-commit-button'
   commitBtn.textContent = l('gitCommit') || 'Commit'
-  commitBtn.addEventListener('click', doCommit)
+  commitBtn.addEventListener('click', commitOrStageAll)
   actions.appendChild(commitBtn)
-
-  const commitAllBtn = document.createElement('button')
-  commitAllBtn.className = 'git-commit-button secondary git-commit-button-dropdown codicon codicon-chevron-down'
-  commitAllBtn.title = l('gitCommitAllHint') || 'Stage all and commit'
-  commitAllBtn.setAttribute('aria-label', commitAllBtn.title)
-  commitAllBtn.addEventListener('click', async function () {
-    commitBtn.disabled = true
-    commitAllBtn.disabled = true
-    const cwd = currentGitRoot || currentWorkspacePath
-    const err = await ipc.invoke('gitStageAll', cwd)
-    if (err) {
-      alert(err)
-      refresh()
-      return
-    }
-    await doCommit()
-  })
-  actions.appendChild(commitAllBtn)
 
   box.appendChild(actions)
 
   // expose for update
   box._textarea = textarea
   box._commitBtn = commitBtn
-  box._commitAllBtn = commitAllBtn
 
   function updateCommitButtonState () {
     const hasMessage = commitMessage.trim().length > 0
     const hasStaged = currentStatus && currentStatus.staged && currentStatus.staged.length > 0
-    // VSCode enables commit only when there is staged changes and message, but also offers Commit All
-    commitBtn.disabled = !hasMessage || !hasStaged
-    commitAllBtn.disabled = !hasMessage
+    const hasUnstaged = currentStatus &&
+      ((currentStatus.unstaged && currentStatus.unstaged.length > 0) ||
+      (currentStatus.untracked && currentStatus.untracked.length > 0) ||
+      (currentStatus.conflicted && currentStatus.conflicted.length > 0))
+    // with nothing staged, the button stages everything instead of committing
+    commitBtn.textContent = hasStaged
+      ? (l('gitCommit') || 'Commit')
+      : (l('gitStageAll') || 'Stage All')
+    commitBtn.disabled = hasStaged ? !hasMessage : !hasUnstaged
     generateBtn.disabled = !hasStaged
   }
   box._updateState = updateCommitButtonState
@@ -294,6 +299,26 @@ async function doCommit () {
     await refresh()
   }
   if (commitBtn) commitBtn.disabled = false
+}
+
+async function doStageAll () {
+  const cwd = currentGitRoot || currentWorkspacePath
+  const err = await ipc.invoke('gitStageAll', cwd)
+  if (err) {
+    alert(err)
+    return
+  }
+  await refresh()
+}
+
+/* the commit button stages all changes when nothing is staged yet */
+function commitOrStageAll () {
+  const hasStaged = currentStatus && currentStatus.staged && currentStatus.staged.length > 0
+  if (hasStaged) {
+    doCommit()
+  } else {
+    doStageAll()
+  }
 }
 
 function buildSection (title, entries, sectionKey, actions, emptyText) {
@@ -845,7 +870,7 @@ function buildGraphDetail (commit) {
   meta.appendChild(hash)
   const author = document.createElement('span')
   author.className = 'git-graph-detail-author'
-  author.textContent = commit.author + ' · ' + commit.date
+  author.textContent = commit.author + ' · ' + compactDate(commit.date)
   meta.appendChild(author)
   if (commit.refs) {
     const refs = document.createElement('span')
@@ -1069,7 +1094,7 @@ function buildGraphSection () {
 
       const dateEl = document.createElement('span')
       dateEl.className = 'git-graph-date'
-      dateEl.textContent = commit.date
+      dateEl.textContent = compactDate(commit.date)
       row.appendChild(dateEl)
 
       // clicking a commit toggles its detail + diff view
@@ -1088,23 +1113,27 @@ function buildGraphSection () {
         }
       })
 
-      // right-click: revert / create branch / checkout / copy hash
+      // right-click: undo (HEAD only) / create branch / checkout / copy hash
       row.addEventListener('contextmenu', function (e) {
         e.preventDefault()
         const remoteMenu = require('remoteMenuRenderer.js')
         const cwd = currentGitRoot || currentWorkspacePath
         const short = commit.shortHash
         const menu = []
-        menu.push([{
-          label: l('gitRevertCommit') || 'Revert Commit',
-          click: function () {
-            if (!confirm((l('gitRevertCommitConfirm') || 'Revert commit %s?').replace('%s', short))) return
-            ipc.invoke('gitRevertCommit', cwd, commit.hash).then(function (err) {
-              if (err) alert(err)
-              refresh()
-            })
-          }
-        }])
+        // undo only makes sense for the tip commit: it deletes HEAD and
+        // moves the commit's changes back to the index
+        if (commit.refs && commit.refs.indexOf('HEAD') !== -1) {
+          menu.push([{
+            label: l('gitUndoCommit') || 'Undo Commit',
+            click: function () {
+              if (!confirm((l('gitUndoCommitConfirm') || 'Undo commit %s? Its changes will move back to Staged Changes.').replace('%s', short))) return
+              ipc.invoke('gitUndoCommit', cwd).then(function (err) {
+                if (err) alert(err)
+                refresh()
+              })
+            }
+          }])
+        }
         menu.push([{
           label: l('gitCreateBranchAt') || 'Create Branch from Commit…',
           click: function () {

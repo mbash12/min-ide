@@ -518,7 +518,7 @@ ipc.handle('gitLogDetailed', async function (e, cwd, limit) {
   var lim = String(limit || 20)
   // --topo-order keeps the same order as git log --graph, so graph rows can
   // be paired with commits by index
-  var r = await runGit(cwd, ['log', '--topo-order', '--pretty=format:%H%x00%h%x00%s%x00%an%x00%ar%x00%D', '-n', lim])
+  var r = await runGit(cwd, ['log', '--topo-order', '--pretty=format:%H%x00%h%x00%s%x00%an%x00%at%x00%D', '-n', lim])
   if (r.status !== 0) return { error: r.stderr || 'git log failed' }
   var commits = r.stdout.split('\n').filter(Boolean).map(function (line) {
     var parts = line.split('\x00')
@@ -574,12 +574,16 @@ ipc.handle('gitCheckoutCommit', async function (e, cwd, hash) {
   return null
 })
 
-/* reverts a commit by creating a new commit with the inverse changes */
-ipc.handle('gitRevertCommit', async function (e, cwd, hash) {
+/* deletes the HEAD commit; its changes move back to the index (staged) */
+ipc.handle('gitUndoCommit', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
-  if (!isSafeGitRef(hash)) return 'Commit hash required'
-  var r = await runGit(cwd, ['revert', '--no-edit', hash])
-  if (r.status !== 0) return r.stderr || r.stdout || 'git revert failed'
+  var hasParent = await runGit(cwd, ['rev-parse', '--verify', '--quiet', 'HEAD^'])
+  // a root commit has no parent to reset to; dropping the ref leaves the
+  // index intact so the changes stay staged against an unborn HEAD
+  var r = hasParent.status === 0
+    ? await runGit(cwd, ['reset', '--soft', 'HEAD~1'])
+    : await runGit(cwd, ['update-ref', '-d', 'HEAD'])
+  if (r.status !== 0) return r.stderr || r.stdout || 'git undo commit failed'
   return null
 })
 

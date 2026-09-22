@@ -106,19 +106,8 @@ function createRow (entry, fullPath, depth) {
   // the first slot holds the chevron (folders) or the file icon, so the
   // two columns align and labels start at the same x position
   if (isDir) {
-    const chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-    chevron.setAttribute('viewBox', '0 0 16 16')
-    chevron.setAttribute('width', '15')
-    chevron.setAttribute('height', '15')
-    chevron.classList.add('file-tree-chevron')
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-    path.setAttribute('d', 'M4.75 1.75L12.75 8 4.75 14.25')
-    path.setAttribute('fill', 'none')
-    path.setAttribute('stroke', 'currentColor')
-    path.setAttribute('stroke-width', '1.5')
-    path.setAttribute('stroke-linecap', 'round')
-    path.setAttribute('stroke-linejoin', 'round')
-    chevron.appendChild(path)
+    const chevron = document.createElement('span')
+    chevron.className = 'codicon codicon-chevron-right file-tree-chevron'
     row.appendChild(chevron)
   } else {
     const icon = document.createElement('img')
