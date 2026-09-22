@@ -3,7 +3,7 @@ createMinCustomTools() is called from agent.js after the ESM SDK loads.
 
 Browser control is one tool with an `action` subcommand so the catalog stays
 small as more gestures are added. Playbooks use the same action names. */
-/* global minBrowser, listPlaybooks, getPlaybook, savePlaybook, runPlaybook, deletePlaybook, minFigmaEngine, minFigmaBridge, minDocumentStore */
+/* global minBrowser, listPlaybooks, getPlaybook, savePlaybook, runPlaybook, deletePlaybook, minFigmaEngine, minFigmaBridge, minDocumentStore, minDesignSpec, minDesignOverlay, browserControlTargetView, path */
 
 function minToolTextResult (text, isError) {
   const value = String(text)
@@ -46,7 +46,11 @@ var BROWSER_ACTIONS = [
   'click', 'dblclick', 'rightclick', 'type', 'select', 'press', 'scroll',
   'wait', 'hover', 'drag', 'assert', 'upload', 'download', 'dialog'
 ]
-var FIGMA_ACTIONS = ['status', 'node-data', 'extract-text', 'find-text', 'export']
+var FIGMA_ACTIONS = [
+  'status', 'node-data', 'extract-text', 'find-text', 'export', 'list-frames',
+  'spec-list', 'spec-add', 'spec-update', 'spec-remove',
+  'variant-add', 'variant-remove', 'overlay', 'capture'
+]
 /* operation names mirror the blueprint's document tools verbatim */
 var DOCS_OPERATIONS = ['listDocuments', 'readDocument', 'editDocument']
 var PLAYBOOK_OPERATIONS = ['list', 'get', 'save', 'run', 'delete']
@@ -66,6 +70,64 @@ function minDocsAvailable (workspaceId) {
     return 'Docs tools are unavailable'
   }
   return null
+}
+
+/* Ensures a spec variant has a rendered export, then activates the overlay on
+the target tab. Shared by the figma tool's `overlay` action. */
+async function minDesignOverlayExportAndSet (tabId, entry, variant, workspacePath) {
+  if (!variant.nodeId) {
+    return { ok: false, error: 'Variant has no nodeId — set one first' }
+  }
+  let imagePath = variant.image
+  let cssWidth = variant.cssWidth || null
+  const engine = minFigmaEngine.status()
+  const ctx = engine.context
+  if (!imagePath) {
+    if (!ctx || !ctx.fileKey) {
+      return { ok: false, error: 'No Figma file connected — connect from the Design sidebar to export the design' }
+    }
+    if (!engine.bridge || !engine.bridge.pluginConnected) {
+      return { ok: false, error: 'Figma plugin is not connected yet — wait a few seconds after Connect' }
+    }
+    const scale = 2
+    const exported = await minFigmaBridge.command('export', {
+      nodeId: variant.nodeId,
+      fileKey: ctx.fileKey,
+      format: 'PNG',
+      scale: scale,
+      exportDir: workspacePath ? path.join(workspacePath, '.min', 'design', 'exports') : undefined,
+      fileName: entry.name + '-' + variant.label
+    })
+    const payload = exported && exported.payload
+    if (!payload || !payload.path) {
+      return { ok: false, error: (exported && exported.error) || 'Design export failed' }
+    }
+    imagePath = payload.path
+    const patch = { image: imagePath }
+    if (payload.node && payload.node.width) {
+      cssWidth = Math.round(payload.node.width / scale)
+      patch.cssWidth = cssWidth
+      // Viewport follows the real frame size — heights differ per frame.
+      const cssHeight = payload.node.height ? Math.round(payload.node.height / scale) : null
+      const vp = variant.viewport || {}
+      if (cssHeight && (vp.w !== cssWidth || vp.h !== cssHeight)) {
+        patch.viewport = { w: cssWidth, h: cssHeight, mobile: !!vp.mobile, dpr: vp.dpr }
+        variant.viewport = patch.viewport
+      }
+    }
+    minDesignSpec.variantUpdate(workspacePath, entry.id, variant.id, patch)
+    variant.image = imagePath
+    variant.cssWidth = cssWidth
+  }
+  const result = await minDesignOverlay.set(tabId, {
+    image: imagePath,
+    label: entry.name + ' / ' + variant.label,
+    cssWidth: cssWidth,
+    viewport: variant.viewport,
+    entryId: entry.id,
+    variantId: variant.id
+  })
+  return result
 }
 
 function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
@@ -364,12 +426,15 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
   const figmaTool = defineTool({
     name: 'figma',
     label: 'Figma',
-    description: 'Read and export the connected Figma file through the local plugin bridge (not the REST API). Connect from the Design sidebar first.',
-    promptSnippet: 'figma: status / node-data / extract-text / find-text / export',
+    description: 'Read and export the connected Figma file through the local plugin bridge (not the REST API), manage the design spec (objects to build with viewport variants), and overlay a design variant on a tab for visual comparison. Connect from the Design sidebar first.',
+    promptSnippet: 'figma: status / node-data / extract-text / find-text / export / list-frames / spec-* / overlay / capture',
     promptGuidelines: [
       'Requires Design sidebar Connect on a Figma tab in this workspace.',
       'Default nodeId is the node-id from the Min tab URL. Pass nodeId to target a specific layer.',
       'export writes a PNG under .min/design/exports when the workspace has a folder.',
+      'spec-* actions manage the worklist of Figma objects to build; each entry has variants (desktop/mobile/custom) with a nodeId and viewport.',
+      'overlay exports a variant (if needed) and overlays it on the implementation tab for pixel comparison; capture screenshots the tab at the variant viewport.',
+      'Only run spec/overlay/capture actions when the user asks — never mutate the spec or toggle overlays on your own.',
       'If the plugin is not connected, tell the user to click Connect in the Design sidebar.'
     ],
     parameters: Type.Object({
@@ -378,13 +443,82 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       query: optStr('For find-text: case-insensitive text or layer name'),
       limit: optNum('For find-text: max matches, 1-50'),
       format: optStr('For export: PNG, JPG, or SVG. Default PNG.'),
-      scale: optNum('For export: scale. Default 2.')
+      scale: optNum('For export: scale. Default 2.'),
+      entryId: optStr('For spec-update/spec-remove/variant-add/variant-remove/overlay: spec entry id'),
+      variantId: optStr('For variant-remove/overlay: variant id'),
+      name: optStr('For spec-add: entry name'),
+      label: optStr('For variant-add: variant label'),
+      kind: optStr('For spec-add: page, component, or element. Default page.'),
+      figmaUrl: optStr('For spec-add: source Figma URL'),
+      status: optStr('For spec-update: todo, doing, or done'),
+      viewport: optStr('For variant-add: desktop, mobile, or WxH such as 768x1024'),
+      tabId: optStr('For overlay/capture: target tab id. Defaults to the active tab of this task.'),
+      on: optBool('For overlay: true to show, false to clear. Default true.')
     }),
     execute: async function (_id, params) {
       if (!workspaceId || workspaceId === 'default') {
         return minToolTextResult('Figma tools need an open workspace', true)
       }
       const engine = minFigmaEngine.status()
+      const specWorkspace = cwd || null
+
+      // Spec actions only need the workspace store — no Figma connection.
+      if (params.action === 'spec-list') {
+        return minToolJsonResult(minDesignSpec.list(specWorkspace).doc)
+      }
+      if (params.action === 'spec-add') {
+        if (!params.name) return minToolTextResult('name is required for spec-add', true)
+        return minToolJsonResult(minDesignSpec.add(specWorkspace, {
+          name: params.name,
+          kind: params.kind,
+          figmaUrl: params.figmaUrl,
+          nodeId: params.nodeId,
+          fileKey: engine.context && engine.context.fileKey
+        }))
+      }
+      if (params.action === 'spec-update') {
+        if (!params.entryId) return minToolTextResult('entryId is required for spec-update', true)
+        return minToolJsonResult(minDesignSpec.update(specWorkspace, params.entryId, {
+          name: params.name, kind: params.kind, status: params.status, nodeId: params.nodeId
+        }))
+      }
+      if (params.action === 'spec-remove') {
+        if (!params.entryId) return minToolTextResult('entryId is required for spec-remove', true)
+        return minToolJsonResult(minDesignSpec.remove(specWorkspace, params.entryId))
+      }
+      if (params.action === 'variant-add') {
+        if (!params.entryId) return minToolTextResult('entryId is required for variant-add', true)
+        return minToolJsonResult(minDesignSpec.variantAdd(specWorkspace, params.entryId, {
+          label: params.label, nodeId: params.nodeId, viewport: params.viewport
+        }))
+      }
+      if (params.action === 'variant-remove') {
+        if (!params.entryId || !params.variantId) {
+          return minToolTextResult('entryId and variantId are required for variant-remove', true)
+        }
+        return minToolJsonResult(minDesignSpec.variantRemove(specWorkspace, params.entryId, params.variantId))
+      }
+      if (params.action === 'capture') {
+        const target = await browserControlTargetView(params.tabId, taskId, workspaceId)
+        if (target.error) return minToolTextResult(target.error, true)
+        const dir = specWorkspace ? path.join(specWorkspace, '.min', 'design', 'shots') : null
+        return minToolJsonResult(await minDesignOverlay.capture(target.id, params.name, dir))
+      }
+      if (params.action === 'overlay') {
+        const target = await browserControlTargetView(params.tabId, taskId, workspaceId)
+        if (target.error) return minToolTextResult(target.error, true)
+        if (params.on === false) {
+          return minToolJsonResult(await minDesignOverlay.clear(target.id))
+        }
+        if (!params.entryId || !params.variantId) {
+          return minToolTextResult('entryId and variantId are required for overlay', true)
+        }
+        const doc = minDesignSpec.doc(specWorkspace)
+        const entry = doc.entries.find(function (e) { return e.id === params.entryId })
+        const variant = entry && entry.variants.find(function (v) { return v.id === params.variantId })
+        if (!variant) return minToolTextResult('Variant not found in the design spec', true)
+        return minToolJsonResult(await minDesignOverlayExportAndSet(target.id, entry, variant, specWorkspace))
+      }
       const ctx = engine.context
       if (params.action === 'status') {
         return minToolJsonResult({
@@ -416,6 +550,12 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
           return minToolTextResult(payload.textExtract || JSON.stringify(payload, null, 2))
         }
         return minToolJsonResult(result.payload || result)
+      }
+      if (params.action === 'list-frames') {
+        const result = await minFigmaBridge.command('list-frames', {
+          fileKey: ctx.fileKey
+        })
+        return minToolJsonResult(result && result.payload ? result.payload : result, result && result.ok === false)
       }
       if (params.action === 'find-text') {
         if (!params.query) return minToolTextResult('query is required for find-text', true)

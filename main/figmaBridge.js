@@ -20,13 +20,20 @@ var figmaBridgePending = new Map()
 var figmaBridgeReqId = 0
 var figmaBridgeExportDir = null
 var figmaBridgeBootId = null
+var figmaBridgeTransport = null // 'ws' | 'poll' | 'none' — last seen transport
+var figmaBridgeWs = null
+var figmaBridgeWss = null
+var figmaBridgeSockets = new Map() // fileKey ('' when unknown) → ws
+var figmaBridgePingTimer = null
 
 function figmaBridgeNow () {
   return Date.now()
 }
 
 function figmaBridgePluginConnected () {
-  return figmaBridgeNow() - figmaBridgeLastSeen < 4000
+  // A live socket counts on its own — the HTTP poll pauses while it is open,
+  // so lastSeen would otherwise go stale and flap the indicator.
+  return figmaBridgeSockets.size > 0 || figmaBridgeNow() - figmaBridgeLastSeen < 4000
 }
 
 function figmaBridgeReadBody (req) {
@@ -138,6 +145,7 @@ async function figmaBridgeHandleRequest (req, res) {
   if (pathname === '/selection' && req.method === 'POST') {
     var selection = JSON.parse(await figmaBridgeReadBody(req) || '{}')
     figmaBridgeLastSeen = figmaBridgeNow()
+    if (selection.transport) figmaBridgeTransport = selection.transport
     var reportedFileKey = typeof selection.fileKey === 'string' && selection.fileKey
       ? selection.fileKey
       : null
@@ -155,6 +163,8 @@ async function figmaBridgeHandleRequest (req, res) {
     figmaBridgeLastSeen = figmaBridgeNow()
     var fileKey = url.searchParams.get('fileKey')
     if (fileKey) figmaBridgeFileKey = fileKey
+    var pollTransport = url.searchParams.get('transport')
+    if (pollTransport) figmaBridgeTransport = pollTransport
     var command = figmaBridgeQueue.shift() || null
     figmaBridgeRespond(res, 200, { ok: true, command: command })
     return
@@ -168,6 +178,7 @@ async function figmaBridgeHandleRequest (req, res) {
   if (pathname === '/command/result' && req.method === 'POST') {
     var resultBody = JSON.parse(await figmaBridgeReadBody(req) || '{}')
     figmaBridgeLastSeen = figmaBridgeNow()
+    if (resultBody.transport) figmaBridgeTransport = resultBody.transport
     figmaBridgeHandleResult(resultBody)
     figmaBridgeRespond(res, 200, { ok: true })
     return
@@ -176,6 +187,7 @@ async function figmaBridgeHandleRequest (req, res) {
   if (pathname === '/export' && req.method === 'POST') {
     var exportBody = JSON.parse(await figmaBridgeReadBody(req) || '{}')
     figmaBridgeLastSeen = figmaBridgeNow()
+    if (exportBody.transport) figmaBridgeTransport = exportBody.transport
     try {
       var savedPath = figmaBridgeWriteExport(exportBody)
       if (exportBody.id != null) {
@@ -212,6 +224,102 @@ async function figmaBridgeHandleRequest (req, res) {
   figmaBridgeRespond(res, 404, { ok: false, error: 'Unknown endpoint' })
 }
 
+/* The plugin UI iframe owns a real WebSocket client; this side accepts it on
+/ws. An open socket carries commands instantly (no 500ms poll hop) and results
+come back over the same socket; HTTP polling stays as the fallback. */
+function figmaBridgeWsAttach (server) {
+  if (!figmaBridgeWs) {
+    try {
+      figmaBridgeWs = require('ws')
+    } catch (e) {
+      figmaBridgeWs = null
+      return
+    }
+  }
+  figmaBridgeWss = new figmaBridgeWs.WebSocketServer({ noServer: true })
+  figmaBridgeWss.on('connection', function (ws, req) {
+    var fileKey = ''
+    try {
+      fileKey = new URL(req.url || '/', 'http://127.0.0.1').searchParams.get('fileKey') || ''
+    } catch (e) {}
+    ws.isAlive = true
+    figmaBridgeSockets.set(fileKey, ws)
+    figmaBridgeTransport = 'ws'
+    figmaBridgeLastSeen = figmaBridgeNow()
+    ws.on('pong', function () {
+      ws.isAlive = true
+      figmaBridgeLastSeen = figmaBridgeNow()
+    })
+    ws.on('message', function (data) {
+      figmaBridgeLastSeen = figmaBridgeNow()
+      var msg
+      try {
+        msg = JSON.parse(data.toString())
+      } catch (e) {
+        return
+      }
+      if (msg && msg.type === 'result' && msg.id != null) figmaBridgeHandleResult(msg)
+    })
+    ws.on('close', function () {
+      if (figmaBridgeSockets.get(fileKey) === ws) figmaBridgeSockets.delete(fileKey)
+      if (!figmaBridgeSockets.size) figmaBridgeTransport = null
+      // Commands dispatched over this socket will never reply now.
+      figmaBridgePending.forEach(function (pending, id) {
+        if (pending.ws !== ws) return
+        clearTimeout(pending.timer)
+        figmaBridgePending.delete(id)
+        pending.reject(new Error('Figma socket closed mid-command — reconnect'))
+      })
+    })
+    ws.on('error', function () {
+      try { ws.close() } catch (e) {}
+    })
+  })
+  server.on('upgrade', function (req, socket, head) {
+    var pathname = ''
+    try {
+      pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname
+    } catch (e) {}
+    if (pathname !== '/ws' || !figmaBridgeAuthorized(req)) {
+      socket.destroy()
+      return
+    }
+    figmaBridgeWss.handleUpgrade(req, socket, head, function (ws) {
+      figmaBridgeWss.emit('connection', ws, req)
+    })
+  })
+  // Detect half-dead sockets and keep lastSeen fresh while a socket is open —
+  // the HTTP poll that normally heartbeats is paused in that state.
+  figmaBridgePingTimer = setInterval(function () {
+    figmaBridgeSockets.forEach(function (ws) {
+      if (!ws.isAlive) {
+        try { ws.terminate() } catch (e) {}
+        return
+      }
+      ws.isAlive = false
+      try { ws.ping() } catch (e) {}
+    })
+  }, 3000)
+  if (figmaBridgePingTimer.unref) figmaBridgePingTimer.unref()
+}
+
+function figmaBridgeWsSend (command) {
+  var target = null
+  if (command.fileKey && figmaBridgeSockets.get(command.fileKey)) {
+    target = figmaBridgeSockets.get(command.fileKey)
+  } else if (figmaBridgeSockets.size === 1) {
+    target = figmaBridgeSockets.values().next().value
+  }
+  if (!target || target.readyState !== 1) return null
+  try {
+    target.send(JSON.stringify(Object.assign({ type: 'command' }, command)))
+    figmaBridgeLastSeen = figmaBridgeNow()
+    return target
+  } catch (e) {
+    return null
+  }
+}
+
 function figmaBridgeStart () {
   if (figmaBridgeServer) return Promise.resolve()
   if (figmaBridgeStarting) return figmaBridgeStarting
@@ -227,6 +335,7 @@ function figmaBridgeStart () {
       })
     })
     server.once('error', reject)
+    figmaBridgeWsAttach(server)
     server.listen(FIGMA_BRIDGE_PORT, '127.0.0.1', function () {
       figmaBridgeServer = server
       resolve()
@@ -238,6 +347,19 @@ function figmaBridgeStart () {
 }
 
 function figmaBridgeStop () {
+  if (figmaBridgePingTimer) {
+    clearInterval(figmaBridgePingTimer)
+    figmaBridgePingTimer = null
+  }
+  figmaBridgeSockets.forEach(function (ws) {
+    try { ws.terminate() } catch (e) {}
+  })
+  figmaBridgeSockets.clear()
+  figmaBridgeTransport = null
+  if (figmaBridgeWss) {
+    try { figmaBridgeWss.close() } catch (e) {}
+    figmaBridgeWss = null
+  }
   if (!figmaBridgeServer) return
   try { figmaBridgeServer.close() } catch (e) {}
   figmaBridgeServer = null
@@ -263,6 +385,7 @@ function figmaBridgeStatus () {
     bootId: figmaBridgeBootId,
     lastSeen: figmaBridgeLastSeen || null,
     lastSeenAgoMs: figmaBridgeLastSeen ? figmaBridgeNow() - figmaBridgeLastSeen : null,
+    transport: figmaBridgeTransport,
     queueDepth: figmaBridgeQueue.length,
     pendingCommands: figmaBridgePending.size,
     selection: figmaBridgeSelection
@@ -285,13 +408,27 @@ function figmaBridgeCommand (action, params) {
       runId: id,
       projectId: 'min'
     }, params)
-    figmaBridgeQueue.push(command)
     return new Promise(function (resolve, reject) {
       var timer = setTimeout(function () {
         figmaBridgePending.delete(id)
-        reject(new Error('Figma plugin timed out waiting for ' + action))
+        // Diagnose which side stalled: commands still in the queue mean the
+        // plugin never polled (transport dead); an empty queue means it took
+        // the command and never replied (hang inside Figma).
+        var ago = figmaBridgeLastSeen ? (figmaBridgeNow() - figmaBridgeLastSeen) + 'ms ago' : 'never'
+        reject(new Error(
+          'Figma plugin timed out waiting for ' + action +
+          ' — queue ' + figmaBridgeQueue.length +
+          ', lastSeen ' + ago +
+          ', transport ' + (figmaBridgeTransport || 'unknown') +
+          (figmaBridgeQueue.length ? ' (plugin is not picking up commands — reconnect)' : '')
+        ))
       }, FIGMA_BRIDGE_COMMAND_TIMEOUT_MS)
-      figmaBridgePending.set(id, { resolve: resolve, reject: reject, timer: timer })
+      var pending = { resolve: resolve, reject: reject, timer: timer, ws: null }
+      figmaBridgePending.set(id, pending)
+      // A live socket skips the queue entirely — the plugin gets the command
+      // on the next frame instead of the next poll tick.
+      pending.ws = figmaBridgeWsSend(command)
+      if (!pending.ws) figmaBridgeQueue.push(command)
     })
   })
 }

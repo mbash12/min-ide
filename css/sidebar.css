@@ -2645,7 +2645,7 @@ body.dark-mode #sidebar-panels {
   gap: 10px;
   padding: 8px 10px 14px;
 }
-#sidebar-panel-design .design-context {
+#sidebar-panel-design .design-status {
   gap: 6px;
   padding: 8px;
   border-color: var(--vsc-border);
@@ -3277,76 +3277,84 @@ drawer, and agent popovers (which mount on document.body) */
 .design-header .file-tree-title {
   flex: 0 0 auto;
 }
-.design-context {
+.design-status {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 9px 10px;
+  gap: 5px;
+  padding: 7px 9px;
   border: 1px solid rgba(127, 127, 127, 0.18);
   border-radius: 6px;
   background: rgba(127, 127, 127, 0.06);
 }
-.design-context-title {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  opacity: 0.55;
-}
-.design-context-row {
+.design-status-top {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 7px;
   min-width: 0;
-  font-size: 12px;
 }
-.design-context-label {
-  flex: 0 0 76px;
-  opacity: 0.55;
+.design-ind {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
 }
-.design-context-value {
+.design-ind .codicon {
+  font-size: 13px;
+  opacity: 0.85;
+}
+.design-ind.state-off .codicon {
+  opacity: 0.35;
+}
+.design-ind-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(127, 127, 127, 0.5);
+}
+.design-ind.state-on .design-ind-dot { background: #3fb950; }
+.design-ind.state-warn .design-ind-dot { background: #d29922; }
+.design-ind.state-busy .design-ind-dot { background: #58a6ff; }
+.design-status-label {
+  flex: 1;
   min-width: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  opacity: 0.75;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.design-context-row.empty .design-context-value {
-  opacity: 0.55;
-  font-style: italic;
-}
-.design-header-dot {
-  margin-left: 2px;
-}
-.design-status {
+.design-status-file {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 9px 10px;
-  border: 1px solid rgba(127, 127, 127, 0.18);
-  border-radius: 6px;
-  background: rgba(127, 127, 127, 0.06);
-}
-.design-status .design-dot {
-  margin-top: 5px;
-}
-.design-status-copy {
-  flex: 1;
+  align-items: center;
+  gap: 5px;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.design-status-label {
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-.design-status-detail {
   font-size: 11px;
   line-height: 1.4;
-  opacity: 0.6;
-  overflow-wrap: anywhere;
+}
+.design-status-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.55;
+}
+.design-status-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.75;
+}
+.design-status-node {
+  flex-shrink: 1;
+  min-width: 0;
+  font-family: monospace;
+  font-size: 10px;
+  opacity: 0.55;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .design-status-actions {
   flex-shrink: 0;
@@ -3382,22 +3390,6 @@ drawer, and agent popovers (which mount on document.body) */
 .design-header .git-icon-button:disabled:hover {
   opacity: 0.35;
   background: transparent;
-}
-.design-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: #888;
-}
-.design-dot.ok { background: #3fb950; }
-.design-dot.warn { background: #d29922; }
-.design-dot.busy {
-  background: #58a6ff;
-  animation: design-pulse 1s ease-in-out infinite;
-}
-@keyframes design-pulse {
-  50% { opacity: 0.35; }
 }
 .design-error {
   padding: 8px 10px;
@@ -3476,6 +3468,33 @@ drawer, and agent popovers (which mount on document.body) */
 .design-modal-title {
   font-weight: 600;
   font-size: 12px;
+}
+
+.design-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.design-modal-head .design-modal-title {
+  flex: 1;
+}
+.design-result-modal {
+  width: min(96%, 420px);
+  max-height: 80%;
+}
+.design-modal-output {
+  margin: 0;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.2);
+  background: rgba(0, 0, 0, 0.2);
+  overflow: auto;
+  flex: 1;
+  min-height: 120px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
 }
 
 .design-modal-row {
@@ -3564,6 +3583,255 @@ drawer, and agent popovers (which mount on document.body) */
   cursor: default;
 }
 
+/* Build list (design spec) */
+
+.design-spec {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.design-spec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.design-spec-head .design-section-label {
+  padding-bottom: 0;
+}
+.design-spec-head-actions {
+  display: flex;
+  gap: 2px;
+}
+.design-spec-empty {
+  font-size: 11px;
+  opacity: 0.55;
+  padding: 8px 10px;
+  border: 1px dashed rgba(127, 127, 127, 0.3);
+  border-radius: 6px;
+  line-height: 1.4;
+}
+.design-entry {
+  border: 1px solid rgba(127, 127, 127, 0.18);
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.05);
+  overflow: hidden;
+}
+.design-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 0;
+  cursor: pointer;
+}
+.design-entry-head:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+.design-entry-chevron {
+  flex-shrink: 0;
+}
+.design-entry-title-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.design-entry-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-entry-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0;
+}
+.design-variants {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 6px 6px 22px;
+}
+.design-variant {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+}
+.design-variant:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+.design-variant.overlay-active {
+  border-color: rgba(88, 166, 255, 0.55);
+  background: rgba(88, 166, 255, 0.08);
+}
+.design-variant-thumb {
+  flex-shrink: 0;
+  width: 40px;
+  height: 28px;
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(127, 127, 127, 0.12);
+  color: rgba(127, 127, 127, 0.6);
+  font-size: 14px;
+}
+.design-variant-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+}
+.design-variant-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.design-variant-label {
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-variant-meta {
+  font-size: 10px;
+  opacity: 0.6;
+  display: flex;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.design-variant-node {
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.design-variant-actions {
+  flex-shrink: 0;
+  display: flex;
+}
+.design-variant.overlay-active .design-overlay-toggle {
+  color: #58a6ff;
+}
+.design-variant-empty {
+  font-size: 10px;
+  opacity: 0.5;
+  padding: 2px 6px;
+}
+.design-entry-form,
+.design-variant-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px dashed rgba(127, 127, 127, 0.3);
+  border-radius: 6px;
+  margin: 2px 0 6px;
+}
+.design-variant-form-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.design-form-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: var(--color-bg, #1e1f22);
+  color: inherit;
+}
+.design-variant-size .design-form-input {
+  width: 48px;
+  flex: none;
+}
+.design-form-select {
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: var(--color-bg, #1e1f22);
+  color: inherit;
+}
+.design-variant-size {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.design-form-x {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.design-form-cancel {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: rgba(127, 127, 127, 0.12);
+  color: inherit;
+  cursor: pointer;
+}
+.design-form-cancel:hover {
+  background: rgba(127, 127, 127, 0.2);
+}
+.design-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.design-import-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.design-import-item:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+.design-import-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.design-import-meta {
+  flex-shrink: 0;
+  font-size: 10px;
+  opacity: 0.55;
+  font-family: monospace;
+}
+.design-import-empty {
+  font-size: 11px;
+  opacity: 0.6;
+  padding: 10px;
+  text-align: center;
+}
+
 #sidebar .sidebar-panel,
 .agent-popover {
   font-size: 14px;
@@ -3593,7 +3861,6 @@ drawer, and agent popovers (which mount on document.body) */
 #sidebar .agent-slash-item,
 #sidebar .agent-slash-item span,
 #sidebar .agent-context-compact,
-#sidebar .design-context-row,
 #sidebar .design-status-label {
   font-size: 14px;
 }
@@ -3601,7 +3868,6 @@ drawer, and agent popovers (which mount on document.body) */
 #sidebar .file-tree-title,
 #sidebar .design-section-label,
 #sidebar .design-result-tab,
-#sidebar .design-context-title,
 #sidebar .design-modal-title,
 #sidebar .sidebar-prompt-modal .modal-title {
   font-size: 13px;
@@ -3647,7 +3913,7 @@ drawer, and agent popovers (which mount on document.body) */
 #sidebar .git-commit-files-empty,
 #sidebar .playbook-meta,
 #sidebar .playbook-progress,
-#sidebar .design-status-detail,
+#sidebar .design-status-file,
 #sidebar .design-output,
 #sidebar .design-modal-label,
 #sidebar .agent-history-item-meta,

@@ -32,7 +32,8 @@ const KV_SCOPES = [
   'sidebar_state',
   'tile_state',
   'ai_config',
-  'provider_config'
+  'provider_config',
+  'design_spec'
 ]
 
 /* Open the database. A corrupt or otherwise unreadable min.db previously

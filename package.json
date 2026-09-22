@@ -58,7 +58,8 @@
     "regedit": "^3.0.3",
     "sortablejs": "^1.15.1",
     "stemmer": "^1.0.5",
-    "write-file-atomic": "^6.0.0"
+    "write-file-atomic": "^6.0.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "archiver": "^4.0.1",

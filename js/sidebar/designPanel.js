@@ -11,6 +11,7 @@ let lastParsedTabId = null
 let lastError = null
 let lastResult = null
 let lastResultKind = 'css'
+let resultModalOpen = false
 let busy = false
 let renderKey = ''
 let statusRefreshGeneration = 0
@@ -149,22 +150,6 @@ function statusCopy () {
   if (name === 'connected') return t('designStatusReady', 'Connected')
   if (name === 'idle') return t('designStatusIdle', 'Not connected')
   return t('designStatusEmpty', 'No Figma file')
-}
-
-function statusDetail () {
-  const phase = lifecycleState()
-  if (phase === 'error') return (lastStatus && lastStatus.phaseError) || lastError || t('designStatusError', 'Something went wrong')
-  if (phase === 'connected') return t('designStatusAllReady', 'Engine, tab, and plugin ready')
-  if (phase === 'plugin-disconnected') return t('designStatusPluginDisconnectedDetail', 'Engine and tab are ready, waiting for plugin')
-  return t('designStatusPhaseDetail', 'Engine status: %s').replace('%s', statusCopy())
-}
-
-function statusDotClass () {
-  const name = lifecycleState()
-  if (name === 'connected') return 'ok'
-  if (['starting', 'loading-engine', 'engine-ready', 'opening-tab', 'loading-tab', 'loading-plugin'].indexOf(name) !== -1) return 'busy'
-  if (name === 'login' || name === 'plugin-disconnected' || name === 'error') return 'warn'
-  return 'idle'
 }
 
 function rememberParsed (parsed, url, tabId) {
@@ -313,6 +298,7 @@ async function runCommand (action, extra, kind) {
       lastError = result.error || result.message || t('designCommandFailed', 'Command failed')
     } else {
       lastResult = result
+      resultModalOpen = true
     }
   } catch (err) {
     lastError = err.message || String(err)
@@ -325,6 +311,20 @@ let exportFormat = 'PNG'
 let exportScale = 2
 let exportDir = ''
 let exportBusy = false
+
+/* Design spec (build list) state — the list of Figma objects to implement,
+each with variants pinned to a node id and a target viewport. */
+let spec = { entries: [] }
+let specWorkspace = ''
+const specExpanded = {}
+let specAddOpen = false
+let variantFormFor = null
+let variantEditFor = null // 'entryId|variantId'
+let importModalOpen = false
+let importFrames = null
+let exportingFor = null // 'entryId|variantId'
+let overlayState = null
+let overlayTabId = null
 
 async function loadExportPrefs () {
   const ws = workspaceInfo()
@@ -390,6 +390,7 @@ async function confirmExport () {
       lastError = result.error || result.message || t('designCommandFailed', 'Command failed')
     } else {
       lastResult = result
+      resultModalOpen = true
       closeExportModal()
     }
   } catch (err) {
@@ -517,26 +518,44 @@ function resultSections (result) {
   return sections
 }
 
-function buildResult (result) {
-  const sections = resultSections(result)
-  if (!sections.length) return null
-  const wrap = el('div', 'design-result')
-  wrap.appendChild(el('div', 'design-section-label', t('designResult', 'Result')))
+/* Results open as a modal — an inline pre would eat the build list's space. */
+function buildResultModal () {
+  if (!resultModalOpen) return null
+  const sections = resultSections(lastResult)
+  if (!sections.length) {
+    resultModalOpen = false
+    return null
+  }
+  const wrap = el('div', 'design-modal-overlay')
+  const box = el('div', 'design-modal design-result-modal')
+
+  const head = el('div', 'design-modal-head')
+  head.appendChild(el('div', 'design-modal-title', t('designResult', 'Result')))
+  const closeBtn = iconButton('codicon-close', t('designClose', 'Close'), function () {
+    resultModalOpen = false
+    lastResult = null
+    render(true)
+  })
+  head.appendChild(closeBtn)
+  box.appendChild(head)
 
   const tabsWrap = el('div', 'design-result-tabs')
-  const body = el('pre', 'design-output')
+  const body = el('pre', 'design-output design-modal-output')
   let active = lastResultKind
   if (!sections.some(function (s) { return s.id === active })) {
     active = sections[0].id
     lastResultKind = active
   }
 
+  function activeSection () {
+    return sections.filter(function (s) { return s.id === lastResultKind })[0] || sections[0]
+  }
+
   function show (id) {
     lastResultKind = id
-    const section = sections.filter(function (s) { return s.id === id })[0] || sections[0]
-    body.textContent = section.text
+    body.textContent = activeSection().text
     Array.prototype.forEach.call(tabsWrap.children, function (btn) {
-      btn.classList.toggle('active', btn.dataset.id === section.id)
+      btn.classList.toggle('active', btn.dataset.id === activeSection().id)
     })
   }
 
@@ -550,8 +569,22 @@ function buildResult (result) {
     })
     tabsWrap.appendChild(btn)
   })
-  wrap.appendChild(tabsWrap)
-  wrap.appendChild(body)
+  box.appendChild(tabsWrap)
+  box.appendChild(body)
+
+  const actions = el('div', 'design-modal-actions')
+  const copyBtn = el('button', 'design-modal-btn primary', t('designCopy', 'Copy'))
+  copyBtn.type = 'button'
+  copyBtn.addEventListener('click', function () {
+    const text = activeSection().text
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function () {})
+    }
+  })
+  actions.appendChild(copyBtn)
+  box.appendChild(actions)
+
+  wrap.appendChild(box)
   show(active)
   return wrap
 }
@@ -582,135 +615,719 @@ function cardEngineButton () {
   return btn
 }
 
-/* Full status text lives here — the header stays a compact icon bar like
-the other sidebar panels, so long phase labels never collide with buttons. */
+/* Compact pipeline indicator: engine → file → plugin, each a single icon with
+a state dot. Detail text lives in tooltips instead of extra rows; the header
+stays an icon bar like the other sidebar panels. */
+function statusIndicator (icon, state, tip) {
+  const ind = el('span', 'design-ind state-' + state)
+  ind.appendChild(el('span', 'codicon ' + icon))
+  ind.appendChild(el('span', 'design-ind-dot'))
+  ind.title = tip
+  return ind
+}
+
 function buildStatusCard () {
   const card = el('div', 'design-status')
-  card.appendChild(el('span', 'design-dot ' + statusDotClass()))
+  const tab = selectedTab()
+  const parsed = activeParsed()
+  const isFigma = !!(parsed && parsed.isFigmaFile)
+  const engineOn = !!(lastStatus && lastStatus.running)
+  const ctx = lastStatus && lastStatus.context
+  const fileReady = !!(ctx && ctx.fileKey && ctx.ready)
+  const pluginOn = pluginReady()
 
-  const copy = el('div', 'design-status-copy')
-  const label = el('div', 'design-status-label', statusCopy())
-  label.title = label.textContent
-  copy.appendChild(label)
-  // Only states with a real detail line get one — the generic
-  // "Engine status: %s" would just repeat the label.
-  const name = lifecycleState()
-  const detail = statusDetail()
-  if (detail && detail !== statusCopy() &&
-      (name === 'connected' || name === 'plugin-disconnected' || name === 'error')) {
-    copy.appendChild(el('div', 'design-status-detail', detail))
-  }
-  card.appendChild(copy)
+  const top = el('div', 'design-status-top')
+  top.appendChild(statusIndicator(
+    'codicon-server-environment',
+    engineOn ? 'on' : 'off',
+    engineOn ? t('designIndEngineOn', 'Engine running') : t('designIndEngineOff', 'Engine not running')
+  ))
+  top.appendChild(statusIndicator(
+    'codicon-window',
+    fileReady ? 'on' : (engineOn ? 'warn' : 'off'),
+    fileReady
+      ? t('designIndFileOn', 'File open in engine')
+      : (engineOn ? t('designIndFileWarn', 'No file open in engine') : t('designIndEngineOff', 'Engine not running'))
+  ))
+  top.appendChild(statusIndicator(
+    'codicon-extensions',
+    pluginOn ? 'on' : (fileReady ? 'warn' : 'off'),
+    pluginOn
+      ? t('designIndPluginOn', 'Plugin connected')
+      : (fileReady ? t('designIndPluginWarn', 'Waiting for plugin…') : t('designIndPluginOff', 'Plugin not connected'))
+  ))
+  const transport = lastStatus && lastStatus.bridge && lastStatus.bridge.transport
+  top.appendChild(statusIndicator(
+    transport === 'ws' ? 'codicon-radio-tower' : 'codicon-sync',
+    transport === 'ws' ? 'on' : (transport === 'poll' ? 'busy' : 'off'),
+    transport === 'ws'
+      ? t('designIndLinkWs', 'Link: WebSocket')
+      : (transport === 'poll' ? t('designIndLinkPoll', 'Link: HTTP polling') : t('designIndLinkOff', 'Link: offline'))
+  ))
+
+  const label = el('span', 'design-status-label', statusCopy())
+  label.title = statusCopy()
+  top.appendChild(label)
 
   const actions = el('div', 'design-status-actions')
-  const isFigma = !!(activeParsed() && activeParsed().isFigmaFile)
   if (needsLogin()) actions.appendChild(cardEngineButton())
   if ((isFigma && !connectedToSelected()) || connectedTabIsLoading() || needsLogin()) {
     actions.appendChild(cardConnectButton())
   }
-  if (actions.childNodes.length) card.appendChild(actions)
+  if (actions.childNodes.length) top.appendChild(actions)
+  card.appendChild(top)
+
+  if (tab && isFigma) {
+    const file = el('div', 'design-status-file')
+    file.appendChild(el('span', 'codicon codicon-file design-status-icon'))
+    const fileName = el('span', 'design-status-file-name', fileTitle(tab.url, parsed.fileKey, tab.title))
+    fileName.title = fileName.textContent
+    file.appendChild(fileName)
+    const node = selectedNode()
+    if (node) {
+      file.appendChild(el('span', 'codicon codicon-layers design-status-icon'))
+      const nodeEl = el('span', 'design-status-node', selectedNodeText(node))
+      nodeEl.title = selectedNodeText(node)
+      file.appendChild(nodeEl)
+    }
+    card.appendChild(file)
+  }
   return card
 }
 
-function contextRow (label, value, empty) {
-  const row = el('div', 'design-context-row' + (empty ? ' empty' : ''))
-  row.appendChild(el('span', 'design-context-label', label))
-  const valueEl = el('span', 'design-context-value', value)
-  valueEl.title = value
-  row.appendChild(valueEl)
+function selectedNodeText (node) {
+  if (!node) return ''
+  if (node.name && node.id && node.name !== node.id) return node.name + ' (' + node.id + ')'
+  return node.name || node.id || ''
+}
+
+/* --- build list (design spec) ------------------------------------------- */
+
+let specUnavailable = false
+
+function specFail (err) {
+  lastError = (err && err.message) || String(err)
+  render(true)
+}
+
+async function refreshSpec () {
+  const ws = workspaceInfo()
+  const key = ws.workspacePath || 'default'
+  try {
+    const result = await ipc.invoke('designSpec:list', { workspacePath: ws.workspacePath })
+    if (key === (workspaceInfo().workspacePath || 'default')) {
+      spec = (result && result.doc) || { entries: [] }
+      specWorkspace = key
+      specUnavailable = false
+    }
+  } catch (e) {
+    // Old main process without designSpec handlers — flag it so the section
+    // can hint at a restart instead of looking broken.
+    specUnavailable = true
+  }
+}
+
+async function refreshOverlay () {
+  const tab = selectedTab()
+  overlayTabId = tab ? tab.id : null
+  try {
+    overlayState = tab ? await ipc.invoke('designOverlay:get', { tabId: tab.id }) : null
+  } catch (e) {
+    overlayState = null
+  }
+}
+
+function overlayActiveFor (entryId, variantId) {
+  const tab = selectedTab()
+  return !!(overlayState && overlayState.active && tab && sameTab(overlayTabId, tab.id) &&
+    overlayState.entryId === entryId && overlayState.variantId === variantId)
+}
+
+async function ensureVariantImage (entry, variant) {
+  if (variant.image) return { path: variant.image, cssWidth: variant.cssWidth }
+  if (!variant.nodeId) return { error: t('designVariantNoNode', 'Variant has no Figma node — edit the node id first') }
+  if (!connectedToSelected() || !pluginReady()) {
+    return { error: t('designNeedConnect', 'Connect Figma first to export the design') }
+  }
+  exportingFor = entry.id + '|' + variant.id
+  render(true)
+  try {
+    return await exportVariantImage(entry, variant)
+  } finally {
+    exportingFor = null
+    render(true)
+  }
+}
+
+async function exportVariantImage (entry, variant) {
+  const parsed = activeParsed()
+  const result = await ipc.invoke('figmaBridge:command', 'export', {
+    nodeId: variant.nodeId,
+    fileKey: parsed && parsed.fileKey,
+    format: 'PNG',
+    scale: 2,
+    fileName: entry.name + '-' + variant.label
+  })
+  const payload = result && result.payload
+  if (!result || result.ok === false || !payload || !payload.path) {
+    return { error: (result && (result.error || result.message)) || t('designExportFailed', 'Export failed') }
+  }
+  const cssWidth = payload.node && payload.node.width ? Math.round(payload.node.width / 2) : null
+  const cssHeight = payload.node && payload.node.height ? Math.round(payload.node.height / 2) : null
+  const patch = { image: payload.path, cssWidth: cssWidth }
+  const vp = variant.viewport || {}
+  if (cssWidth && cssHeight && (vp.w !== cssWidth || vp.h !== cssHeight)) {
+    patch.viewport = { w: cssWidth, h: cssHeight, mobile: !!vp.mobile, dpr: vp.dpr }
+  }
+  await ipc.invoke('designSpec:variantUpdate', {
+    workspacePath: workspaceInfo().workspacePath,
+    entryId: entry.id,
+    variantId: variant.id,
+    patch: patch
+  })
+  variant.image = payload.path
+  variant.cssWidth = cssWidth
+  if (patch.viewport) variant.viewport = patch.viewport
+  return { path: payload.path, cssWidth: cssWidth }
+}
+
+async function toggleVariantOverlay (entry, variant) {
+  const tab = selectedTab()
+  if (!tab || busy) return
+  setBusy(true)
+  lastError = null
+  try {
+    if (overlayActiveFor(entry.id, variant.id)) {
+      await ipc.invoke('designOverlay:clear', { tabId: tab.id })
+    } else {
+      const image = await ensureVariantImage(entry, variant)
+      if (image.error) {
+        lastError = image.error
+      } else {
+        const result = await ipc.invoke('designOverlay:set', {
+          tabId: tab.id,
+          image: image.path,
+          cssWidth: image.cssWidth,
+          label: entry.name + ' / ' + variant.label,
+          viewport: variant.viewport,
+          entryId: entry.id,
+          variantId: variant.id
+        })
+        if (result && result.ok === false) lastError = result.error
+      }
+    }
+    await refreshOverlay()
+    await refreshSpec()
+  } catch (err) {
+    lastError = err.message || String(err)
+  }
+  setBusy(false)
+}
+
+async function refreshVariantImage (entry, variant) {
+  if (busy) return
+  setBusy(true)
+  lastError = null
+  try {
+    variant.image = null
+    const image = await ensureVariantImage(entry, variant)
+    if (image.error) lastError = image.error
+    await refreshSpec()
+  } catch (err) {
+    lastError = err.message || String(err)
+  }
+  setBusy(false)
+}
+
+async function openImportModal () {
+  if (busy || !connectedToSelected() || !pluginReady()) return
+  setBusy(true)
+  lastError = null
+  try {
+    const parsed = activeParsed()
+    const result = await ipc.invoke('figmaBridge:command', 'list-frames', {
+      fileKey: parsed && parsed.fileKey
+    })
+    const payload = result && result.payload
+    if (result && result.ok === false) {
+      lastError = result.error || t('designCommandFailed', 'Command failed')
+    } else {
+      importFrames = (payload && payload.frames) || []
+      importModalOpen = true
+    }
+  } catch (err) {
+    lastError = err.message || String(err)
+  }
+  setBusy(false)
+}
+
+async function addEntry (name, kind, nodeId) {
+  const parsed = activeParsed()
+  const tab = selectedTab()
+  const ws = workspaceInfo()
+  try {
+    const result = await ipc.invoke('designSpec:add', {
+      workspacePath: ws.workspacePath,
+      name: name,
+      kind: kind,
+      figmaUrl: tab && parsed && parsed.isFigmaFile ? tab.url : null,
+      fileKey: parsed && parsed.fileKey,
+      nodeId: nodeId || (parsed && parsed.nodeId)
+    })
+    if (result && result.ok === false) {
+      lastError = result.error || t('designCommandFailed', 'Command failed')
+    } else {
+      specAddOpen = false
+    }
+  } catch (err) {
+    // Missing IPC handler (old main bundle) lands here — surface it instead
+    // of dying silently.
+    lastError = err.message || String(err)
+  }
+  await refreshSpec()
+  render(true)
+}
+
+function variantViewportText (variant) {
+  const vp = variant.viewport || {}
+  // Before the first export the w×h are just preset guesses — show the preset
+  // name instead of fake numbers. Real dims arrive with the image.
+  const dims = variant.image && vp.w && vp.h
+    ? vp.w + '×' + vp.h
+    : t('designViewport_' + viewportPresetOf(variant), viewportPresetOf(variant))
+  return dims + (vp.mobile && viewportPresetOf(variant) !== 'mobile' ? ' · ' + t('designViewportMobile', 'mobile') : '')
+}
+
+function buildVariantRow (entry, variant) {
+  const row = el('div', 'design-variant' + (overlayActiveFor(entry.id, variant.id) ? ' overlay-active' : ''))
+
+  const isExporting = exportingFor === entry.id + '|' + variant.id
+  const thumb = el('div', 'design-variant-thumb' + (isExporting ? ' exporting' : ''))
+  if (isExporting) {
+    thumb.appendChild(el('span', 'codicon codicon-loading codicon-modifier-spin'))
+  } else if (variant.image) {
+    const img = document.createElement('img')
+    img.alt = variant.label
+    thumb.appendChild(img)
+    ipc.invoke('designOverlay:imageData', { path: variant.image }).then(function (data) {
+      if (data) img.src = data
+      else thumb.classList.add('empty')
+    })
+  } else {
+    thumb.classList.add('empty')
+    thumb.appendChild(el('span', 'codicon ' + (variant.viewport && variant.viewport.mobile ? 'codicon-device-mobile' : 'codicon-device-desktop')))
+  }
+  row.appendChild(thumb)
+
+  const info = el('div', 'design-variant-info')
+  info.appendChild(el('div', 'design-variant-label', variant.label))
+  const meta = el('div', 'design-variant-meta')
+  meta.appendChild(document.createTextNode(variantViewportText(variant)))
+  if (variant.nodeId) {
+    const nid = el('span', 'design-variant-node', variant.nodeId)
+    nid.title = variant.nodeId
+    meta.appendChild(nid)
+  }
+  info.appendChild(meta)
+  row.appendChild(info)
+
+  const actions = el('div', 'design-variant-actions')
+  // Overlay only makes sense once the design image exists — and never on the
+  // Figma tab itself (that IS the design). Hidden entirely when unusable;
+  // stays visible while active so it can be turned off.
+  const targetIsFigma = !!(activeParsed() && activeParsed().isFigmaFile)
+  const overlayOn = overlayActiveFor(entry.id, variant.id)
+  if (overlayOn || (variant.image && !targetIsFigma)) {
+    const overlayBtn = iconButton(
+      overlayOn ? 'codicon-eye-closed' : 'codicon-eye',
+      overlayOn ? t('designOverlayHide', 'Hide design overlay') : t('designOverlayShow', 'Overlay design on this tab'),
+      function () { toggleVariantOverlay(entry, variant) },
+      busy
+    )
+    overlayBtn.classList.add('design-overlay-toggle')
+    actions.appendChild(overlayBtn)
+  }
+  actions.appendChild(iconButton(
+    isExporting ? 'codicon-loading codicon-modifier-spin' : 'codicon-refresh',
+    isExporting
+      ? t('designExporting', 'Exporting…')
+      : (variant.image
+        ? t('designVariantRefresh', 'Re-export from Figma')
+        : t('designVariantExport', 'Export from Figma')),
+    function () { refreshVariantImage(entry, variant) },
+    busy || !variant.nodeId
+  ))
+  actions.appendChild(iconButton(
+    'codicon-edit',
+    t('designVariantEdit', 'Edit variant'),
+    function () {
+      const key = entry.id + '|' + variant.id
+      variantEditFor = variantEditFor === key ? null : key
+      variantFormFor = null
+      render(true)
+    },
+    busy
+  ))
+  actions.appendChild(iconButton(
+    'codicon-close',
+    t('designVariantRemove', 'Remove variant'),
+    function () {
+      ipc.invoke('designSpec:variantRemove', {
+        workspacePath: workspaceInfo().workspacePath,
+        entryId: entry.id,
+        variantId: variant.id
+      }).then(refreshSpec).then(function () { render(true) }).catch(specFail)
+    },
+    busy
+  ))
+  row.appendChild(actions)
   return row
 }
 
-function selectedNodeText (node) {
-  if (!node) return t('designNoNode', 'No layer selected — click a frame in the tab')
-  if (node.name && node.id && node.name !== node.id) return node.name + ' (' + node.id + ')'
-  return node.name || node.id || t('designNoNode', 'No layer selected — click a frame in the tab')
+function viewportPresetOf (variant) {
+  const vp = variant && variant.viewport
+  if (!vp) return 'desktop'
+  if (vp.mobile && vp.w === 414) return 'mobile'
+  if (!vp.mobile && vp.w === 1440) return 'desktop'
+  return 'custom'
 }
 
-function buildTabContext () {
-  const context = el('div', 'design-context')
-  context.appendChild(el('div', 'design-context-title', t('designTab', 'Tab')))
+/* Fills the node id — and the real frame size, which the plugin pushes with
+the selection — so desktop and mobile variants can point at different frames. */
+function useSelectedButton (nodeInput, viewportCtl) {
+  const btn = el('button', 'design-form-cancel design-use-selected', t('designUseSelected', 'Use selected'))
+  btn.type = 'button'
+  btn.title = t('designUseSelectedHint', 'Fill with the layer selected in Figma')
+  btn.addEventListener('click', function () {
+    const node = selectedNode()
+    if (!node || !node.id) return
+    nodeInput.value = node.id
+    if (viewportCtl && node.width && node.height) {
+      viewportCtl.vpSelect.value = 'custom'
+      viewportCtl.wInput.value = Math.round(node.width)
+      viewportCtl.hInput.value = Math.round(node.height)
+      viewportCtl.sizeWrap.style.display = ''
+    }
+  })
+  return btn
+}
 
-  const tab = selectedTab()
-  const parsed = activeParsed()
-  if (!tab || !parsed || !parsed.isFigmaFile) {
-    context.appendChild(contextRow(
-      t('designFigmaFile', 'Figma file'),
-      tab && tab.url ? t('designNotFigma', 'Not a Figma file') : t('designStatusEmpty', 'No Figma file'),
-      true
-    ))
-    return context
+function buildVariantForm (entry, variant) {
+  const editing = !!variant
+  const form = el('div', 'design-variant-form')
+  const labelInput = el('input', 'design-form-input')
+  labelInput.type = 'text'
+  labelInput.placeholder = t('designVariantLabel', 'Label (e.g. Hover state)')
+  labelInput.value = editing ? variant.label : ''
+  const nodeInput = el('input', 'design-form-input')
+  nodeInput.type = 'text'
+  nodeInput.placeholder = t('designVariantNode', 'Node id (e.g. 12:34)')
+  nodeInput.value = editing ? (variant.nodeId || '') : (entry.nodeId || '')
+  const vpSelect = el('select', 'design-form-select')
+  ;['desktop', 'mobile', 'custom'].forEach(function (v) {
+    const opt = el('option', null, t('designViewport_' + v, v[0].toUpperCase() + v.slice(1)))
+    opt.value = v
+    vpSelect.appendChild(opt)
+  })
+  const sizeWrap = el('div', 'design-variant-size')
+  const wInput = el('input', 'design-form-input')
+  wInput.type = 'number'
+  wInput.placeholder = 'W'
+  const hInput = el('input', 'design-form-input')
+  hInput.type = 'number'
+  hInput.placeholder = 'H'
+  sizeWrap.appendChild(wInput)
+  sizeWrap.appendChild(el('span', 'design-form-x', '×'))
+  sizeWrap.appendChild(hInput)
+  const preset = viewportPresetOf(variant)
+  vpSelect.value = preset
+  if (editing && preset === 'custom' && variant.viewport) {
+    wInput.value = variant.viewport.w
+    hInput.value = variant.viewport.h
   }
+  sizeWrap.style.display = preset === 'custom' ? '' : 'none'
+  vpSelect.addEventListener('change', function () {
+    sizeWrap.style.display = vpSelect.value === 'custom' ? '' : 'none'
+  })
+  const saveBtn = el('button', 'design-connect-btn', editing ? t('designSaveVariant', 'Save') : t('designAddVariant', 'Add variant'))
+  saveBtn.type = 'button'
+  saveBtn.addEventListener('click', function () {
+    const viewport = vpSelect.value === 'custom'
+      ? (wInput.value + 'x' + hInput.value)
+      : vpSelect.value
+    const done = function () {
+      variantFormFor = null
+      variantEditFor = null
+      render(true)
+      // The main process fetches the node's real dims in the background —
+      // refresh once more so the row shows them without another click.
+      setTimeout(function () { refreshSpec().then(function () { render(true) }) }, 1200)
+    }
+    if (editing) {
+      ipc.invoke('designSpec:variantUpdate', {
+        workspacePath: workspaceInfo().workspacePath,
+        entryId: entry.id,
+        variantId: variant.id,
+        patch: {
+          label: labelInput.value.trim(),
+          nodeId: nodeInput.value.trim(),
+          viewport: viewport
+        }
+      }).then(refreshSpec).then(done).catch(specFail)
+    } else {
+      ipc.invoke('designSpec:variantAdd', {
+        workspacePath: workspaceInfo().workspacePath,
+        entryId: entry.id,
+        label: labelInput.value.trim(),
+        nodeId: nodeInput.value.trim() || null,
+        viewport: viewport
+      }).then(refreshSpec).then(done).catch(specFail)
+    }
+  })
+  const cancelBtn = el('button', 'design-form-cancel', t('designCancel', 'Cancel'))
+  cancelBtn.type = 'button'
+  cancelBtn.addEventListener('click', function () { variantFormFor = null; variantEditFor = null; render(true) })
+  const viewportCtl = { vpSelect: vpSelect, wInput: wInput, hInput: hInput, sizeWrap: sizeWrap }
+  form.appendChild(labelInput)
+  const nodeRow = el('div', 'design-variant-form-row')
+  nodeRow.appendChild(nodeInput)
+  nodeRow.appendChild(useSelectedButton(nodeInput, viewportCtl))
+  form.appendChild(nodeRow)
+  const vpRow = el('div', 'design-variant-form-row')
+  vpRow.appendChild(vpSelect)
+  vpRow.appendChild(sizeWrap)
+  form.appendChild(vpRow)
+  const btnRow = el('div', 'design-variant-form-row')
+  btnRow.appendChild(saveBtn)
+  btnRow.appendChild(cancelBtn)
+  form.appendChild(btnRow)
+  return form
+}
 
-  const title = fileTitle(tab.url, parsed.fileKey, tab.title) || t('designFigmaFile', 'Figma file')
-  context.appendChild(contextRow(t('designFigmaFile', 'Figma file'), title, false))
-  const node = selectedNode()
-  context.appendChild(contextRow(
-    t('designSelectedNode', 'Selected'),
-    selectedNodeText(node),
-    !node
+function buildEntryRow (entry) {
+  const wrap = el('div', 'design-entry')
+  const expanded = !!specExpanded[entry.id]
+
+  const head = el('div', 'design-entry-head')
+  const chevron = iconButton(
+    expanded ? 'codicon-chevron-down' : 'codicon-chevron-right',
+    '',
+    function () { specExpanded[entry.id] = !expanded; render(true) }
+  )
+  chevron.classList.add('design-entry-chevron')
+  head.appendChild(chevron)
+
+  const titleWrap = el('div', 'design-entry-title-wrap')
+  const title = el('span', 'design-entry-title', entry.name)
+  title.title = entry.figmaUrl || entry.name
+  titleWrap.appendChild(title)
+  head.appendChild(titleWrap)
+
+  const actions = el('div', 'design-entry-actions')
+  actions.appendChild(iconButton(
+    'codicon-add',
+    t('designAddVariant', 'Add variant'),
+    function () { variantFormFor = variantFormFor === entry.id ? null : entry.id; render(true) }
   ))
-  return context
+  actions.appendChild(iconButton(
+    'codicon-trash',
+    t('designRemoveEntry', 'Remove entry'),
+    function () {
+      ipc.invoke('designSpec:remove', {
+        workspacePath: workspaceInfo().workspacePath,
+        entryId: entry.id
+      }).then(refreshSpec).then(function () { render(true) }).catch(specFail)
+    }
+  ))
+  head.appendChild(actions)
+  head.addEventListener('click', function () {
+    specExpanded[entry.id] = !expanded
+    render(true)
+  })
+  wrap.appendChild(head)
+
+  if (expanded) {
+    const variants = el('div', 'design-variants')
+    ;(entry.variants || []).forEach(function (variant) {
+      variants.appendChild(buildVariantRow(entry, variant))
+      if (variantEditFor === entry.id + '|' + variant.id) {
+        variants.appendChild(buildVariantForm(entry, variant))
+      }
+    })
+    if (!entry.variants || !entry.variants.length) {
+      variants.appendChild(el('div', 'design-variant-empty', t('designNoVariants', 'No variants yet')))
+    }
+    if (variantFormFor === entry.id) variants.appendChild(buildVariantForm(entry))
+    wrap.appendChild(variants)
+  }
+  return wrap
+}
+
+function buildSpecAddForm () {
+  const form = el('div', 'design-entry-form')
+  const nameInput = el('input', 'design-form-input')
+  nameInput.type = 'text'
+  nameInput.placeholder = t('designEntryName', 'Name (e.g. Login page)')
+  const parsed = activeParsed()
+  const nodeInput = el('input', 'design-form-input')
+  nodeInput.type = 'text'
+  nodeInput.placeholder = t('designVariantNode', 'Node id (e.g. 12:34)')
+  nodeInput.value = (parsed && parsed.nodeId) || ''
+  const nodeRow = el('div', 'design-variant-form-row')
+  nodeRow.appendChild(nodeInput)
+  nodeRow.appendChild(useSelectedButton(nodeInput))
+  const kindSelect = el('select', 'design-form-select')
+  ;['page', 'component', 'element'].forEach(function (k) {
+    const opt = el('option', null, t('designKind_' + k, k[0].toUpperCase() + k.slice(1)))
+    opt.value = k
+    kindSelect.appendChild(opt)
+  })
+  const addBtn = el('button', 'design-connect-btn', t('designAddEntry', 'Add'))
+  addBtn.type = 'button'
+  addBtn.addEventListener('click', function () {
+    if (!nameInput.value.trim()) return
+    addEntry(nameInput.value.trim(), kindSelect.value, nodeInput.value.trim() || null)
+  })
+  const cancelBtn = el('button', 'design-form-cancel', t('designCancel', 'Cancel'))
+  cancelBtn.type = 'button'
+  cancelBtn.addEventListener('click', function () { specAddOpen = false; render(true) })
+  form.appendChild(nameInput)
+  form.appendChild(nodeRow)
+  form.appendChild(kindSelect)
+  const btnRow = el('div', 'design-variant-form-row')
+  btnRow.appendChild(addBtn)
+  btnRow.appendChild(cancelBtn)
+  form.appendChild(btnRow)
+  return form
+}
+
+function buildImportModal () {
+  if (!importModalOpen) return null
+  const wrap = el('div', 'design-modal-overlay')
+  const box = el('div', 'design-modal')
+  box.appendChild(el('div', 'design-modal-title', t('designImportTitle', 'Import from Figma')))
+  const list = el('div', 'design-import-list')
+  if (!importFrames || !importFrames.length) {
+    list.appendChild(el('div', 'design-import-empty', t('designImportEmpty', 'No top-level frames on this page')))
+  } else {
+    importFrames.forEach(function (frame) {
+      const item = el('button', 'design-import-item')
+      item.type = 'button'
+      const name = el('span', 'design-import-name', frame.name)
+      name.title = frame.name
+      item.appendChild(name)
+      item.appendChild(el('span', 'design-import-meta',
+        frame.type + ' · ' + frame.width + '×' + frame.height))
+      item.addEventListener('click', function () {
+        importModalOpen = false
+        addEntry(frame.name, frame.type === 'COMPONENT' || frame.type === 'COMPONENT_SET' ? 'component' : 'page', frame.id)
+      })
+      list.appendChild(item)
+    })
+  }
+  box.appendChild(list)
+  const actions = el('div', 'design-modal-actions')
+  const cancelBtn = el('button', 'design-modal-btn', t('designCancel', 'Cancel'))
+  cancelBtn.type = 'button'
+  cancelBtn.addEventListener('click', function () { importModalOpen = false; render(true) })
+  actions.appendChild(cancelBtn)
+  box.appendChild(actions)
+  wrap.appendChild(box)
+  return wrap
+}
+
+function buildSpecSection () {
+  const section = el('div', 'design-spec')
+  const headRow = el('div', 'design-spec-head')
+  headRow.appendChild(el('div', 'design-section-label', t('designBuildList', 'Build list')))
+  const headActions = el('div', 'design-spec-head-actions')
+  const canImport = connectedToSelected() && pluginReady()
+  headActions.appendChild(iconButton(
+    'codicon-cloud-download',
+    t('designImport', 'Import frames from Figma'),
+    openImportModal,
+    !canImport || busy
+  ))
+  headActions.appendChild(iconButton(
+    'codicon-add',
+    t('designAddEntry', 'Add entry'),
+    function () { specAddOpen = !specAddOpen; render(true) }
+  ))
+  headRow.appendChild(headActions)
+  section.appendChild(headRow)
+
+  if (specAddOpen) section.appendChild(buildSpecAddForm())
+
+  if (specUnavailable) {
+    section.appendChild(el('div', 'design-spec-empty', t('designSpecRestart',
+      'Restart Min to enable the build list — the new IPC handlers load with the main process')))
+  }
+  const entries = (spec && spec.entries) || []
+  if (!entries.length && !specAddOpen && !specUnavailable) {
+    section.appendChild(el('div', 'design-spec-empty', t('designSpecEmpty',
+      'No objects yet — add a page or component you want to build')))
+  }
+  entries.forEach(function (entry) {
+    section.appendChild(buildEntryRow(entry))
+  })
+  return section
 }
 
 function buildHeader () {
   const header = el('div', 'file-tree-header design-header')
   header.appendChild(el('div', 'file-tree-title', t('sidebarDesign', 'Design')))
 
-  // At-a-glance status dot; the label lives in the body status card so the
-  // header stays a clean icon bar and never truncates long phase text.
-  const dot = el('span', 'design-dot design-header-dot ' + statusDotClass())
-  dot.title = statusDetail()
-  header.appendChild(dot)
-
   const actions = el('div', 'file-tree-header-actions')
   const isFigma = !!(activeParsed() && activeParsed().isFigmaFile)
   const scoped = connectedToSelected()
-  const stuck = !!(isFigma && connectedTabIsLoading())
   const canRun = scoped && pluginReady() && !busy && !needsLogin()
 
-  if (needsLogin()) {
+  // Everything in this panel's header is a Figma-tab action — on a non-Figma
+  // tab the build list below is the whole panel.
+  if (isFigma) {
+    if (needsLogin()) {
+      actions.appendChild(iconButton(
+        'codicon-sign-in',
+        t('designShowEngineSignIn', 'Show engine to sign in'),
+        function () { ipc.invoke('figmaEngine:setVisible', { visible: true }).then(refreshStatus) },
+        busy || !(lastStatus && lastStatus.running)
+      ))
+    }
+    // Connect and disconnect share one slot and the same icon-button style.
+    if (scoped) {
+      actions.appendChild(iconButton(
+        'codicon-debug-disconnect',
+        t('designDisconnect', 'Disconnect'),
+        disconnectSelectedTab,
+        busy
+      ))
+    } else {
+      actions.appendChild(iconButton(
+        'codicon-plug',
+        t('designConnect', 'Connect'),
+        connectSelectedTab,
+        busy
+      ))
+    }
     actions.appendChild(iconButton(
-      'codicon-sign-in',
-      t('designShowEngineSignIn', 'Show engine to sign in'),
-      function () { ipc.invoke('figmaEngine:setVisible', { visible: true }).then(refreshStatus) },
-      busy || !(lastStatus && lastStatus.running)
+      'codicon-device-camera',
+      t('designExport', 'Export PNG'),
+      openExportModal,
+      !canRun
+    ))
+    actions.appendChild(iconButton(
+      'codicon-text-size',
+      t('designExtractText', 'Extract text'),
+      function () { runCommand('node-data', {}, 'text') },
+      !canRun
+    ))
+    actions.appendChild(iconButton(
+      'codicon-symbol-color',
+      t('designExtractStyle', 'Extract styles'),
+      function () { runCommand('node-data', {}, 'css') },
+      !canRun
     ))
   }
-  // Connect and disconnect share one slot and the same icon-button style.
-  if (scoped) {
-    actions.appendChild(iconButton(
-      'codicon-debug-disconnect',
-      t('designDisconnect', 'Disconnect'),
-      disconnectSelectedTab,
-      busy
-    ))
-  } else if (isFigma || stuck || needsLogin()) {
-    actions.appendChild(iconButton(
-      'codicon-plug',
-      t('designConnect', 'Connect'),
-      connectSelectedTab,
-      busy
-    ))
-  }
-  actions.appendChild(iconButton(
-    'codicon-device-camera',
-    t('designExport', 'Export PNG'),
-    openExportModal,
-    !canRun
-  ))
-  actions.appendChild(iconButton(
-    'codicon-text-size',
-    t('designExtractText', 'Extract text'),
-    function () { runCommand('node-data', {}, 'text') },
-    !canRun
-  ))
-  actions.appendChild(iconButton(
-    'codicon-symbol-color',
-    t('designExtractStyle', 'Extract styles'),
-    function () { runCommand('node-data', {}, 'css') },
-    !canRun
-  ))
   header.appendChild(actions)
   return header
 }
@@ -735,7 +1352,22 @@ function fingerprint () {
       : '',
     busy ? 'busy' : 'idle',
     !!(lastStatus && lastStatus.running),
-    pluginReady()
+    pluginReady(),
+    (lastStatus && lastStatus.bridge && lastStatus.bridge.transport) || '',
+    specWorkspace,
+    specUnavailable ? 'unavailable' : '',
+    (spec && spec.updatedAt) || '',
+    (spec && spec.entries && spec.entries.length) || 0,
+    specAddOpen ? 'add' : '',
+    variantFormFor || '',
+    variantEditFor || '',
+    exportingFor || '',
+    resultModalOpen ? 'result' : '',
+    importModalOpen ? 'import' : '',
+    overlayState && overlayState.active
+      ? overlayState.tabId + ':' + overlayState.entryId + ':' + overlayState.variantId
+      : '',
+    Object.keys(specExpanded).filter(function (k) { return specExpanded[k] }).join(',')
   ].join('|')
 }
 
@@ -749,20 +1381,20 @@ function render (force) {
 
   const body = el('div', 'design-body')
   panel.appendChild(body)
-  body.appendChild(buildStatusCard())
-  body.appendChild(buildTabContext())
+  const parsed = activeParsed()
+  if (parsed && parsed.isFigmaFile) body.appendChild(buildStatusCard())
+  body.appendChild(buildSpecSection())
 
   if (lastError) {
     body.appendChild(el('div', 'design-error', lastError))
   }
 
-  if (connectedToSelected()) {
-    const result = buildResult(lastResult)
-    if (result) body.appendChild(result)
-  }
-
   const modal = exportModal()
   if (modal) panel.appendChild(modal)
+  const importModal = buildImportModal()
+  if (importModal) panel.appendChild(importModal)
+  const resultModal = buildResultModal()
+  if (resultModal) panel.appendChild(resultModal)
 }
 
 const designPanel = {
@@ -788,6 +1420,7 @@ const designPanel = {
       lastError = null
       render()
       refreshStatus()
+      refreshOverlay().then(function () { render() })
     })
     tasks.on('tab-updated', function (id, key, value) {
       if (key !== 'url') return
@@ -816,11 +1449,20 @@ const designPanel = {
     })
     workspaces.on('workspace-selected', function () {
       refreshStatus()
+      spec = { entries: [] }
+      refreshSpec().then(function () { render() })
     })
 
     refreshStatus()
+    refreshSpec().then(function () { render() })
+    refreshOverlay().then(function () { render() })
     setInterval(function () {
-      if (panel.classList.contains('active')) refreshStatus()
+      if (panel.classList.contains('active')) {
+        refreshStatus()
+        // The in-page ✕ control clears the overlay in main — poll keeps the
+        // variant's eye state honest without an extra event channel.
+        refreshOverlay().then(function () { render() })
+      }
     }, 2500)
   }
 }

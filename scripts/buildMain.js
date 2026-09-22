@@ -22,6 +22,8 @@ const modules = [
   'main/playbook.js',
   'main/figmaBridge.js',
   'main/figmaEngine.js',
+  'main/designSpec.js',
+  'main/designOverlay.js',
   'main/agentTools.js',
   'main/agent.js',
   'main/editorFileIO.js',

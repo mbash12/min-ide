@@ -46,6 +46,10 @@ try {
   log('no plugin UI on this runtime — console only (' + (e && e.message) + ')')
 }
 
+function transport() {
+  return wsOpen ? 'ws' : pollAlive ? 'poll' : 'none'
+}
+
 function postStatus(state, detail) {
   if (detail) log(state + ': ' + detail)
   else log(state)
@@ -370,11 +374,23 @@ async function getNode(nodeId) {
     if (selected) return selected
     throw new Error('No node id and nothing selected in Figma')
   }
-  const node = await figma.getNodeByIdAsync(nodeId)
+  let node = await figma.getNodeByIdAsync(nodeId)
   if (!node) {
-    throw new Error(
-      `Node ${nodeId} is not on the page currently open in Figma — open that page first`,
-    )
+    // Desktop and mobile frames may live on different pages. In dynamic-page
+    // mode only loaded pages resolve, so walk the file's pages explicitly.
+    for (const page of figma.root.children) {
+      if (page.id === figma.currentPage.id) continue
+      try {
+        await page.loadAsync()
+      } catch (e) {
+        continue
+      }
+      node = await figma.getNodeByIdAsync(nodeId)
+      if (node) break
+    }
+  }
+  if (!node) {
+    throw new Error(`Node ${nodeId} was not found in this file`)
   }
   return node
 }
@@ -404,12 +420,13 @@ async function sendSelection() {
     return false
   }
   try {
-    const response = await fetch(`${BRIDGE_HTTP}/selection`, {
+    const response = await fetchBridgeWithTimeout(`${BRIDGE_HTTP}/selection`, {
       method: 'POST',
       headers: bridgeHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         fileName: figma.root.name,
         fileKey: pluginFileKey(),
+        transport: transport(),
         nodes,
       }),
     })
@@ -452,7 +469,7 @@ async function runBridgeCommand(cmd, viaWs) {
     exportTarget: cmd.exportTarget,
   })
   const reply = (ok, payload, error) => {
-    const msg = { type: 'result', ...commandIdentity(), id: cmd.id, ok, payload, error }
+    const msg = { type: 'result', ...commandIdentity(), id: cmd.id, ok, payload, error, transport: transport() }
     let sent = false
     if (viaWs && wsOpen && pluginUi) {
       try {
@@ -465,7 +482,7 @@ async function runBridgeCommand(cmd, viaWs) {
       }
     }
     if (!sent) {
-      void fetch(`${BRIDGE_HTTP}/command/result`, {
+      void fetchBridgeWithTimeout(`${BRIDGE_HTTP}/command/result`, {
         method: 'POST',
         headers: bridgeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(msg),
@@ -480,6 +497,26 @@ async function runBridgeCommand(cmd, viaWs) {
   }
   postStatus(currentState(), `→ ${cmd.action}${cmd.nodeId ? ` ${cmd.nodeId}` : ''}…`)
   try {
+    // A hung Figma API call (exportAsync on a huge node, a wedged page load)
+    // would otherwise stall the serialized command chain forever — every
+    // later command then dies on the bridge's 60s timeout. Race the dispatch
+    // so the chain always advances and the caller gets a real error.
+    await Promise.race([
+      dispatchBridgeCommand(cmd, reply),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`"${cmd.action}" exceeded 50s inside the plugin — the node may be too large or the file is busy`)),
+          50000,
+        ),
+      ),
+    ])
+  } catch (e) {
+    reply(false, null, e && e.message ? e.message : String(e))
+  }
+}
+
+async function dispatchBridgeCommand(cmd, reply) {
+  try {
     if (cmd.action === 'rescan') {
       const pushed = await sendSelection()
       if (pushed) reply(true, { rescanned: true })
@@ -491,9 +528,31 @@ async function runBridgeCommand(cmd, viaWs) {
       reply(true, buildNodeData(node))
       return
     }
+    if (cmd.action === 'node-info') {
+      // Lightweight identity + size — used to pin variant dims on assign,
+      // without pulling full css/fonts/text like node-data does.
+      const node = await getNode(cmd.nodeId)
+      const { width, height } = nodeSize(node)
+      reply(true, { id: node.id, name: node.name, type: node.type, width, height })
+      return
+    }
     if (cmd.action === 'find-text') {
       const node = await getNode(cmd.nodeId)
       reply(true, findTextInNode(node, cmd.query, cmd.limit))
+      return
+    }
+    if (cmd.action === 'list-frames') {
+      // Top-level objects on the current page — the candidates the Design
+      // sidebar offers when building a spec entry.
+      await figma.currentPage.loadAsync()
+      const frames = figma.currentPage.children
+        .filter((n) => ['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SECTION'].includes(n.type))
+        .map((n) => ({ id: n.id, name: n.name, type: n.type, ...nodeSize(n) }))
+      reply(true, {
+        pageId: figma.currentPage.id,
+        pageName: figma.currentPage.name,
+        frames,
+      })
       return
     }
     if (cmd.action === 'export') {
@@ -521,7 +580,7 @@ async function runBridgeCommand(cmd, viaWs) {
         throw new Error('Export exceeds 40MB — lower the scale or split the frame')
       }
       const { width, height } = nodeSize(node)
-      const res = await fetch(`${BRIDGE_HTTP}/export`, {
+      const res = await fetchBridgeWithTimeout(`${BRIDGE_HTTP}/export`, {
         method: 'POST',
         headers: bridgeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
@@ -531,6 +590,7 @@ async function runBridgeCommand(cmd, viaWs) {
           exportTarget: cmd.exportTarget,
           exportDir: typeof cmd.exportDir === 'string' ? cmd.exportDir : undefined,
           nodeId: cmd.nodeId,
+          transport: transport(),
           scale: format === 'SVG' ? 1 : scale,
           format,
           fileName: typeof cmd.fileName === 'string' ? cmd.fileName : undefined,
@@ -675,7 +735,7 @@ function startPolling() {
       try {
         // A hung fetch must never freeze the loop.
         const res = await fetchBridgeWithTimeout(
-          `${BRIDGE_HTTP}/command/poll?fileKey=${encodeURIComponent(pluginFileKey() || '')}`,
+          `${BRIDGE_HTTP}/command/poll?fileKey=${encodeURIComponent(pluginFileKey() || '')}&transport=${transport()}`,
           { headers: bridgeHeaders() },
         )
         const body = await res.json().catch(() => ({}))
