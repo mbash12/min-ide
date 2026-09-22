@@ -17,8 +17,6 @@ var panels = {
   profiles: document.getElementById('panel-profiles'),
   editor: document.getElementById('panel-editor'),
   terminal: document.getElementById('panel-terminal'),
-  workspace: document.getElementById('panel-workspace'),
-  documents: document.getElementById('panel-documents'),
   design: document.getElementById('panel-design')
 }
 
@@ -251,6 +249,7 @@ knows (probed live via agentListProviders). Keys live in the central DB under
 provider_config as '<id>ApiKey'. */
 var providersList = document.getElementById('providers-list')
 var providerKeys = {} // providerId -> api key (from kv provider_config)
+var providerDisabled = {} // providerId -> true when disabled (key kept stored)
 var knownProviders = [] // {id, label, models} — probed from the SDK
 
 var PROVIDER_LINKS = {
@@ -296,7 +295,24 @@ function setProviderKey (id, key) {
   if (id === 'openrouter') {
     settings.set('openrouterApiKey', key)
   }
-  if (!key) delete providerKeys[id]
+  if (!key) {
+    delete providerKeys[id]
+    delete providerDisabled[id]
+    dbInvoke('db:kvDelete', { scope: 'provider_config', key: id + 'Disabled' })
+  }
+}
+
+/* disabling keeps the key stored - it only hides the provider from the agent
+runtime (no env key, no auth.json entry, models drop out of pickers) */
+function setProviderEnabled (id, enabled) {
+  if (enabled) {
+    delete providerDisabled[id]
+    dbInvoke('db:kvDelete', { scope: 'provider_config', key: id + 'Disabled' })
+  } else {
+    providerDisabled[id] = true
+    dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'Disabled', value: true })
+  }
+  renderProviders()
 }
 
 function renderProviders () {
@@ -312,8 +328,10 @@ function renderProviders () {
   }
 
   configured.forEach(function (id) {
+    var disabled = !!providerDisabled[id]
+
     var row = document.createElement('div')
-    row.className = 'pro-provider-row'
+    row.className = 'pro-provider-row' + (disabled ? ' disabled' : '')
 
     var avatar = document.createElement('span')
     avatar.className = 'pro-provider-avatar'
@@ -336,12 +354,29 @@ function renderProviders () {
     status.className = 'pro-test-result'
     status.hidden = true
 
+    var toggle = document.createElement('input')
+    toggle.type = 'checkbox'
+    toggle.className = 'pro-switch'
+    toggle.setAttribute('role', 'switch')
+    toggle.checked = !disabled
+    toggle.title = l(disabled ? 'proSettingsEnableProvider' : 'proSettingsDisableProvider')
+    toggle.addEventListener('change', function () {
+      setProviderEnabled(id, toggle.checked)
+    })
+
     var testBtn = document.createElement('button')
     testBtn.className = 'pro-icon-button'
     testBtn.title = l('proSettingsTestKey')
     var testIcon = document.createElement('i')
     testIcon.className = 'i carbon:checkmark-outline'
     testBtn.appendChild(testIcon)
+
+    var editBtn = document.createElement('button')
+    editBtn.className = 'pro-icon-button'
+    editBtn.title = l('proSettingsEditProvider')
+    var editIcon = document.createElement('i')
+    editIcon.className = 'i carbon:edit'
+    editBtn.appendChild(editIcon)
 
     var removeBtn = document.createElement('button')
     removeBtn.className = 'pro-icon-button'
@@ -362,6 +397,10 @@ function renderProviders () {
       })
     })
 
+    editBtn.addEventListener('click', function () {
+      openAddDialog(id)
+    })
+
     removeBtn.addEventListener('click', function () {
       setProviderKey(id, null)
       renderProviders()
@@ -372,14 +411,17 @@ function renderProviders () {
     row.appendChild(masked)
     row.appendChild(spacer)
     row.appendChild(status)
+    row.appendChild(toggle)
     row.appendChild(testBtn)
+    row.appendChild(editBtn)
     row.appendChild(removeBtn)
     providersList.appendChild(row)
   })
 }
 
-/* ---- add-provider modal ---- */
+/* ---- add/edit-provider modal ---- */
 var addOverlay = document.getElementById('provider-add-overlay')
+var addTitle = document.getElementById('provider-add-title')
 var addSelect = document.getElementById('provider-add-select')
 var addKey = document.getElementById('provider-add-key')
 var addLink = document.getElementById('provider-add-link')
@@ -387,6 +429,7 @@ var addError = document.getElementById('provider-add-error')
 var addConfirm = document.getElementById('provider-add-confirm')
 addKey.placeholder = l('proSettingsApiKeyPlaceholder')
 var addSelectSearch = makeSearchableSelect(addSelect)
+var editProviderId = null // set while editing an existing provider's key
 
 function updateAddLink () {
   var link = PROVIDER_LINKS[addSelect.value]
@@ -395,22 +438,36 @@ function updateAddLink () {
   addLink.style.visibility = link ? 'visible' : 'hidden'
 }
 
-function openAddDialog () {
-  var configured = Object.keys(providerKeys).filter(function (id) { return !!providerKeys[id] })
-  var unconfigured = knownProviders.filter(function (p) {
-    return configured.indexOf(p.id) === -1
-  })
+function openAddDialog (editId) {
+  editProviderId = typeof editId === 'string' ? editId : null
+  addTitle.textContent = l(editProviderId ? 'proSettingsEditProviderTitle' : 'proSettingsAddProviderTitle')
+  addConfirm.textContent = l(editProviderId ? 'docsSave' : 'proSettingsAddProvider')
   addSelect.textContent = ''
-  unconfigured.forEach(function (p) {
+  if (editProviderId) {
+    /* editing an existing provider: the provider itself is locked, only the
+    key can change */
     var opt = document.createElement('option')
-    opt.value = p.id
-    opt.textContent = p.label + (p.models ? ' (' + p.models + ')' : '')
+    opt.value = editProviderId
+    opt.textContent = providerLabel(editProviderId)
     addSelect.appendChild(opt)
-  })
-  addSelect.disabled = !unconfigured.length
-  addConfirm.disabled = !unconfigured.length
+    addSelect.disabled = true
+    addConfirm.disabled = false
+  } else {
+    var configured = Object.keys(providerKeys).filter(function (id) { return !!providerKeys[id] })
+    var unconfigured = knownProviders.filter(function (p) {
+      return configured.indexOf(p.id) === -1
+    })
+    unconfigured.forEach(function (p) {
+      var opt = document.createElement('option')
+      opt.value = p.id
+      opt.textContent = p.label + (p.models ? ' (' + p.models + ')' : '')
+      addSelect.appendChild(opt)
+    })
+    addSelect.disabled = !unconfigured.length
+    addConfirm.disabled = !unconfigured.length
+  }
   addSelectSearch.sync()
-  addKey.value = ''
+  addKey.value = editProviderId ? (providerKeys[editProviderId] || '') : ''
   addError.hidden = true
   updateAddLink()
   addOverlay.hidden = false
@@ -418,24 +475,26 @@ function openAddDialog () {
 }
 
 function closeAddDialog () {
+  editProviderId = null
   addOverlay.hidden = true
 }
 
 function confirmAddProvider () {
   var key = addKey.value.trim()
-  if (!key || !addSelect.value) {
+  var id = editProviderId || addSelect.value
+  if (!key || !id) {
     if (!key) {
       addError.hidden = false
       addError.textContent = l('proSettingsApiKeyPlaceholder')
     }
     return
   }
-  setProviderKey(addSelect.value, key)
+  setProviderKey(id, key)
   closeAddDialog()
   renderProviders()
 }
 
-document.getElementById('provider-add-open').addEventListener('click', openAddDialog)
+document.getElementById('provider-add-open').addEventListener('click', function () { openAddDialog() })
 document.getElementById('provider-add-cancel').addEventListener('click', closeAddDialog)
 addSelect.addEventListener('change', updateAddLink)
 addConfirm.addEventListener('click', confirmAddProvider)
@@ -452,9 +511,12 @@ agentCall('agentListProviders', {}, function (providers) {
   knownProviders = providers || []
   dbInvoke('db:kvList', 'provider_config', function (result) {
     providerKeys = {}
+    providerDisabled = {}
     Object.keys(result || {}).forEach(function (kvKey) {
       if (kvKey.endsWith('ApiKey') && result[kvKey]) {
         providerKeys[kvKey.slice(0, -'ApiKey'.length)] = result[kvKey]
+      } else if (kvKey.endsWith('Disabled')) {
+        providerDisabled[kvKey.slice(0, -'Disabled'.length)] = !!result[kvKey]
       }
     })
     /* legacy: an openrouter key may still live in settings.json */
@@ -607,6 +669,30 @@ var listEl = document.getElementById('profiles-list')
 var addButton = document.getElementById('profiles-add-button')
 var noticeEl = document.getElementById('profiles-notice')
 
+/* which profile new workspaces start on ('' = the built-in Default partition);
+starred per profile row */
+var defaultWorkspaceProfile = ''
+settings.get('defaultWorkspaceProfile', function (value) {
+  defaultWorkspaceProfile = value || ''
+  renderProfiles()
+})
+function setDefaultProfile (id) {
+  defaultWorkspaceProfile = id || ''
+  settings.set('defaultWorkspaceProfile', id || null)
+  renderProfiles()
+}
+function makeDefaultStar (id) {
+  const btn = document.createElement('button')
+  const isDefault = (id || '') === defaultWorkspaceProfile
+  btn.className = 'pro-icon-button profile-default-star i ' + (isDefault ? 'carbon:star-filled' : 'carbon:star')
+  btn.classList.toggle('active', isDefault)
+  btn.title = l('profileSetDefault')
+  btn.addEventListener('click', function () {
+    setDefaultProfile(id)
+  })
+  return btn
+}
+
 /* add-profile modal */
 var profileAddOverlay = document.getElementById('profile-add-overlay')
 var profileAddInput = document.getElementById('profile-add-input')
@@ -741,6 +827,8 @@ function renderProfiles () {
     u.textContent = n === 1 ? '1 workspace' : n + ' workspaces'
     defaultRow.appendChild(u)
   }
+  // star marks which profile new workspaces start on
+  defaultRow.appendChild(makeDefaultStar(null))
   // the default profile cannot be deleted, but its data can be cleared
   defaultRow.appendChild(makeClearButton(null, l('taskProfileDefault')))
   listEl.appendChild(defaultRow)
@@ -777,6 +865,8 @@ function renderProfiles () {
       usageEl.textContent = count === 1 ? '1 workspace' : count + ' workspaces'
       row.appendChild(usageEl)
     }
+
+    row.appendChild(makeDefaultStar(profile.id))
 
     const renameBtn = document.createElement('button')
     renameBtn.className = 'pro-icon-button i carbon:edit'
@@ -825,6 +915,10 @@ function renderProfiles () {
         }
         const all = getProfiles().filter(function (p) { return p.id !== profile.id })
         saveProfiles(all)
+        if (profile.id === defaultWorkspaceProfile) {
+          defaultWorkspaceProfile = ''
+          settings.set('defaultWorkspaceProfile', null)
+        }
         try {
           const keys = ['taskRestoreData', 'workspaceRestoreData']
           keys.forEach(function (k) {
@@ -871,7 +965,7 @@ function addProfile () {
 renderProfiles()
 
 /* =====================================================================
-   Simple preference tabs (Editor / Terminal / Workspace / Documents)
+   Simple preference tabs (Editor / Terminal)
    ===================================================================== */
 
 function bindNumberField (inputId, key, fallback, min, max) {
@@ -908,51 +1002,12 @@ function bindCheckboxField (inputId, key) {
   })
 }
 
-function bindSelectField (inputId, key, fallback, widget) {
-  var el = document.getElementById(inputId)
-  settings.get(key, function (value) {
-    el.value = value || fallback
-    if (widget) widget.sync()
-  })
-  el.addEventListener('change', function () {
-    settings.set(key, el.value)
-  })
-}
-
 bindNumberField('editor-font-size', 'editorFontSize', 13, 8, 40)
 bindNumberField('editor-tab-size', 'editorTabSize', 2, 1, 8)
 bindCheckboxField('editor-word-wrap', 'editorWordWrap')
 
 bindNumberField('terminal-font-size', 'terminalFontSize', 13, 8, 40)
 bindTextField('terminal-shell', 'terminalShell')
-
-/* workspace defaults: pick which profile a new workspace starts on */
-var defaultProfileSelect = document.getElementById('workspace-default-profile')
-var defaultProfileSearch = makeSearchableSelect(defaultProfileSelect)
-function populateDefaultProfileSelect () {
-  defaultProfileSelect.textContent = ''
-  var noneOpt = document.createElement('option')
-  noneOpt.value = ''
-  noneOpt.textContent = l('taskProfileDefault')
-  defaultProfileSelect.appendChild(noneOpt)
-  getProfiles().forEach(function (p) {
-    var opt = document.createElement('option')
-    opt.value = p.id
-    opt.textContent = p.name
-    defaultProfileSelect.appendChild(opt)
-  })
-  settings.get('defaultWorkspaceProfile', function (value) {
-    defaultProfileSelect.value = value || ''
-    defaultProfileSearch.sync()
-  })
-}
-defaultProfileSelect.addEventListener('change', function () {
-  settings.set('defaultWorkspaceProfile', defaultProfileSelect.value || null)
-})
-populateDefaultProfileSelect()
-
-var docsModeSearch = makeSearchableSelect(document.getElementById('docs-default-mode'))
-bindSelectField('docs-default-mode', 'docsDefaultMode', 'wysiwyg', docsModeSearch)
 
 /* =====================================================================
    Figma engine (global controls)

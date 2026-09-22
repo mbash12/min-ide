@@ -495,6 +495,14 @@ body.dark-mode .pro-button-primary {
   border-radius: 10px;
   background: var(--ps-surface);
 }
+.pro-provider-row.disabled .pro-provider-avatar,
+.pro-provider-row.disabled .pro-provider-name,
+.pro-provider-row.disabled .pro-provider-key {
+  opacity: 0.45;
+}
+.pro-provider-row .pro-switch {
+  margin-left: 4px;
+}
 .pro-provider-avatar {
   display: inline-flex;
   align-items: center;
@@ -573,6 +581,10 @@ body.dark-mode .pro-button-primary {
 }
 .profile-delete {
   color: var(--ps-danger);
+}
+.profile-default-star.active {
+  color: var(--ps-accent);
+  opacity: 1;
 }
 
 .profiles-default-row {

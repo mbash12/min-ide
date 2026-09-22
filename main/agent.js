@@ -388,8 +388,20 @@ function scheduleAgentPrefsSave () {
 /* Provider/agent configuration lives in the central DB (kv scopes
  * 'provider_config' and 'ai_config'); Min's settings are only a fallback and
  * an upgrade path - a settings value found there is migrated into the DB. */
+/* a disabled provider keeps its stored key (so it can be re-enabled without
+re-entering it) but is invisible to the runtime: no key is installed, no
+auth.json entry, and its models drop out of the catalog */
+function isProviderDisabled (provider) {
+  try {
+    return !!kvGet('provider_config', provider + 'Disabled')
+  } catch (e) {
+    return false
+  }
+}
+
 function getProviderApiKey (provider) {
   provider = provider || 'openrouter'
+  if (isProviderDisabled(provider)) return null
   try {
     const fromDb = kvGet('provider_config', provider + 'ApiKey')
     if (fromDb) return fromDb
@@ -411,7 +423,10 @@ function getAllProviderKeys () {
     const all = kvList('provider_config')
     Object.keys(all).forEach(function (kvKey) {
       if (kvKey.endsWith('ApiKey') && all[kvKey]) {
-        keys[kvKey.slice(0, -'ApiKey'.length)] = all[kvKey]
+        const provider = kvKey.slice(0, -'ApiKey'.length)
+        if (!isProviderDisabled(provider)) {
+          keys[provider] = all[kvKey]
+        }
       }
     })
   } catch (e) {}
