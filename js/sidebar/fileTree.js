@@ -151,7 +151,11 @@ function attachClick (row, entry, children, fullPath, depth) {
       // clicking the same file row again pins its tab, matching
       // double-click-to-pin in VSCode
       if (fullPath === lastOpenedFilePath) {
-        const tabId = editorView.findPinnedTab(fullPath) || editorView.findPreviewTab()
+        // only pin when the preview actually shows this file; it may be a
+        // diff tab by now, which pins itself on double-click instead
+        const previewId = editorView.findPreviewTab()
+        const tabId = editorView.findPinnedTab(fullPath) ||
+          (previewId && editorView.getFilePath(previewId) === fullPath ? previewId : null)
         if (tabId) {
           editorView.pinTab(tabId)
         }

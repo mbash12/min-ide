@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <!-- title is set in JS -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="script-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'"
+    />
+    <link rel="stylesheet" href="../editor/monaco/vs/editor/editor.main.css" />
+    <link rel="stylesheet" href="diff.css" />
+  </head>
+  <body>
+    <div id="diff-loading">
+      <span data-string="editorLoading"></span>
+    </div>
+    <div id="diff-error" hidden>
+      <i class="i carbon:warning-alt editor-error-icon"></i>
+      <span id="diff-error-text"></span>
+    </div>
+    <div id="diff-container"></div>
+    <script src="../../dist/localization.build.js"></script>
+    <script src="../editor/monaco/vs/loader.js"></script>
+    <script src="diff.js"></script>
+  </body>
+</html>

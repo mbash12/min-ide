@@ -853,11 +853,6 @@ Branches/Graph sections; it scrolls independently */
 .git-file-row:hover { background: rgba(0,0,0,0.06); }
 body.dark-mode .git-file-row:hover { background: rgba(255,255,255,0.08); }
 
-/* a file's working tree diff, shown under its row when the row is clicked */
-.git-file-entry .git-graph-diff {
-  margin: 4px 8px 8px 20px;
-  max-height: 320px;
-}
 .git-file-label {
   flex: 1;
   overflow: hidden;
@@ -1292,46 +1287,15 @@ body.dark-mode .git-graph-detail {
   margin-top: 2px;
   word-break: break-word;
 }
-.git-graph-diff {
+/* files touched by a commit, listed inside its expanded graph row */
+.git-commit-files {
   margin-top: 6px;
-  font-family: 'Cascadia Code', 'Fira Code', 'Droid Sans Mono', monospace;
-  font-size: 11px;
-  max-height: 180px;
-  overflow-y: auto;
-  border: 1px solid rgba(0,0,0,0.08);
-  border-radius: 3px;
 }
-body.dark-mode .git-graph-diff {
-  border-color: rgba(255,255,255,0.08);
-}
-.git-graph-diff-loading,
-.git-graph-diff-empty {
-  padding: 6px 8px;
+.git-commit-files-empty {
+  padding: 4px 0;
   opacity: 0.5;
   font-style: italic;
-}
-.git-graph-diff-hunk {
-  padding: 3px 8px;
-  background: rgba(14,99,156,0.1);
-  color: #0e639c;
-  font-weight: 600;
-}
-body.dark-mode .git-graph-diff-hunk {
-  color: #4fc3f7;
-}
-.git-graph-diff-line {
-  padding: 0 8px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.git-graph-diff-line.added {
-  background: rgba(115,201,145,0.18);
-}
-.git-graph-diff-line.removed {
-  background: rgba(248,81,73,0.15);
-}
-.git-graph-diff-line.context {
-  opacity: 0.75;
+  font-size: 11px;
 }
 
 /* Harmonized typography across sidebar */
@@ -3696,16 +3660,12 @@ drawer, and agent popovers (which mount on document.body) */
 #sidebar .git-graph-detail-refs,
 #sidebar .git-section-empty,
 #sidebar .git-graph-empty,
-#sidebar .git-graph-diff,
+#sidebar .git-commit-files-empty,
 #sidebar .playbook-meta,
 #sidebar .playbook-progress,
 #sidebar .design-toolbar-file,
 #sidebar .design-output,
 #sidebar .design-modal-label,
-#sidebar .git-graph-diff-loading,
-#sidebar .git-graph-diff-empty,
-#sidebar .git-graph-diff-hunk,
-#sidebar .git-graph-diff-line,
 #sidebar .agent-history-item-meta,
 #sidebar .agent-history-item-meta *,
 .agent-context-pop-stats,

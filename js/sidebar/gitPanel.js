@@ -139,7 +139,7 @@ function statusLetterColor (status) {
   if (status === 'added' || status === 'A') return 'var(--git-added, #73c991)'
   if (status === 'deleted' || status === 'D') return 'var(--git-deleted, #f85149)'
   if (status === 'untracked' || status === '?') return 'var(--git-untracked, #73c991)'
-  if (status === 'renamed') return 'var(--git-renamed, #73c991)'
+  if (status === 'renamed' || status === 'R') return 'var(--git-renamed, #73c991)'
   return 'inherit'
 }
 
@@ -387,10 +387,6 @@ function buildSection (title, entries, sectionKey, actions, emptyText) {
 }
 
 function buildFileRow (entry, sectionKey) {
-  // the row and, once opened, its diff live in one wrapper
-  const wrapper = document.createElement('div')
-  wrapper.className = 'git-file-entry'
-
   const row = document.createElement('div')
   row.className = 'git-file-row'
   row.dataset.path = entry.path
@@ -490,10 +486,10 @@ function buildFileRow (entry, sectionKey) {
 
   row.appendChild(actions)
 
-  // click to open the file's diff, like the VS Code source control list.
-  // The row menu still opens the file itself.
+  // click opens the change in a diff tab, like the VS Code source control
+  // list. The row menu still opens the file itself.
   row.addEventListener('click', function () {
-    toggleFileDiff(wrapper, entry, sectionKey)
+    openEntryDiff(entry, sectionKey)
   })
 
   // context menu: stage/unstage/discard/open
@@ -517,29 +513,42 @@ function buildFileRow (entry, sectionKey) {
     remoteMenu.open(menu, e.clientX, e.clientY)
   })
 
-  wrapper.appendChild(row)
-  return wrapper
+  return row
 }
 
-/* the diff currently shown in the changed-files list, so only one is open */
-let openFileDiff = null
+/* clicking a changed file opens it in a diff tab, like VS Code's source
+control view: HEAD vs working tree for unstaged changes, HEAD vs index for
+staged ones. Untracked and conflicted files have no committed counterpart,
+so they open the file itself instead */
+function openEntryDiff (entry, sectionKey) {
+  const editorView = require('editorView.js')
+  const gitRoot = currentGitRoot || currentWorkspacePath
+  const name = entry.path.split(/[\\/]/).pop()
 
-async function toggleFileDiff (wrapper, entry, sectionKey) {
-  if (openFileDiff && openFileDiff.parentNode === wrapper) {
-    openFileDiff.remove()
-    openFileDiff = null
+  if (sectionKey === 'untracked' || sectionKey === 'conflicted') {
+    editorView.openFile(entry.fullPath)
     return
   }
-  if (openFileDiff) {
-    openFileDiff.remove()
-    openFileDiff = null
+
+  if (sectionKey === 'staged') {
+    editorView.openDiff({
+      cwd: gitRoot,
+      resource: entry.fullPath,
+      title: name + ' (Index)',
+      left: { type: 'ref', ref: 'HEAD', path: entry.oldPath || entry.path },
+      right: { type: 'ref', ref: '', path: entry.path }
+    })
+    return
   }
 
-  const viewer = await buildWorkingTreeDiffViewer(entry, sectionKey)
-  // the panel may have been re-rendered while the diff was loading, in which
-  // case this wrapper is detached and the nodes go with it
-  wrapper.appendChild(viewer)
-  openFileDiff = viewer
+  editorView.openDiff({
+    cwd: gitRoot,
+    resource: entry.fullPath,
+    title: name + ' (Working Tree)',
+    left: { type: 'ref', ref: 'HEAD', path: entry.path },
+    right: { type: 'worktree', path: entry.path },
+    editable: true
+  })
 }
 
 async function stageFiles (files) {
@@ -885,118 +894,103 @@ function buildGraphDetail (commit) {
   message.textContent = commit.message
   detail.appendChild(message)
 
-  detail.appendChild(buildDiffViewer(commit))
+  const files = document.createElement('div')
+  files.className = 'git-commit-files'
+  detail.appendChild(files)
+  loadCommitFiles(commit, files)
 
   return detail
 }
 
-/* renders unified diff text as hunk headers and lines; null when there is
-nothing to show. Shared by the commit view and the working tree view. */
-function renderDiffRows (diffText) {
-  const fragment = document.createDocumentFragment()
-  const hunks = []
-  let currentHunk = null
-
-  diffText.split('\n').forEach(function (line) {
-    if (/^@@/.test(line)) {
-      currentHunk = { header: line, lines: [] }
-      hunks.push(currentHunk)
-    } else if (currentHunk && (/^[+\- ]/.test(line) || /^\\/.test(line))) {
-      currentHunk.lines.push(line)
-    }
-  })
-  if (hunks.length === 0) {
-    return null
-  }
-
-  hunks.forEach(function (hunk) {
-    const header = document.createElement('div')
-    header.className = 'git-graph-diff-hunk'
-    header.textContent = hunk.header
-    fragment.appendChild(header)
-    hunk.lines.forEach(function (line) {
-      const row = document.createElement('div')
-      row.className = 'git-graph-diff-line'
-      if (line[0] === '+') row.classList.add('added')
-      else if (line[0] === '-') row.classList.add('removed')
-      else row.classList.add('context')
-      row.textContent = line
-      fragment.appendChild(row)
-    })
-  })
-
-  return fragment
-}
-
-function diffMessage (text) {
-  const el = document.createElement('div')
-  el.className = 'git-graph-diff-empty'
-  el.textContent = text
-  return el
-}
-
-function buildDiffViewer (commit) {
-  const wrap = document.createElement('div')
-  wrap.className = 'git-graph-diff'
+/* the list of files a commit touched, shown in the graph's detail view;
+clicking one opens it as a diff tab against the commit's parent */
+async function loadCommitFiles (commit, container) {
   const loading = document.createElement('div')
-  loading.className = 'git-graph-diff-loading'
-  loading.textContent = 'Loading diff…'
-  wrap.appendChild(loading)
+  loading.className = 'git-commit-files-empty'
+  loading.textContent = l('gitLoadingFiles') || 'Loading files…'
+  container.appendChild(loading)
 
-  // render the diff when it arrives; if the panel has been re-rendered
-  // meanwhile, the stale nodes are discarded with the rest of the panel
   const token = renderToken
-  ipc.invoke('gitCommitDiff', currentGitRoot, commit.hash).then(function (result) {
-    if (token !== renderToken) return
-    empty(wrap)
-    if (!result || result.error || !result.diff) {
-      wrap.appendChild(diffMessage(result && result.error ? result.error : 'No diff'))
+  const cwd = currentGitRoot || currentWorkspacePath
+  try {
+    const result = await ipc.invoke('gitCommitFiles', cwd, commit.hash)
+    // the panel may have been re-rendered while the list was loading
+    if (token !== renderToken || !container.isConnected) return
+    empty(container)
+    if (!result || result.error || !result.files || result.files.length === 0) {
+      const emptyEl = document.createElement('div')
+      emptyEl.className = 'git-commit-files-empty'
+      emptyEl.textContent = (result && result.error) || l('gitNoFiles') || 'No files'
+      container.appendChild(emptyEl)
       return
     }
-    const rows = renderDiffRows(result.diff)
-    wrap.appendChild(rows || diffMessage('No changes in this commit'))
-  }).catch(function (e) {
-    if (token !== renderToken) return
-    empty(wrap)
-    wrap.appendChild(diffMessage(e.message || 'Failed to load diff'))
-  })
-  return wrap
+    result.files.forEach(function (file) {
+      container.appendChild(buildCommitFileRow(commit, file, cwd))
+    })
+  } catch (e) {
+    if (token !== renderToken || !container.isConnected) return
+    empty(container)
+    const errEl = document.createElement('div')
+    errEl.className = 'git-commit-files-empty'
+    errEl.textContent = e.message || 'Failed to load files'
+    container.appendChild(errEl)
+  }
 }
 
-/* the diff of one file in the working tree, shown under its row in the
-changed-files list */
-async function buildWorkingTreeDiffViewer (entry, sectionKey) {
-  const wrap = document.createElement('div')
-  wrap.className = 'git-graph-diff'
+function buildCommitFileRow (commit, file, cwd) {
+  const row = document.createElement('div')
+  row.className = 'git-file-row git-commit-file-row'
 
-  if (sectionKey === 'untracked') {
-    // git has nothing to diff against until the file is staged
-    wrap.appendChild(diffMessage('Untracked file — stage it to see a diff'))
-    return wrap
-  }
+  const name = file.path.split(/[\\/]/).pop()
+  const icon = document.createElement('img')
+  icon.className = 'file-tree-icon'
+  icon.src = fileIcons.pathPrefix + fileIcons.getIcon(name)
+  icon.alt = ''
+  icon.draggable = false
+  row.appendChild(icon)
 
-  wrap.appendChild(diffMessage('Loading diff…'))
-  const token = renderToken
-  try {
-    const result = await ipc.invoke('gitDiff', currentGitRoot, entry.path, sectionKey === 'staged')
-    if (token !== renderToken) return wrap
-    empty(wrap)
-    if (!result || result.error || !result.diff) {
-      wrap.appendChild(diffMessage(result && result.error ? result.error : 'No changes'))
-      return wrap
-    }
-    const rows = renderDiffRows(result.diff)
-    if (rows) {
-      wrap.appendChild(rows)
-    } else {
-      wrap.appendChild(diffMessage('No changes'))
-    }
-  } catch (e) {
-    if (token !== renderToken) return wrap
-    empty(wrap)
-    wrap.appendChild(diffMessage(e.message || 'Failed to load diff'))
+  const label = document.createElement('span')
+  label.className = 'git-file-label'
+  label.title = file.oldPath ? file.oldPath + ' → ' + file.path : file.path
+  const fileName = document.createElement('span')
+  fileName.className = 'git-file-name'
+  fileName.textContent = name
+  label.appendChild(fileName)
+  const dirPart = file.path.split(/[\\/]/)
+  dirPart.pop()
+  if (dirPart.length) {
+    const parentPath = document.createElement('span')
+    parentPath.className = 'git-file-path'
+    parentPath.textContent = dirPart.join('/')
+    label.appendChild(parentPath)
   }
-  return wrap
+  row.appendChild(label)
+
+  const statusBadge = document.createElement('span')
+  statusBadge.className = 'git-status-badge'
+  statusBadge.textContent = file.status
+  statusBadge.style.color = statusLetterColor(file.status)
+  row.appendChild(statusBadge)
+
+  row.addEventListener('click', function () {
+    openCommitFileDiff(commit, file, cwd)
+  })
+
+  return row
+}
+
+/* a file inside a commit opens as a diff against the commit's parent; for
+root commits or files added/deleted by it, the missing side renders empty */
+function openCommitFileDiff (commit, file, cwd) {
+  const editorView = require('editorView.js')
+  const name = file.path.split(/[\\/]/).pop()
+  editorView.openDiff({
+    cwd: cwd,
+    resource: cwd + '/' + file.path,
+    title: name + ' (' + commit.shortHash + ')',
+    left: { type: 'ref', ref: commit.hash + '^', path: file.oldPath || file.path },
+    right: { type: 'ref', ref: commit.hash, path: file.path }
+  })
 }
 
 function buildGraphSection () {

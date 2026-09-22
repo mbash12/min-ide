@@ -519,6 +519,7 @@ ipc.on('setViewResource', function (e, args) {
   if (state) {
     state.resource = args.resource || null
     state.rootPath = args.rootPath || null
+    state.extra = args.extra || null
   }
 })
 

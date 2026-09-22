@@ -16,6 +16,7 @@ const editorView = require('editorView.js')
 /* lead icons for the fork's internal surfaces (they never emit a favicon event) */
 const internalKindIcons = {
   editor: 'carbon:code',
+  diff: 'carbon:compare',
   terminal: 'carbon:terminal',
   document: 'carbon:document'
 }
@@ -216,7 +217,7 @@ const tabBar = {
 
     // double-clicking a preview tab pins it (like in VSCode)
     tabEl.addEventListener('dblclick', function (e) {
-      if (!editorView.isEditorTab(data.id)) {
+      if (!editorView.isEditorTab(data.id) && !editorView.isDiffTab(data.id)) {
         return
       }
       editorView.pinTab(data.id)

@@ -36,6 +36,9 @@ class TabList {
       // URL does not have to carry it - see HANDOVER §13.
       kind: tab.kind || 'web',
       resource: tab.resource || null,
+      // FORK: diff tabs keep the comparison they show here (refs + paths,
+      // no contents), so the page can re-resolve it after a restore
+      diff: tab.diff || null,
     }
 
     if (options.atEnd) {

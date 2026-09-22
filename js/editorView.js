@@ -5,6 +5,7 @@ preview tab; double-clicking the tab (or its file row) pins it, so it stops
 being replaced and behaves like a regular tab. */
 
 const EDITOR_BASE = 'min://app/pages/editor/index.html'
+const DIFF_BASE = 'min://app/pages/diff/index.html'
 
 const editorView = {
   /* the URL of an editor tab. It is deliberately generic: the file lives in
@@ -23,12 +24,21 @@ const editorView = {
     return editorView.isEditorTabData(tabs.get(tabId))
   },
 
+  /* diff tabs show a git comparison instead of a plain file */
+  isDiffTabData: function (tab) {
+    return !!tab && tab.kind === 'diff'
+  },
+
+  isDiffTab: function (tabId) {
+    return editorView.isDiffTabData(tabs.get(tabId))
+  },
+
   /* The editor page reports its dirty state through the view IPC bridge. Keep
   the confirmation here so every host action (close, profile switch, archive,
   and preview replacement) uses the same small guard. */
   isDirty: function (tabId) {
     const webviews = require('webviews.js')
-    return editorView.isEditorTab(tabId) && webviews.isEditorDirty(tabId)
+    return (editorView.isEditorTab(tabId) || editorView.isDiffTab(tabId)) && webviews.isEditorDirty(tabId)
   },
   confirmDiscard: function (tabId) {
     if (!editorView.isDirty(tabId)) {
@@ -71,10 +81,11 @@ const editorView = {
     })?.id || null
   },
 
-  /* the current preview tab of the selected task, or null */
+  /* the current preview tab of the selected task, or null. Editor and diff
+  tabs share one slot, like VSCode's single preview editor */
   findPreviewTab: function () {
     return tabs.get().find(function (tab) {
-      return tab.preview && editorView.isEditorTabData(tab)
+      return tab.preview && (editorView.isEditorTabData(tab) || editorView.isDiffTabData(tab))
     })?.id || null
   },
 
@@ -107,7 +118,8 @@ const editorView = {
       }
       const url = editorView.getEditorURL()
       editorView.allowDiscard(previewId)
-      tabs.update(previewId, { url: url, kind: 'editor', resource: filePath })
+      // a diff preview may be repurposed here; drop its descriptor
+      tabs.update(previewId, { url: url, kind: 'editor', resource: filePath, diff: null })
       // the URL does not change, so the view has to be told about the new file
       // and reloaded for the page to pick it up
       require('webviews.js').updateResource(previewId)
@@ -138,6 +150,55 @@ const editorView = {
     if (tabs.get(tabId)?.preview) {
       tabs.update(tabId, { preview: false })
     }
+  },
+
+  /* opens a git diff as an editor tab, reusing the shared preview slot.
+  desc: { cwd, resource, title, left: {type, ref, path}, right: {...},
+  editable } - the descriptor is stored on the tab so a restored session
+  re-resolves the contents instead of keeping them in the saved state */
+  openDiff: function (desc) {
+    const browserUI = require('browserUI.js')
+    const key = JSON.stringify(desc)
+
+    // the same diff is already open (preview or pinned): just focus it
+    const existing = tabs.get().find(function (tab) {
+      return editorView.isDiffTabData(tab) && tab.diff && JSON.stringify(tab.diff) === key
+    })
+    if (existing) {
+      browserUI.switchToTab(existing.id)
+      return existing.id
+    }
+
+    const previewId = editorView.findPreviewTab()
+
+    if (previewId) {
+      if (!editorView.confirmDiscard(previewId)) {
+        return previewId
+      }
+      editorView.allowDiscard(previewId)
+      tabs.update(previewId, { url: DIFF_BASE, kind: 'diff', resource: desc.resource, diff: desc })
+      // the URL does not change, so the view has to be told about the new
+      // resource (and the new diff extras) and reloaded
+      require('webviews.js').updateResource(previewId)
+      require('webviews.js').update(previewId, DIFF_BASE)
+      browserUI.switchToTab(previewId)
+      return previewId
+    }
+
+    const tabId = tabs.add({
+      url: DIFF_BASE,
+      kind: 'diff',
+      resource: desc.resource,
+      private: false
+    })
+
+    // tabs.add() drops unknown properties, so preview and the descriptor
+    // have to be set afterwards
+    tabs.update(tabId, { preview: true, diff: desc })
+
+    browserUI.addTab(tabId, { enterEditMode: false })
+
+    return tabId
   }
 }
 

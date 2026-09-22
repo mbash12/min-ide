@@ -263,6 +263,8 @@
     "gitCheckoutCommit": "Checkout Commit (detached HEAD)",
     "gitCheckoutCommitConfirm": "Checkout commit %s? You will be in detached HEAD state.",
     "gitCopyHash": "Copy Commit Hash",
+    "gitLoadingFiles": "Loading files…",
+    "gitNoFiles": "No files",
     /* code editor */
     "editorTitle": "Editor",
     "editorLoading": "Loading…",

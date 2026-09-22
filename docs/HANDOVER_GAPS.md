@@ -206,7 +206,7 @@ Yang sudah sesuai: Files/Git disembunyikan saat tanpa path, Docs/Notes tetap tam
 
 ## §20 Git
 
-Semua item sudah ada, termasuk **diff working tree**: klik baris file menampilkan diff-nya di bawah baris itu lewat `ipc.invoke('gitDiff', …)` (`js/sidebar/gitPanel.js`), dengan satu diff terbuka pada satu waktu. Renderer diff dipakai bersama dengan tampilan commit (`renderDiffRows`). Untuk file untracked panel menampilkan catatan agar di-stage dulu, karena git tidak punya pembanding sebelum itu; "Open File" tetap tersedia di menu klik-kanan baris.
+Semua item sudah ada, termasuk **diff seperti VSCode**: klik baris file di Changes membuka tab diff Monaco (`pages/diff/`) lewat `editorView.openDiff` — HEAD↔working tree untuk unstaged (sisi kanan bisa diedit), HEAD↔index untuk staged. File untracked/conflicted membuka file biasa. Klik commit di graph menampilkan list file-nya (`gitCommitFiles`), dan klik file membuka diff tab parent↔commit. Tab diff memakai slot preview yang sama dengan editor dan descriptor-nya tersimpan di tab (`tab.diff`) sehingga konten di-resolve ulang saat restore.
 
 Item §20 lainnya sudah ada, termasuk deteksi repo untuk workspace di subfolder (`main/git.js:58-77,199-216`), stage/unstage, commit, branch, checkout, pull/push/sync, conflict indicator, dan refresh.
 

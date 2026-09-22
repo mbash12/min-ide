@@ -106,8 +106,8 @@ module.exports = {
         return
       }
 
-      // if the current tab is an editor tab, save the file being edited
-      if (require('editorView.js').isEditorTab(tabs.getSelected())) {
+      // if the current tab is an editor or diff tab, save the file being edited
+      if (require('editorView.js').isEditorTab(tabs.getSelected()) || require('editorView.js').isDiffTab(tabs.getSelected())) {
         webviews.callAsync(tabs.getSelected(), 'executeJavaScript', 'window.editorSave && window.editorSave()')
         return
       }

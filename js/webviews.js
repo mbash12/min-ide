@@ -212,10 +212,14 @@ const webviews = {
         extra.shell = tab.terminalShell || null
         extra.fontSize = settings.get('terminalFontSize')
       }
-      if (tab.kind === 'editor') {
+      if (tab.kind === 'editor' || tab.kind === 'diff') {
         extra.fontSize = settings.get('editorFontSize')
         extra.tabSize = settings.get('editorTabSize')
         extra.wordWrap = settings.get('editorWordWrap')
+      }
+      if (tab.kind === 'diff') {
+        // the comparison the diff page shows, stored on the tab itself
+        extra.diff = tab.diff || null
       }
       if (tab.kind === 'document' || tab.kind === 'note') {
         extra.defaultMode = settings.get('docsDefaultMode')
@@ -233,7 +237,8 @@ const webviews = {
     ipc.send('setViewResource', {
       id: tabId,
       resource: viewResource.resource,
-      rootPath: viewResource.rootPath
+      rootPath: viewResource.rootPath,
+      extra: viewResource.extra
     })
   },
   add: function (tabId, existingViewId) {

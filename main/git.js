@@ -1,4 +1,4 @@
-/* global fs, path, ipc, isPathInside, getProviderApiKey, getAgentSetting, loadPiSdk, installProviderKeys, PROVIDER_LABELS */
+/* global fs, path, ipc, isPathInside, getViewResource, getViewIdForContents, maxEditorFileSize, getProviderApiKey, getAgentSetting, loadPiSdk, installProviderKeys, PROVIDER_LABELS */
 /* git integration for the sidebar Source Control panel.
 fs, path and ipc are provided by main.js (concatenated bundle).
 Uses the system `git` binary via child_process.
@@ -165,10 +165,14 @@ function parsePorcelain (cwd, output) {
     // handle renames: "R  original -> new"
     var arrowIdx = filePart.indexOf(' -> ')
     var filePath = arrowIdx !== -1 ? filePart.slice(arrowIdx + 4) : filePart
+    var oldPath = arrowIdx !== -1 ? filePart.slice(0, arrowIdx).trim() : null
     filePath = filePath.trim()
     // strip quotes if git quoted
     if (filePath[0] === '"' && filePath[filePath.length - 1] === '"') {
       try { filePath = JSON.parse(filePath) } catch (e) {}
+    }
+    if (oldPath && oldPath[0] === '"' && oldPath[oldPath.length - 1] === '"') {
+      try { oldPath = JSON.parse(oldPath) } catch (e) {}
     }
     var fullPath = path.join(cwd, filePath)
 
@@ -191,10 +195,10 @@ function parsePorcelain (cwd, output) {
     var hasUnstaged = y !== ' ' && y !== '?' && y !== '!'
 
     if (hasStaged) {
-      staged.push({ path: filePath, fullPath: fullPath, status: stagedStatus(x), x: x, y: y, raw: line })
+      staged.push({ path: filePath, fullPath: fullPath, status: stagedStatus(x), oldPath: oldPath, x: x, y: y, raw: line })
     }
     if (hasUnstaged) {
-      unstaged.push({ path: filePath, fullPath: fullPath, status: unstagedStatus(y), x: x, y: y, raw: line })
+      unstaged.push({ path: filePath, fullPath: fullPath, status: unstagedStatus(y), oldPath: oldPath, x: x, y: y, raw: line })
     }
     // If both staged and unstaged for same file, it will appear in both lists (VSCode does similar)
     // But if file is only staged or only unstaged, it goes to one list
@@ -376,16 +380,82 @@ ipc.handle('gitCommit', async function (e, cwd, message) {
   return null
 })
 
-ipc.handle('gitDiff', async function (e, cwd, filePath, staged) {
-  if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
-  var safe = sanitizeRepoFiles(cwd, [filePath])
+/* the repo a diff/editor view may touch: the git root has to be the
+workspace folder or one of its ancestors/descendants, so a page cannot read
+or write inside an unrelated repository */
+function repoAllowedForSender (sender, cwd) {
+  if (!sender || sender.isDestroyed() || !isDirectoryPath(cwd)) return false
+  var view = getViewResource(getViewIdForContents(sender))
+  var ws = view && view.rootPath
+  if (!ws) return false
+  var root = path.resolve(cwd)
+  var work = path.resolve(ws)
+  return root === work || isPathInside(root, work) || isPathInside(work, root)
+}
+
+/* file content at a git ref ('HEAD', a commit hash, '' for the index).
+Missing paths return an error; callers treat them as an empty side. */
+ipc.handle('gitFileAtRef', async function (e, cwd, ref, relPath) {
+  if (!repoAllowedForSender(e.sender, cwd)) return { error: 'Invalid path' }
+  if (ref && !isSafeGitRef(ref)) return { error: 'Invalid ref' }
+  var safe = sanitizeRepoFiles(cwd, [relPath])
   if (!safe) return { error: 'Invalid path' }
-  var args = ['diff', '--no-color']
-  if (staged) args.push('--staged')
-  args.push('--', safe[0])
-  var r = await runGit(cwd, args)
-  if (r.status !== 0) return { error: r.stderr || 'git diff failed' }
-  return { diff: r.stdout }
+  var r = await runGit(cwd, ['show', (ref || '') + ':' + safe[0]])
+  if (r.status !== 0) return { error: r.stderr || 'git show failed' }
+  if (r.stdout.indexOf('\0') !== -1) return { error: 'Binary file' }
+  return { content: r.stdout }
+})
+
+/* working tree file inside the repo (may live outside the workspace root
+when the repo root is an ancestor of it) */
+ipc.handle('gitWorktreeRead', async function (e, cwd, relPath) {
+  if (!repoAllowedForSender(e.sender, cwd)) return { error: 'Invalid path' }
+  var safe = sanitizeRepoFiles(cwd, [relPath])
+  if (!safe) return { error: 'Invalid path' }
+  var full = path.resolve(cwd, safe[0])
+  try {
+    var stat = fs.lstatSync(full)
+    if (!stat.isFile()) return { error: 'Not a regular file' }
+    if (stat.size > maxEditorFileSize) return { error: 'File is too large' }
+    var content = fs.readFileSync(full, 'utf8')
+    if (content.indexOf('\0') !== -1) return { error: 'Binary file' }
+    return { content: content }
+  } catch (err) {
+    return { error: err.message || 'Failed to read file' }
+  }
+})
+
+ipc.handle('gitWorktreeWrite', async function (e, cwd, relPath, content) {
+  if (!repoAllowedForSender(e.sender, cwd)) return 'Invalid path'
+  var safe = sanitizeRepoFiles(cwd, [relPath])
+  if (!safe || typeof content !== 'string') return 'Invalid path'
+  try {
+    fs.writeFileSync(path.resolve(cwd, safe[0]), content, 'utf8')
+    return null
+  } catch (err) {
+    return err.message || 'Write failed'
+  }
+})
+
+/* files changed by a commit: status letter + path (+ old path for renames),
+drives the commit file list in the sidebar */
+ipc.handle('gitCommitFiles', async function (e, cwd, hash) {
+  if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
+  if (!isSafeGitRef(hash)) return { error: 'Commit hash required' }
+  // -m --first-parent: merges otherwise produce no name-status output at
+  // all; this lists files changed against the first parent, matching the
+  // hash^ side the diff tab opens
+  var r = await runGit(cwd, ['show', '--format=', '--name-status', '-M', '-m', '--first-parent', '--no-color', hash])
+  if (r.status !== 0) return { error: r.stderr || 'git show failed' }
+  var files = r.stdout.split('\n').filter(Boolean).map(function (line) {
+    var parts = line.split('\t')
+    var status = parts[0] || ''
+    if ((status[0] === 'R' || status[0] === 'C') && parts.length >= 3) {
+      return { status: status[0], path: parts[2], oldPath: parts[1] }
+    }
+    return { status: status[0], path: parts[1] }
+  }).filter(function (f) { return f.path })
+  return { files: files }
 })
 
 /* commit message generation goes through the pi SDK ModelRuntime so any
@@ -452,19 +522,6 @@ ipc.handle('gitGenerateCommitMessage', async function (e, cwd) {
   } catch (err) {
     return { error: (err && err.message) || String(err) }
   }
-})
-
-/* full diff of a single commit (for the graph's detail view) */
-ipc.handle('gitCommitDiff', async function (e, cwd, hash) {
-  if (!isDirectoryPath(cwd)) return { error: 'Invalid path' }
-  if (!isSafeGitRef(hash)) return { error: 'Commit hash required' }
-  var r = await runGit(cwd, ['show', '--no-color', '--format=', '--no-renames', hash])
-  if (r.status !== 0) {
-    // fall back to plain git show for root commits / exotic cases
-    r = await runGit(cwd, ['show', '--no-color', hash])
-  }
-  if (r.status !== 0) return { error: r.stderr || 'git show failed' }
-  return { diff: r.stdout }
 })
 
 ipc.handle('gitLog', async function (e, cwd, limit) {

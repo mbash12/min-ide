@@ -47,5 +47,33 @@ window.addEventListener('message', function (e) {
         result: result
       }, window.location.toString())
     })
+  } else if (data.message === 'editor-git-show') {
+    // file content at a git ref ('' = index); used by the diff page
+    ipc.invoke('gitFileAtRef', data.cwd, data.ref, data.path).then(function (result) {
+      window.postMessage({
+        message: 'editor-result',
+        requestId: requestId,
+        originalMessage: data.message,
+        result: result
+      }, window.location.toString())
+    })
+  } else if (data.message === 'editor-git-read') {
+    ipc.invoke('gitWorktreeRead', data.cwd, data.path).then(function (result) {
+      window.postMessage({
+        message: 'editor-result',
+        requestId: requestId,
+        originalMessage: data.message,
+        result: result
+      }, window.location.toString())
+    })
+  } else if (data.message === 'editor-git-write') {
+    ipc.invoke('gitWorktreeWrite', data.cwd, data.path, data.content).then(function (result) {
+      window.postMessage({
+        message: 'editor-result',
+        requestId: requestId,
+        originalMessage: data.message,
+        result: result
+      }, window.location.toString())
+    })
   }
 })
