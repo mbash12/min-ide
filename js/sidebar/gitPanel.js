@@ -872,24 +872,8 @@ function buildGraphDetail (commit) {
   const detail = document.createElement('div')
   detail.className = 'git-graph-detail'
 
-  const meta = document.createElement('div')
-  meta.className = 'git-graph-detail-meta'
-  const hash = document.createElement('span')
-  hash.className = 'git-graph-detail-hash'
-  hash.textContent = commit.shortHash
-  meta.appendChild(hash)
-  const author = document.createElement('span')
-  author.className = 'git-graph-detail-author'
-  author.textContent = commit.author + ' · ' + compactDate(commit.date)
-  meta.appendChild(author)
-  if (commit.refs) {
-    const refs = document.createElement('span')
-    refs.className = 'git-graph-detail-refs'
-    refs.textContent = commit.refs
-    meta.appendChild(refs)
-  }
-  detail.appendChild(meta)
-
+  // hash/author/date/refs are already on the row itself; the detail keeps
+  // the full message (the row truncates it) plus the commit's file list
   const message = document.createElement('div')
   message.className = 'git-graph-detail-message'
   message.textContent = commit.message
