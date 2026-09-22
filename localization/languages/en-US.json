@@ -265,6 +265,7 @@
     "gitCopyHash": "Copy Commit Hash",
     "gitLoadingFiles": "Loading files…",
     "gitNoFiles": "No files",
+    "diffNoImage": "No image on this side",
     /* code editor */
     "editorTitle": "Editor",
     "editorLoading": "Loading…",

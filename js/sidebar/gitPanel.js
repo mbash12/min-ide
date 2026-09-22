@@ -536,8 +536,8 @@ function openEntryDiff (entry, sectionKey) {
       cwd: gitRoot,
       resource: entry.fullPath,
       title: name + ' (Index)',
-      left: { type: 'ref', ref: 'HEAD', path: entry.oldPath || entry.path },
-      right: { type: 'ref', ref: '', path: entry.path }
+      left: { type: 'ref', ref: 'HEAD', path: entry.oldPath || entry.path, label: 'HEAD' },
+      right: { type: 'ref', ref: '', path: entry.path, label: 'Index' }
     })
     return
   }
@@ -546,8 +546,8 @@ function openEntryDiff (entry, sectionKey) {
     cwd: gitRoot,
     resource: entry.fullPath,
     title: name + ' (Working Tree)',
-    left: { type: 'ref', ref: 'HEAD', path: entry.path },
-    right: { type: 'worktree', path: entry.path },
+    left: { type: 'ref', ref: 'HEAD', path: entry.path, label: 'HEAD' },
+    right: { type: 'worktree', path: entry.path, label: 'Working Tree' },
     editable: true
   })
 }
@@ -973,8 +973,8 @@ function openCommitFileDiff (commit, file, cwd) {
     cwd: cwd,
     resource: cwd + '/' + file.path,
     title: name + ' (' + commit.shortHash + ')',
-    left: { type: 'ref', ref: commit.hash + '^', path: file.oldPath || file.path },
-    right: { type: 'ref', ref: commit.hash, path: file.path }
+    left: { type: 'ref', ref: commit.hash + '^', path: file.oldPath || file.path, label: commit.shortHash + '^' },
+    right: { type: 'ref', ref: commit.hash, path: file.path, label: commit.shortHash }
   })
 }
 

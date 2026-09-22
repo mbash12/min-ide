@@ -49,7 +49,7 @@ window.addEventListener('message', function (e) {
     })
   } else if (data.message === 'editor-git-show') {
     // file content at a git ref ('' = index); used by the diff page
-    ipc.invoke('gitFileAtRef', data.cwd, data.ref, data.path).then(function (result) {
+    ipc.invoke('gitFileAtRef', data.cwd, data.ref, data.path, data.binary === true).then(function (result) {
       window.postMessage({
         message: 'editor-result',
         requestId: requestId,
@@ -58,7 +58,7 @@ window.addEventListener('message', function (e) {
       }, window.location.toString())
     })
   } else if (data.message === 'editor-git-read') {
-    ipc.invoke('gitWorktreeRead', data.cwd, data.path).then(function (result) {
+    ipc.invoke('gitWorktreeRead', data.cwd, data.path, data.binary === true).then(function (result) {
       window.postMessage({
         message: 'editor-result',
         requestId: requestId,

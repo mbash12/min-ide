@@ -50,6 +50,35 @@ function basename (filePath) {
   return String(filePath || '').split(/[\\/]/).pop()
 }
 
+/* image formats render as side-by-side pictures instead of the text diff
+editor (same table as main/editorFileIO.js) */
+const imageMimeTypes = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  svg: 'image/svg+xml'
+}
+
+function imageMimeForPath (filePath) {
+  const fileName = basename(filePath).toLowerCase()
+  const ext = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.') + 1) : ''
+  return imageMimeTypes[ext] || null
+}
+
+/* what to call a side on the image view: the descriptor may carry a label
+('HEAD', 'Index', 'Working Tree', a short hash); otherwise derive one */
+function sideLabel (side) {
+  if (!side) return ''
+  if (side.label) return side.label
+  if (side.type === 'worktree') return 'Working Tree'
+  if (side.ref === '') return 'Index'
+  return side.ref || ''
+}
+
 function updateTitle () {
   document.title = ((diffDesc && diffDesc.title) || 'Diff') + (dirty ? ' •' : '')
 }
@@ -204,10 +233,63 @@ async function sideContent (side) {
   }
 }
 
+/* one side of an image comparison -> a data: URL, or null when the file is
+missing on that side (added/deleted) */
+async function sideImage (side, mime) {
+  if (!side || side.type === 'empty') return null
+  try {
+    let result
+    if (side.type === 'worktree') {
+      result = await sendRequest('editor-git-read', { cwd: diffDesc.cwd, path: side.path, binary: true })
+    } else {
+      result = await sendRequest('editor-git-show', { cwd: diffDesc.cwd, ref: side.ref || '', path: side.path, binary: true })
+    }
+    return (result && result.binary && result.content)
+      ? 'data:' + mime + ';base64,' + result.content
+      : null
+  } catch (err) {
+    return null
+  }
+}
+
+function showImages (leftURL, rightURL) {
+  document.getElementById('diff-loading').hidden = true
+  document.getElementById('diff-container').hidden = true
+  const wrap = document.getElementById('diff-images')
+  wrap.hidden = false
+  ;[[diffDesc.left, leftURL], [diffDesc.right, rightURL]].forEach(function (entry) {
+    const pane = document.createElement('div')
+    pane.className = 'diff-image-pane'
+    const label = document.createElement('div')
+    label.className = 'diff-image-label'
+    label.textContent = sideLabel(entry[0])
+    pane.appendChild(label)
+    if (entry[1]) {
+      const img = document.createElement('img')
+      img.src = entry[1]
+      img.alt = sideLabel(entry[0])
+      pane.appendChild(img)
+    } else {
+      const missing = document.createElement('div')
+      missing.className = 'diff-image-missing'
+      missing.textContent = l('diffNoImage') || 'No image on this side'
+      pane.appendChild(missing)
+    }
+    wrap.appendChild(pane)
+  })
+}
+
 async function loadDiff () {
   updateTitle()
   if (!diffDesc || !diffDesc.cwd || !diffDesc.left || !diffDesc.right) {
     showDiffError('(no diff)')
+    return
+  }
+  const mime = imageMimeForPath(diffDesc.right.path || diffDesc.left.path)
+  if (mime) {
+    const leftImg = await sideImage(diffDesc.left, mime)
+    const rightImg = await sideImage(diffDesc.right, mime)
+    showImages(leftImg, rightImg)
     return
   }
   const left = await sideContent(diffDesc.left)

@@ -32,3 +32,55 @@ body {
   width: 32px;
   height: 32px;
 }
+
+/* side-by-side image comparison (image diffs don't use the text editor) */
+#diff-images {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.diff-image-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+.diff-image-pane:last-child {
+  border-right: none;
+}
+
+.diff-image-label {
+  padding: 4px 10px;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  opacity: 0.6;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-image-pane img {
+  flex: 1;
+  min-height: 0;
+  object-fit: contain;
+  padding: 12px;
+  box-sizing: border-box;
+  /* checkerboard so transparent pixels stay visible */
+  background: repeating-conic-gradient(rgba(128, 128, 128, 0.18) 0% 25%, transparent 0% 50%) 0 0 / 16px 16px;
+}
+
+.diff-image-missing {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.4;
+  font-style: italic;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}

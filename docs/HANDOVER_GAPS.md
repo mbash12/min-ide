@@ -206,7 +206,7 @@ Yang sudah sesuai: Files/Git disembunyikan saat tanpa path, Docs/Notes tetap tam
 
 ## §20 Git
 
-Semua item sudah ada, termasuk **diff seperti VSCode**: klik baris file di Changes membuka tab diff Monaco (`pages/diff/`) lewat `editorView.openDiff` — HEAD↔working tree untuk unstaged (sisi kanan bisa diedit), HEAD↔index untuk staged. File untracked/conflicted membuka file biasa. Klik commit di graph menampilkan list file-nya (`gitCommitFiles`), dan klik file membuka diff tab parent↔commit. Tab diff memakai slot preview yang sama dengan editor dan descriptor-nya tersimpan di tab (`tab.diff`) sehingga konten di-resolve ulang saat restore.
+Semua item sudah ada, termasuk **diff seperti VSCode**: klik baris file di Changes membuka tab diff Monaco (`pages/diff/`) lewat `editorView.openDiff` — HEAD↔working tree untuk unstaged (sisi kanan bisa diedit), HEAD↔index untuk staged. File gambar (png/jpg/gif/webp/bmp/ico/svg) tampil side-by-side sebagai gambar, bukan teks. File untracked/conflicted membuka file biasa. Klik commit di graph menampilkan list file-nya (`gitCommitFiles`), dan klik file membuka diff tab parent↔commit. Tab diff memakai slot preview yang sama dengan editor dan descriptor-nya tersimpan di tab (`tab.diff`) sehingga konten di-resolve ulang saat restore.
 
 Item §20 lainnya sudah ada, termasuk deteksi repo untuk workspace di subfolder (`main/git.js:58-77,199-216`), stage/unstage, commit, branch, checkout, pull/push/sync, conflict indicator, dan refresh.
 

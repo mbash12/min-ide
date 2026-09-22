@@ -56,8 +56,12 @@ function runGit (cwd, args, options) {
       resolve({ stdout: '', stderr: err.message || String(err), status: 1, error: err })
       return
     }
-    var stdout = ''
-    var stderr = ''
+    // collect raw buffers so binary output (image diffs) survives intact;
+    // text callers get a utf8 string, binary callers get base64
+    var stdoutChunks = []
+    var stderrChunks = []
+    var stdoutLength = 0
+    var stderrLength = 0
     var settled = false
     var timedOut = false
     var finish = function (result) {
@@ -74,27 +78,35 @@ function runGit (cwd, args, options) {
       kill()
     }, options.timeout || GIT_TIMEOUT_MS)
     proc.stdout.on('data', function (d) {
-      if (stdout.length >= GIT_MAX_BUFFER) return
-      stdout += d
-      if (stdout.length > GIT_MAX_BUFFER) {
-        stdout = stdout.slice(0, GIT_MAX_BUFFER)
+      if (stdoutLength >= GIT_MAX_BUFFER) return
+      stdoutChunks.push(d)
+      stdoutLength += d.length
+      if (stdoutLength > GIT_MAX_BUFFER) {
         kill()
       }
     })
     proc.stderr.on('data', function (d) {
-      if (stderr.length >= GIT_MAX_BUFFER) return
-      stderr += d
-      if (stderr.length > GIT_MAX_BUFFER) {
-        stderr = stderr.slice(0, GIT_MAX_BUFFER)
-      }
+      if (stderrLength >= GIT_MAX_BUFFER) return
+      stderrChunks.push(d)
+      stderrLength += d.length
     })
+    function stdoutText () {
+      var buf = Buffer.concat(stdoutChunks)
+      if (buf.length > GIT_MAX_BUFFER) buf = buf.subarray(0, GIT_MAX_BUFFER)
+      return options.binary ? buf.toString('base64') : buf.toString('utf8')
+    }
+    function stderrText () {
+      var buf = Buffer.concat(stderrChunks)
+      if (buf.length > GIT_MAX_BUFFER) buf = buf.subarray(0, GIT_MAX_BUFFER)
+      return buf.toString('utf8')
+    }
     proc.on('error', function (err) {
-      finish({ stdout: stdout, stderr: stderr || err.message || String(err), status: 1, error: err })
+      finish({ stdout: stdoutText(), stderr: stderrText() || err.message || String(err), status: 1, error: err })
     })
     proc.on('close', function (code) {
       finish({
-        stdout: stdout,
-        stderr: timedOut ? (stderr + '\ngit timed out').trim() : stderr,
+        stdout: stdoutText(),
+        stderr: timedOut ? (stderrText() + '\ngit timed out').trim() : stderrText(),
         status: timedOut ? 1 : code
       })
     })
@@ -395,20 +407,21 @@ function repoAllowedForSender (sender, cwd) {
 
 /* file content at a git ref ('HEAD', a commit hash, '' for the index).
 Missing paths return an error; callers treat them as an empty side. */
-ipc.handle('gitFileAtRef', async function (e, cwd, ref, relPath) {
+ipc.handle('gitFileAtRef', async function (e, cwd, ref, relPath, binary) {
   if (!repoAllowedForSender(e.sender, cwd)) return { error: 'Invalid path' }
   if (ref && !isSafeGitRef(ref)) return { error: 'Invalid ref' }
   var safe = sanitizeRepoFiles(cwd, [relPath])
   if (!safe) return { error: 'Invalid path' }
-  var r = await runGit(cwd, ['show', (ref || '') + ':' + safe[0]])
+  var r = await runGit(cwd, ['show', (ref || '') + ':' + safe[0]], { binary: binary === true })
   if (r.status !== 0) return { error: r.stderr || 'git show failed' }
+  if (binary === true) return { content: r.stdout, binary: true }
   if (r.stdout.indexOf('\0') !== -1) return { error: 'Binary file' }
   return { content: r.stdout }
 })
 
 /* working tree file inside the repo (may live outside the workspace root
 when the repo root is an ancestor of it) */
-ipc.handle('gitWorktreeRead', async function (e, cwd, relPath) {
+ipc.handle('gitWorktreeRead', async function (e, cwd, relPath, binary) {
   if (!repoAllowedForSender(e.sender, cwd)) return { error: 'Invalid path' }
   var safe = sanitizeRepoFiles(cwd, [relPath])
   if (!safe) return { error: 'Invalid path' }
@@ -417,7 +430,9 @@ ipc.handle('gitWorktreeRead', async function (e, cwd, relPath) {
     var stat = fs.lstatSync(full)
     if (!stat.isFile()) return { error: 'Not a regular file' }
     if (stat.size > maxEditorFileSize) return { error: 'File is too large' }
-    var content = fs.readFileSync(full, 'utf8')
+    var buf = fs.readFileSync(full)
+    if (binary === true) return { content: buf.toString('base64'), binary: true }
+    var content = buf.toString('utf8')
     if (content.indexOf('\0') !== -1) return { error: 'Binary file' }
     return { content: content }
   } catch (err) {
