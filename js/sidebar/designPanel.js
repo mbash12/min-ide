@@ -556,7 +556,7 @@ function buildResult (result) {
   return wrap
 }
 
-function connectButton () {
+function cardConnectButton () {
   const btn = el('button', 'design-connect-btn', t('designConnect', 'Connect'))
   btn.type = 'button'
   btn.title = t('designConnectHint', 'Runs the local plugin in the Figma engine.')
@@ -569,7 +569,7 @@ function connectButton () {
   return btn
 }
 
-function showEngineButton () {
+function cardEngineButton () {
   const btn = el('button', 'design-connect-btn', t('designShowEngineSignIn', 'Show engine to sign in'))
   btn.type = 'button'
   btn.title = t('designShowEngineSignInHint', 'Opens the Figma engine window so you can sign in, then Connect again.')
@@ -580,6 +580,36 @@ function showEngineButton () {
     ipc.invoke('figmaEngine:setVisible', { visible: true }).then(refreshStatus)
   })
   return btn
+}
+
+/* Full status text lives here — the header stays a compact icon bar like
+the other sidebar panels, so long phase labels never collide with buttons. */
+function buildStatusCard () {
+  const card = el('div', 'design-status')
+  card.appendChild(el('span', 'design-dot ' + statusDotClass()))
+
+  const copy = el('div', 'design-status-copy')
+  const label = el('div', 'design-status-label', statusCopy())
+  label.title = label.textContent
+  copy.appendChild(label)
+  // Only states with a real detail line get one — the generic
+  // "Engine status: %s" would just repeat the label.
+  const name = lifecycleState()
+  const detail = statusDetail()
+  if (detail && detail !== statusCopy() &&
+      (name === 'connected' || name === 'plugin-disconnected' || name === 'error')) {
+    copy.appendChild(el('div', 'design-status-detail', detail))
+  }
+  card.appendChild(copy)
+
+  const actions = el('div', 'design-status-actions')
+  const isFigma = !!(activeParsed() && activeParsed().isFigmaFile)
+  if (needsLogin()) actions.appendChild(cardEngineButton())
+  if ((isFigma && !connectedToSelected()) || connectedTabIsLoading() || needsLogin()) {
+    actions.appendChild(cardConnectButton())
+  }
+  if (actions.childNodes.length) card.appendChild(actions)
+  return card
 }
 
 function contextRow (label, value, empty) {
@@ -627,31 +657,39 @@ function buildHeader () {
   const header = el('div', 'file-tree-header design-header')
   header.appendChild(el('div', 'file-tree-title', t('sidebarDesign', 'Design')))
 
-  const status = el('div', 'design-toolbar-status')
-  status.title = statusDetail()
-  status.appendChild(el('span', 'design-dot ' + statusDotClass()))
-  const copy = el('span', 'design-toolbar-copy')
-  copy.appendChild(el('span', 'design-toolbar-label', statusCopy()))
-  status.appendChild(copy)
-  header.appendChild(status)
+  // At-a-glance status dot; the label lives in the body status card so the
+  // header stays a clean icon bar and never truncates long phase text.
+  const dot = el('span', 'design-dot design-header-dot ' + statusDotClass())
+  dot.title = statusDetail()
+  header.appendChild(dot)
 
   const actions = el('div', 'file-tree-header-actions')
   const isFigma = !!(activeParsed() && activeParsed().isFigmaFile)
   const scoped = connectedToSelected()
-  const stuck = !!(activeParsed() && activeParsed().isFigmaFile && connectedTabIsLoading())
+  const stuck = !!(isFigma && connectedTabIsLoading())
   const canRun = scoped && pluginReady() && !busy && !needsLogin()
 
   if (needsLogin()) {
-    actions.appendChild(showEngineButton())
+    actions.appendChild(iconButton(
+      'codicon-sign-in',
+      t('designShowEngineSignIn', 'Show engine to sign in'),
+      function () { ipc.invoke('figmaEngine:setVisible', { visible: true }).then(refreshStatus) },
+      busy || !(lastStatus && lastStatus.running)
+    ))
   }
-  if ((isFigma && !scoped) || stuck || needsLogin()) {
-    actions.appendChild(connectButton())
-  }
+  // Connect and disconnect share one slot and the same icon-button style.
   if (scoped) {
     actions.appendChild(iconButton(
       'codicon-debug-disconnect',
       t('designDisconnect', 'Disconnect'),
       disconnectSelectedTab,
+      busy
+    ))
+  } else if (isFigma || stuck || needsLogin()) {
+    actions.appendChild(iconButton(
+      'codicon-plug',
+      t('designConnect', 'Connect'),
+      connectSelectedTab,
       busy
     ))
   }
@@ -691,6 +729,7 @@ function fingerprint () {
     node.id || '',
     node.name || '',
     lastError || '',
+    (lastStatus && lastStatus.phaseError) || '',
     payload && (payload.path || payload.css || payload.textExtract)
       ? String((payload.path || '') + (payload.css || '') + (payload.textExtract || '')).length
       : '',
@@ -710,6 +749,7 @@ function render (force) {
 
   const body = el('div', 'design-body')
   panel.appendChild(body)
+  body.appendChild(buildStatusCard())
   body.appendChild(buildTabContext())
 
   if (lastError) {

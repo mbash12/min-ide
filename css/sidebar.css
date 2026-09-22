@@ -3314,41 +3314,45 @@ drawer, and agent popovers (which mount on document.body) */
   opacity: 0.55;
   font-style: italic;
 }
-.design-toolbar-status {
+.design-header-dot {
+  margin-left: 2px;
+}
+.design-status {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(127, 127, 127, 0.18);
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.06);
+}
+.design-status .design-dot {
+  margin-top: 5px;
+}
+.design-status-copy {
   flex: 1;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.design-toolbar-status {
-  cursor: default;
-}
-.design-toolbar-copy {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
-.design-toolbar-label {
+.design-status-label {
   font-size: 12px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
-.design-toolbar-file {
+.design-status-detail {
   font-size: 11px;
-  opacity: 0.55;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  opacity: 0.6;
+  overflow-wrap: anywhere;
+}
+.design-status-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
 .design-connect-btn {
   flex-shrink: 0;
@@ -3590,7 +3594,7 @@ drawer, and agent popovers (which mount on document.body) */
 #sidebar .agent-slash-item span,
 #sidebar .agent-context-compact,
 #sidebar .design-context-row,
-#sidebar .design-toolbar-label {
+#sidebar .design-status-label {
   font-size: 14px;
 }
 
@@ -3643,7 +3647,7 @@ drawer, and agent popovers (which mount on document.body) */
 #sidebar .git-commit-files-empty,
 #sidebar .playbook-meta,
 #sidebar .playbook-progress,
-#sidebar .design-toolbar-file,
+#sidebar .design-status-detail,
 #sidebar .design-output,
 #sidebar .design-modal-label,
 #sidebar .agent-history-item-meta,
