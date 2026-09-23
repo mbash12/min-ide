@@ -516,6 +516,7 @@ function syncProviderAuthFile () {
 
 function invalidateModelCatalog () {
   modelCatalogCache = null
+  broadcastAgentEvent({ type: 'models_changed' })
 }
 
 /* called by dbService whenever provider_config changes */
@@ -1158,6 +1159,9 @@ ipc.handle('agent-provider-login', async function (e, data) {
   try {
     await modelRuntime.login(providerId, 'oauth', interaction)
     sendEvent({ type: 'done' })
+    /* auth.json changed - a provider that just signed in may expose new
+    models, so the cached catalog is stale now */
+    invalidateModelCatalog()
     /* credential stays in the main process (auth.json) - only the outcome
     crosses IPC, never tokens */
     return { ok: true }
@@ -1191,6 +1195,7 @@ ipc.handle('agent-provider-logout', async function (e, data) {
   try {
     const modelRuntime = await createAgentModelRuntime()
     await modelRuntime.logout(providerId)
+    invalidateModelCatalog()
     return { ok: true }
   } catch (err) {
     return { ok: false, message: (err && err.message) || String(err) }
@@ -1273,7 +1278,8 @@ ipc.handle('agent-list-tools', async function (e, data) {
   return result
 })
 
-ipc.handle('agent-fetch-models', async function () {
+ipc.handle('agent-fetch-models', async function (e) {
+  registerSender(e.sender)
   if (modelCatalogCache) {
     return modelCatalogCache
   }
@@ -1281,7 +1287,21 @@ ipc.handle('agent-fetch-models', async function () {
     /* createAgentModelRuntime also installs the stored keys and registers
     the omp replicas so getAvailable() sees every configured provider */
     const modelRuntime = await createAgentModelRuntime()
-    const available = (await modelRuntime.getAvailable()) || []
+    /* the no-argument getAvailable() resolves every provider in one
+    Promise.all - a single provider that throws (an expired oauth credential
+    whose refresh endpoint is unreachable, a broken custom wire) would empty
+    the whole catalog, so probe providers independently and keep the ones
+    that answer */
+    const providers = modelRuntime.getProviders() || []
+    const settled = await Promise.allSettled(providers.map(function (p) {
+      return modelRuntime.getAvailable(p.id)
+    }))
+    const available = []
+    settled.forEach(function (entry) {
+      if (entry.status === 'fulfilled' && entry.value) {
+        available.push.apply(available, entry.value)
+      }
+    })
     /* api-key providers drop out of getAvailable() on their own when disabled
     (no key installed); OAuth credentials live in auth.json so disabled
     providers are filtered here instead */
@@ -1292,7 +1312,7 @@ ipc.handle('agent-fetch-models', async function () {
           id: m.id,
           name: m.name || m.id,
           provider: m.provider,
-          providerLabel: PROVIDER_LABELS[m.provider] || m.provider,
+          providerLabel: PROVIDER_LABELS[m.provider] || agentOAuth.replicaLabels[m.provider] || m.provider,
           contextWindow: m.contextWindow || null
         }
       })
@@ -1306,7 +1326,7 @@ ipc.handle('agent-fetch-models', async function () {
 
 /* a changed provider key means a different catalog - refetch on demand */
 settings.listen('openrouterApiKey', function () {
-  modelCatalogCache = null
+  invalidateModelCatalog()
 })
 
 ipc.handle('agent-get-state', async function (e, data) {

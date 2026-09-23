@@ -289,7 +289,9 @@ function maskKey (key) {
 
 function setProviderKey (id, key) {
   providerKeys[id] = key
-  dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'ApiKey', value: key || null })
+  dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'ApiKey', value: key || null }, function () {
+    refreshCommitModels()
+  })
   /* keep the legacy settings mirror for openrouter so the catalog cache
   invalidation listener keeps firing */
   if (id === 'openrouter') {
@@ -305,12 +307,19 @@ function setProviderKey (id, key) {
 /* disabling keeps the key stored - it only hides the provider from the agent
 runtime (no env key, no auth.json entry, models drop out of pickers) */
 function setProviderEnabled (id, enabled) {
+  /* refresh the model selects only after the write lands - the main-side
+  catalog is invalidated by the kv write, so an earlier fetch could still
+  return the stale list */
   if (enabled) {
     delete providerDisabled[id]
-    dbInvoke('db:kvDelete', { scope: 'provider_config', key: id + 'Disabled' })
+    dbInvoke('db:kvDelete', { scope: 'provider_config', key: id + 'Disabled' }, function () {
+      refreshCommitModels()
+    })
   } else {
     providerDisabled[id] = true
-    dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'Disabled', value: true })
+    dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'Disabled', value: true }, function () {
+      refreshCommitModels()
+    })
   }
   renderProviders()
 }
@@ -418,6 +427,7 @@ function renderProviders () {
         /* OAuth credentials live in the SDK's auth.json - sign out there */
         agentCall('agentProviderLogout', { provider: id }, function () {
           refreshKnownProviders()
+          refreshCommitModels()
         })
       } else {
         setProviderKey(id, null)
@@ -593,6 +603,7 @@ window.addEventListener('message', function (e) {
       endOauthFlow(l('proSettingsOauthSignedIn'), false)
       closeAddDialog()
       refreshKnownProviders()
+      refreshCommitModels()
       return
     }
     if (payload.type === 'error') {
@@ -734,23 +745,29 @@ Empty option follows the agent's own provider+model. */
 var commitModelSelect = document.getElementById('commit-model')
 var commitModelSearch = makeSearchableSelect(commitModelSelect)
 
-agentCall('agentFetchModels', {}, function (models) {
-  commitModelSelect.textContent = ''
-  var defaultOpt = document.createElement('option')
-  defaultOpt.value = ''
-  defaultOpt.textContent = l('proSettingsCommitModelDefault')
-  commitModelSelect.appendChild(defaultOpt)
-  ;(models || []).forEach(function (m) {
-    var opt = document.createElement('option')
-    opt.value = m.provider + '/' + m.id
-    opt.textContent = m.providerLabel + ' / ' + m.name
-    commitModelSelect.appendChild(opt)
+/* the model list follows provider config (keys, enable/disable, OAuth
+sign-in/out) - refetched after every mutation so a disabled provider's
+models disappear immediately */
+function refreshCommitModels () {
+  agentCall('agentFetchModels', {}, function (models) {
+    commitModelSelect.textContent = ''
+    var defaultOpt = document.createElement('option')
+    defaultOpt.value = ''
+    defaultOpt.textContent = l('proSettingsCommitModelDefault')
+    commitModelSelect.appendChild(defaultOpt)
+    ;(models || []).forEach(function (m) {
+      var opt = document.createElement('option')
+      opt.value = m.provider + '/' + m.id
+      opt.textContent = m.providerLabel + ' / ' + m.name
+      commitModelSelect.appendChild(opt)
+    })
+    dbInvoke('db:kvGet', { scope: 'ai_config', key: 'commitModel' }, function (value) {
+      commitModelSelect.value = value || ''
+      commitModelSearch.sync()
+    })
   })
-  dbInvoke('db:kvGet', { scope: 'ai_config', key: 'commitModel' }, function (value) {
-    commitModelSelect.value = value || ''
-    commitModelSearch.sync()
-  })
-})
+}
+refreshCommitModels()
 
 commitModelSelect.addEventListener('change', function () {
   dbInvoke('db:kvSet', { scope: 'ai_config', key: 'commitModel', value: commitModelSelect.value || null })

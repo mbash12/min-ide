@@ -34,6 +34,7 @@ let currentAssistantEl = null // bubble receiving the active text stream (active
 let currentThinkingEl = null
 let isStreaming = false
 let modelsCache = null // model catalog (provider-aware) for the model picker
+let modelPopoverRender = null // re-render fn while the model popover is open
 let popover = null // currently open popover element
 let popoverAnchor = null
 let currentSessionPath = null
@@ -550,6 +551,7 @@ function closePopover () {
     popover.remove()
     popover = null
     popoverAnchor = null
+    modelPopoverRender = null
   }
   document.removeEventListener('mousedown', onPopoverOutside, true)
 }
@@ -603,20 +605,16 @@ function openThinkingPopover (anchor) {
   })
 }
 
+/* the catalog can change at any time (provider key added/removed, provider
+toggled off, OAuth login/logout) - refetch and repaint the open popover */
+function refreshModelCatalog () {
+  return ipc.invoke('agent-fetch-models').then(function (models) {
+    modelsCache = models || []
+    if (modelPopoverRender) modelPopoverRender()
+  }).catch(function () {})
+}
+
 function openModelPopover (anchor) {
-  /* the catalog is fetched once at startup - if that ran before an API key
-  existed (or failed), refetch on open and re-render so the picker is not
-  stuck empty */
-  if (!modelsCache || modelsCache.length === 0) {
-    ipc.invoke('agent-fetch-models').then(function (models) {
-      if (models && models.length) {
-        modelsCache = models
-        if (list.isConnected) {
-          render(search.value)
-        }
-      }
-    }).catch(function () {})
-  }
   const p = buildPopover(anchor)
   p.classList.add('agent-popover-models')
   const search = document.createElement('input')
@@ -679,11 +677,19 @@ function openModelPopover (anchor) {
     })
   }
 
+  modelPopoverRender = function () {
+    if (list.isConnected) render(search.value)
+  }
+
   render('')
   search.addEventListener('input', function () {
     render(search.value)
   })
   setTimeout(function () { search.focus() }, 0)
+
+  /* modelsCache may be stale (populated at startup or before a provider
+  change) - revalidate against the main catalog every time the picker opens */
+  refreshModelCatalog()
 }
 
 function formatContextTokens (n) {
@@ -1467,6 +1473,12 @@ function applyEvent (ev) {
       break
     case 'thinking_changed':
       if (active) applyThinkingUI(ev.level)
+      break
+    case 'models_changed':
+      /* provider config/auth changed in the main process - drop the cached
+      catalog so the next picker open (and the current one, via
+      modelPopoverRender) sees the fresh list */
+      refreshModelCatalog()
       break
     case 'compaction_start':
       if (active) setCompactingUI(true)
