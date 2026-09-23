@@ -665,13 +665,28 @@ function buildStatusCard () {
       : (transport === 'poll' ? t('designIndLinkPoll', 'Link: HTTP polling') : t('designIndLinkOff', 'Link: offline'))
   ))
 
-  const label = el('span', 'design-status-label', statusCopy())
-  label.title = statusCopy()
-  top.appendChild(label)
+  // No persistent status text — the dots carry it. Errors still need words,
+  // so only the error state gets a label.
+  if (lifecycleState() === 'error') {
+    const label = el('span', 'design-status-label', statusCopy())
+    label.title = statusCopy()
+    top.appendChild(label)
+  }
 
   const actions = el('div', 'design-status-actions')
   if (needsLogin()) actions.appendChild(cardEngineButton())
-  if ((isFigma && !connectedToSelected()) || connectedTabIsLoading() || needsLogin()) {
+  // One button slot swaps Connect ↔ Disconnect so the card never grows a row.
+  if (connectedToSelected()) {
+    const btn = el('button', 'design-connect-btn', t('designDisconnect', 'Disconnect'))
+    btn.type = 'button'
+    btn.disabled = busy
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation()
+      if (btn.disabled) return
+      disconnectSelectedTab()
+    })
+    actions.appendChild(btn)
+  } else if (isFigma || connectedTabIsLoading() || needsLogin()) {
     actions.appendChild(cardConnectButton())
   }
   if (actions.childNodes.length) top.appendChild(actions)
@@ -772,8 +787,9 @@ async function exportVariantImage (entry, variant) {
   if (!result || result.ok === false || !payload || !payload.path) {
     return { error: (result && (result.error || result.message)) || t('designExportFailed', 'Export failed') }
   }
-  const cssWidth = payload.node && payload.node.width ? Math.round(payload.node.width / 2) : null
-  const cssHeight = payload.node && payload.node.height ? Math.round(payload.node.height / 2) : null
+  const effScale = payload.scale || 2
+  const cssWidth = payload.node && payload.node.width ? Math.round(payload.node.width / effScale) : null
+  const cssHeight = payload.node && payload.node.height ? Math.round(payload.node.height / effScale) : null
   const patch = { image: payload.path, cssWidth: cssWidth }
   const vp = variant.viewport || {}
   if (cssWidth && cssHeight && (vp.w !== cssWidth || vp.h !== cssHeight)) {
@@ -1239,7 +1255,7 @@ function buildImportModal () {
 function buildSpecSection () {
   const section = el('div', 'design-spec')
   const headRow = el('div', 'design-spec-head')
-  headRow.appendChild(el('div', 'design-section-label', t('designBuildList', 'Build list')))
+  headRow.appendChild(el('div')) // spacer — the tab above carries the label
   const headActions = el('div', 'design-spec-head-actions')
   const canImport = connectedToSelected() && pluginReady()
   headActions.appendChild(iconButton(
@@ -1273,17 +1289,96 @@ function buildSpecSection () {
   return section
 }
 
+/* --- queue tab ------------------------------------------------------------ */
+
+let panelTab = 'list' // 'list' | 'queue'
+
+function bridgeJobs () {
+  return (lastStatus && lastStatus.bridge && lastStatus.bridge.jobs) || []
+}
+
+function buildPanelTabs () {
+  const running = bridgeJobs().filter(function (j) {
+    return j.state === 'queued' || j.state === 'sent'
+  }).length
+  const bar = el('div', 'design-tabs')
+  const mkTab = function (id, label) {
+    const b = el('button', 'design-tab' + (panelTab === id ? ' active' : ''), label)
+    b.type = 'button'
+    b.addEventListener('click', function () {
+      if (panelTab === id) return
+      panelTab = id
+      render(true)
+    })
+    return b
+  }
+  bar.appendChild(mkTab('list', t('designTabList', 'Build list')))
+  bar.appendChild(mkTab('queue', t('designTabQueue', 'Queue') + (running ? ' (' + running + ')' : '')))
+  return bar
+}
+
+function jobElapsedText (job) {
+  const end = job.doneAt || Date.now()
+  const ms = Math.max(0, end - (job.startedAt || end))
+  if (ms < 1000) return '<1s'
+  if (ms < 60000) return Math.round(ms / 1000) + 's'
+  return Math.floor(ms / 60000) + 'm ' + Math.round((ms % 60000) / 1000) + 's'
+}
+
+function buildQueueSection () {
+  const section = el('div', 'design-queue')
+  const jobs = bridgeJobs()
+  if (!jobs.length) {
+    section.appendChild(el('div', 'design-spec-empty', t('designQueueEmpty', 'No commands yet')))
+    return section
+  }
+  jobs.forEach(function (job) {
+    const row = el('div', 'design-job state-' + job.state)
+    const icon = job.state === 'done'
+      ? 'codicon-pass'
+      : job.state === 'error'
+        ? 'codicon-error'
+        : 'codicon-loading codicon-modifier-spin'
+    row.appendChild(el('span', 'codicon ' + icon + ' design-job-icon'))
+    const main = el('div', 'design-job-main')
+    const title = el('div', 'design-job-title', job.action + (job.nodeId ? ' ' + job.nodeId : ''))
+    title.title = title.textContent
+    main.appendChild(title)
+    if (job.state === 'error' && job.error) {
+      const err = el('div', 'design-job-error', job.error)
+      err.title = job.error
+      main.appendChild(err)
+    }
+    row.appendChild(main)
+    row.appendChild(el('span', 'design-job-meta',
+      (job.transport ? job.transport + ' ' : '') + jobElapsedText(job)))
+    section.appendChild(row)
+  })
+  return section
+}
+
 function buildHeader () {
   const header = el('div', 'file-tree-header design-header')
   header.appendChild(el('div', 'file-tree-title', t('sidebarDesign', 'Design')))
 
   const actions = el('div', 'file-tree-header-actions')
+  const engineRunning = !!(lastStatus && lastStatus.running)
+  const engineVisible = !!(lastStatus && lastStatus.windowVisible)
+  // The engine window is global — keep its toggle on every tab so showing it
+  // never requires a trip through settings.
+  actions.appendChild(iconButton(
+    engineVisible ? 'codicon-eye-closed' : 'codicon-eye',
+    engineVisible ? t('designHideEngine', 'Hide engine window') : t('designShowEngine', 'Show engine window'),
+    function () { ipc.invoke('figmaEngine:setVisible', { visible: !engineVisible }).then(refreshStatus) },
+    !engineRunning
+  ))
+
   const isFigma = !!(activeParsed() && activeParsed().isFigmaFile)
   const scoped = connectedToSelected()
   const canRun = scoped && pluginReady() && !busy && !needsLogin()
 
-  // Everything in this panel's header is a Figma-tab action — on a non-Figma
-  // tab the build list below is the whole panel.
+  // Everything else in this panel's header is a Figma-tab action — on a
+  // non-Figma tab the build list below is the whole panel.
   if (isFigma) {
     if (needsLogin()) {
       actions.appendChild(iconButton(
@@ -1364,6 +1459,11 @@ function fingerprint () {
     exportingFor || '',
     resultModalOpen ? 'result' : '',
     importModalOpen ? 'import' : '',
+    panelTab,
+    !!(lastStatus && lastStatus.windowVisible),
+    bridgeJobs().map(function (j) {
+      return j.id + ':' + j.state + ':' + (j.doneAt || '') + ':' + (j.error || '')
+    }).join(','),
     overlayState && overlayState.active
       ? overlayState.tabId + ':' + overlayState.entryId + ':' + overlayState.variantId
       : '',
@@ -1383,7 +1483,8 @@ function render (force) {
   panel.appendChild(body)
   const parsed = activeParsed()
   if (parsed && parsed.isFigmaFile) body.appendChild(buildStatusCard())
-  body.appendChild(buildSpecSection())
+  body.appendChild(buildPanelTabs())
+  body.appendChild(panelTab === 'queue' ? buildQueueSection() : buildSpecSection())
 
   if (lastError) {
     body.appendChild(el('div', 'design-error', lastError))

@@ -363,6 +363,29 @@ function buildNodeData(node) {
   }
 }
 
+function pageOf(node) {
+  let p = node
+  while (p && p.type && p.type !== 'PAGE') p = p.parent
+  return p && p.type === 'PAGE' ? p : null
+}
+
+async function switchToPage(page) {
+  if (typeof figma.setCurrentPageAsync === 'function') await figma.setCurrentPageAsync(page)
+  else figma.currentPage = page
+}
+
+function stage(label, promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`export ${label} timed out after ${Math.round(ms / 1000)}s`)),
+        ms,
+      ),
+    ),
+  ])
+}
+
 async function getNode(nodeId) {
   try {
     await figma.currentPage.loadAsync()
@@ -496,6 +519,9 @@ async function runBridgeCommand(cmd, viaWs) {
     )
   }
   postStatus(currentState(), `→ ${cmd.action}${cmd.nodeId ? ` ${cmd.nodeId}` : ''}…`)
+  // Exports legitimately take longer (page switch + render + upload) — give
+  // them room while keeping a hard cap so the chain always advances.
+  const limitMs = cmd.action === 'export' ? 115000 : 50000
   try {
     // A hung Figma API call (exportAsync on a huge node, a wedged page load)
     // would otherwise stall the serialized command chain forever — every
@@ -505,8 +531,8 @@ async function runBridgeCommand(cmd, viaWs) {
       dispatchBridgeCommand(cmd, reply),
       new Promise((_, reject) =>
         setTimeout(
-          () => reject(new Error(`"${cmd.action}" exceeded 50s inside the plugin — the node may be too large or the file is busy`)),
-          50000,
+          () => reject(new Error(`"${cmd.action}" exceeded ${Math.round(limitMs / 1000)}s inside the plugin — the node may be too large or the file is busy`)),
+          limitMs,
         ),
       ),
     ])
@@ -556,55 +582,79 @@ async function dispatchBridgeCommand(cmd, reply) {
       return
     }
     if (cmd.action === 'export') {
-      const node = await getNode(cmd.nodeId)
+      const node = await stage('node lookup', getNode(cmd.nodeId), 20000)
       if (typeof node.exportAsync !== 'function') {
         throw new Error(`${node.type} nodes cannot be exported`)
       }
       if (node.visible === false) {
         throw new Error(`"${node.name}" is hidden — make it visible to export`)
       }
-      const scale = cmd.scale ?? 2
+      // exportAsync wedges on nodes living on a non-current page in some
+      // dynamic-page runtimes — switch the view to the node's page first.
+      const nodePage = pageOf(node)
+      if (nodePage && figma.currentPage && nodePage.id !== figma.currentPage.id) {
+        postStatus(currentState(), `→ export: switching to page "${nodePage.name}"…`)
+        await stage('page switch', switchToPage(nodePage), 15000)
+      }
       const format =
         cmd.format === 'JPG' || cmd.format === 'SVG' || cmd.format === 'PNG'
           ? cmd.format
           : 'PNG'
-      const bytes = await node.exportAsync(
-        format === 'SVG'
-          ? { format: 'SVG' }
-          : {
-              format,
-              constraint: { type: 'SCALE', value: scale },
-            },
+      const { width, height } = nodeSize(node)
+      // Over-limit rasters hang exportAsync instead of erroring on some
+      // engines — clamp the scale and report the effective value back.
+      const MAX_EXPORT_PX = 16000
+      let scale = cmd.scale ?? 2
+      if (format !== 'SVG') {
+        const maxSide = Math.max(width, height)
+        if (maxSide > 0 && maxSide * scale > MAX_EXPORT_PX) {
+          scale = Math.max(0.5, Math.floor((MAX_EXPORT_PX / maxSide) * 100) / 100)
+          postStatus(currentState(), `→ export: scale clamped to ${scale}× (${width}×${height})`)
+        }
+      }
+      postStatus(currentState(), `→ export: rendering ${Math.round(width * scale)}×${Math.round(height * scale)}…`)
+      const bytes = await stage(
+        'render',
+        node.exportAsync(
+          format === 'SVG'
+            ? { format: 'SVG' }
+            : { format, constraint: { type: 'SCALE', value: scale } },
+        ),
+        90000,
       )
       if (bytes.byteLength > 40 * 1024 * 1024) {
         throw new Error('Export exceeds 40MB — lower the scale or split the frame')
       }
-      const { width, height } = nodeSize(node)
-      const res = await fetchBridgeWithTimeout(`${BRIDGE_HTTP}/export`, {
-        method: 'POST',
-        headers: bridgeHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          id: cmd.id,
-          ...commandIdentity(),
-          target: cmd.target,
-          exportTarget: cmd.exportTarget,
-          exportDir: typeof cmd.exportDir === 'string' ? cmd.exportDir : undefined,
-          nodeId: cmd.nodeId,
-          transport: transport(),
-          scale: format === 'SVG' ? 1 : scale,
-          format,
-          fileName: typeof cmd.fileName === 'string' ? cmd.fileName : undefined,
-          node: {
-            id: node.id,
-            name: node.name,
-            type: node.type,
-            width: Math.round(width * (format === 'SVG' ? 1 : scale)),
-            height: Math.round(height * (format === 'SVG' ? 1 : scale)),
-          },
-          pngBase64: format === 'PNG' ? figma.base64Encode(bytes) : undefined,
-          dataBase64: figma.base64Encode(bytes),
+      postStatus(currentState(), '→ export: uploading…')
+      const res = await stage(
+        'upload',
+        fetchBridgeWithTimeout(`${BRIDGE_HTTP}/export`, {
+          method: 'POST',
+          headers: bridgeHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            id: cmd.id,
+            ...commandIdentity(),
+            target: cmd.target,
+            exportTarget: cmd.exportTarget,
+            exportDir: typeof cmd.exportDir === 'string' ? cmd.exportDir : undefined,
+            nodeId: cmd.nodeId,
+            transport: transport(),
+            scale: format === 'SVG' ? 1 : scale,
+            format,
+            fileName: typeof cmd.fileName === 'string' ? cmd.fileName : undefined,
+            node: {
+              id: node.id,
+              name: node.name,
+              type: node.type,
+              width: Math.round(width * (format === 'SVG' ? 1 : scale)),
+              height: Math.round(height * (format === 'SVG' ? 1 : scale)),
+            },
+            pngBase64: format === 'PNG' ? figma.base64Encode(bytes) : undefined,
+            dataBase64: figma.base64Encode(bytes),
+          }),
         }),
-      })
+        30000,
+      )
       const body = await res.json().catch(() => ({}))
       if (res.ok && body.ok !== false) reply(true, body.message || 'Saved')
       else reply(false, null, body.message || `Export failed (HTTP ${res.status})`)

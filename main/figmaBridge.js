@@ -23,8 +23,48 @@ var figmaBridgeBootId = null
 var figmaBridgeTransport = null // 'ws' | 'poll' | 'none' — last seen transport
 var figmaBridgeWs = null
 var figmaBridgeWss = null
-var figmaBridgeSockets = new Map() // fileKey ('' when unknown) → ws
+var figmaBridgeSockets = new Set() // all live plugin sockets
+var figmaBridgeSocketsByFile = new Map() // fileKey → ws, once the key is known
 var figmaBridgePingTimer = null
+var FIGMA_BRIDGE_HISTORY_MAX = 25
+var figmaBridgeJobs = [] // recent commands, newest first — feeds the queue tab
+
+function figmaBridgeJobPush (command) {
+  var job = {
+    id: command.id,
+    action: command.action,
+    nodeId: command.nodeId || null,
+    fileKey: command.fileKey || null,
+    startedAt: figmaBridgeNow(),
+    state: 'queued'
+  }
+  figmaBridgeJobs.unshift(job)
+  if (figmaBridgeJobs.length > FIGMA_BRIDGE_HISTORY_MAX) {
+    figmaBridgeJobs.length = FIGMA_BRIDGE_HISTORY_MAX
+  }
+  return job
+}
+
+function figmaBridgeJobMark (id, state, error) {
+  for (var i = 0; i < figmaBridgeJobs.length; i++) {
+    if (figmaBridgeJobs[i].id === id) {
+      figmaBridgeJobs[i].state = state
+      figmaBridgeJobs[i].doneAt = figmaBridgeNow()
+      if (error) figmaBridgeJobs[i].error = String(error)
+      return
+    }
+  }
+}
+
+function figmaBridgeJobMarkSent (id, transport) {
+  for (var i = 0; i < figmaBridgeJobs.length; i++) {
+    if (figmaBridgeJobs[i].id === id) {
+      figmaBridgeJobs[i].state = 'sent'
+      figmaBridgeJobs[i].transport = transport
+      return
+    }
+  }
+}
 
 function figmaBridgeNow () {
   return Date.now()
@@ -94,6 +134,7 @@ function figmaBridgeWriteExport (payload) {
 
 function figmaBridgeFinish (id, result) {
   var pending = figmaBridgePending.get(id)
+  figmaBridgeJobMark(id, result && result.ok === false ? 'error' : 'done', result && result.error)
   if (!pending) return
   clearTimeout(pending.timer)
   figmaBridgePending.delete(id)
@@ -109,8 +150,9 @@ function figmaBridgeRejectAll (reason) {
   // A reloaded plugin will never answer commands queued for its previous
   // incarnation — fail them fast instead of letting callers hang 60s.
   figmaBridgeQueue.length = 0
-  figmaBridgePending.forEach(function (pending) {
+  figmaBridgePending.forEach(function (pending, id) {
     clearTimeout(pending.timer)
+    figmaBridgeJobMark(id, 'error', reason)
     pending.reject(new Error(reason))
   })
   figmaBridgePending.clear()
@@ -149,7 +191,10 @@ async function figmaBridgeHandleRequest (req, res) {
     var reportedFileKey = typeof selection.fileKey === 'string' && selection.fileKey
       ? selection.fileKey
       : null
-    if (reportedFileKey) figmaBridgeSetFileKey(reportedFileKey)
+    if (reportedFileKey) {
+      figmaBridgeSetFileKey(reportedFileKey)
+      figmaBridgeWsClaim(reportedFileKey)
+    }
     figmaBridgeSelection = Object.assign({}, selection, {
       // Some Figma plugin sandboxes cannot expose figma.fileKey. Keep the
       // engine-pinned key on the selection so the sidebar can scope it.
@@ -162,10 +207,14 @@ async function figmaBridgeHandleRequest (req, res) {
   if (pathname === '/command/poll') {
     figmaBridgeLastSeen = figmaBridgeNow()
     var fileKey = url.searchParams.get('fileKey')
-    if (fileKey) figmaBridgeFileKey = fileKey
+    if (fileKey) {
+      figmaBridgeFileKey = fileKey
+      figmaBridgeWsClaim(fileKey)
+    }
     var pollTransport = url.searchParams.get('transport')
     if (pollTransport) figmaBridgeTransport = pollTransport
     var command = figmaBridgeQueue.shift() || null
+    if (command) figmaBridgeJobMarkSent(command.id, 'poll')
     figmaBridgeRespond(res, 200, { ok: true, command: command })
     return
   }
@@ -194,7 +243,7 @@ async function figmaBridgeHandleRequest (req, res) {
         figmaBridgeFinish(String(exportBody.id), {
           ok: true,
           id: exportBody.id,
-          payload: { path: savedPath, node: exportBody.node }
+          payload: { path: savedPath, node: exportBody.node, scale: exportBody.scale }
         })
       }
       figmaBridgeRespond(res, 200, { ok: true, message: savedPath, path: savedPath })
@@ -238,12 +287,14 @@ function figmaBridgeWsAttach (server) {
   }
   figmaBridgeWss = new figmaBridgeWs.WebSocketServer({ noServer: true })
   figmaBridgeWss.on('connection', function (ws, req) {
-    var fileKey = ''
+    var fileKey = null
     try {
-      fileKey = new URL(req.url || '/', 'http://127.0.0.1').searchParams.get('fileKey') || ''
+      fileKey = new URL(req.url || '/', 'http://127.0.0.1').searchParams.get('fileKey') || null
     } catch (e) {}
     ws.isAlive = true
-    figmaBridgeSockets.set(fileKey, ws)
+    ws.fileKey = fileKey
+    figmaBridgeSockets.add(ws)
+    if (fileKey) figmaBridgeSocketsByFile.set(fileKey, ws)
     figmaBridgeTransport = 'ws'
     figmaBridgeLastSeen = figmaBridgeNow()
     ws.on('pong', function () {
@@ -261,13 +312,17 @@ function figmaBridgeWsAttach (server) {
       if (msg && msg.type === 'result' && msg.id != null) figmaBridgeHandleResult(msg)
     })
     ws.on('close', function () {
-      if (figmaBridgeSockets.get(fileKey) === ws) figmaBridgeSockets.delete(fileKey)
+      figmaBridgeSockets.delete(ws)
+      if (ws.fileKey && figmaBridgeSocketsByFile.get(ws.fileKey) === ws) {
+        figmaBridgeSocketsByFile.delete(ws.fileKey)
+      }
       if (!figmaBridgeSockets.size) figmaBridgeTransport = null
       // Commands dispatched over this socket will never reply now.
       figmaBridgePending.forEach(function (pending, id) {
         if (pending.ws !== ws) return
         clearTimeout(pending.timer)
         figmaBridgePending.delete(id)
+        figmaBridgeJobMark(id, 'error', 'socket closed')
         pending.reject(new Error('Figma socket closed mid-command — reconnect'))
       })
     })
@@ -303,11 +358,29 @@ function figmaBridgeWsAttach (server) {
   if (figmaBridgePingTimer.unref) figmaBridgePingTimer.unref()
 }
 
+/* Some sandboxes cannot expose figma.fileKey, so a socket may connect
+ * anonymously. When an HTTP request later reports the real key, attribute the
+ * single un-keyed socket to it — it can only be that plugin. */
+function figmaBridgeWsClaim (fileKey) {
+  if (!fileKey || figmaBridgeSocketsByFile.has(fileKey)) return
+  var unkeyed = null
+  var count = 0
+  figmaBridgeSockets.forEach(function (ws) {
+    if (!ws.fileKey) {
+      unkeyed = ws
+      count++
+    }
+  })
+  if (count === 1) {
+    unkeyed.fileKey = fileKey
+    figmaBridgeSocketsByFile.set(fileKey, unkeyed)
+  }
+}
+
 function figmaBridgeWsSend (command) {
   var target = null
-  if (command.fileKey && figmaBridgeSockets.get(command.fileKey)) {
-    target = figmaBridgeSockets.get(command.fileKey)
-  } else if (figmaBridgeSockets.size === 1) {
+  if (command.fileKey) target = figmaBridgeSocketsByFile.get(command.fileKey) || null
+  if (!target && figmaBridgeSockets.size === 1) {
     target = figmaBridgeSockets.values().next().value
   }
   if (!target || target.readyState !== 1) return null
@@ -388,6 +461,7 @@ function figmaBridgeStatus () {
     transport: figmaBridgeTransport,
     queueDepth: figmaBridgeQueue.length,
     pendingCommands: figmaBridgePending.size,
+    jobs: figmaBridgeJobs,
     selection: figmaBridgeSelection
       ? Object.assign({}, figmaBridgeSelection, {
         fileKey: figmaBridgeSelection.fileKey || figmaBridgeFileKey
@@ -408,9 +482,15 @@ function figmaBridgeCommand (action, params) {
       runId: id,
       projectId: 'min'
     }, params)
+    figmaBridgeJobPush(command)
     return new Promise(function (resolve, reject) {
+      // Exports can legitimately outrun the default window (page switch +
+      // render + upload) — keep the bridge timeout above the plugin's own
+      // 115s cap so the plugin's error reaches the caller first.
+      var timeoutMs = action === 'export' ? 125000 : FIGMA_BRIDGE_COMMAND_TIMEOUT_MS
       var timer = setTimeout(function () {
         figmaBridgePending.delete(id)
+        figmaBridgeJobMark(id, 'error', 'timed out')
         // Diagnose which side stalled: commands still in the queue mean the
         // plugin never polled (transport dead); an empty queue means it took
         // the command and never replied (hang inside Figma).
@@ -422,13 +502,14 @@ function figmaBridgeCommand (action, params) {
           ', transport ' + (figmaBridgeTransport || 'unknown') +
           (figmaBridgeQueue.length ? ' (plugin is not picking up commands — reconnect)' : '')
         ))
-      }, FIGMA_BRIDGE_COMMAND_TIMEOUT_MS)
+      }, timeoutMs)
       var pending = { resolve: resolve, reject: reject, timer: timer, ws: null }
       figmaBridgePending.set(id, pending)
       // A live socket skips the queue entirely — the plugin gets the command
       // on the next frame instead of the next poll tick.
       pending.ws = figmaBridgeWsSend(command)
-      if (!pending.ws) figmaBridgeQueue.push(command)
+      if (pending.ws) figmaBridgeJobMarkSent(id, 'ws')
+      else figmaBridgeQueue.push(command)
     })
   })
 }

@@ -3611,6 +3611,67 @@ drawer, and agent popovers (which mount on document.body) */
   border-radius: 6px;
   line-height: 1.4;
 }
+
+/* panel tabs — Build list | Queue */
+.design-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px 0;
+}
+.design-tab {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+}
+.design-tab:hover { background: var(--vsc-hover-bg); }
+.design-tab.active {
+  opacity: 1;
+  border-bottom-color: #58a6ff;
+}
+
+/* queue — recent bridge commands */
+.design-queue { display: flex; flex-direction: column; }
+.design-job {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+.design-job:hover { background: var(--vsc-hover-bg); }
+.design-job-icon { flex: none; margin-top: 1px; }
+.design-job.state-done .design-job-icon { color: #3fb950; }
+.design-job.state-error .design-job-icon { color: #f85149; }
+.design-job.state-queued .design-job-icon,
+.design-job.state-sent .design-job-icon { color: #58a6ff; }
+.design-job-main { flex: 1; min-width: 0; }
+.design-job-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.design-job-error {
+  font-size: 10px;
+  color: #f85149;
+  opacity: 0.9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.design-job-meta {
+  flex: none;
+  font-size: 10px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
 .design-entry {
   border: 1px solid rgba(127, 127, 127, 0.18);
   border-radius: 6px;

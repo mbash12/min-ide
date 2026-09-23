@@ -86,9 +86,13 @@
       }
 
       function connectSocket() {
-        if (socket || !fileKey) return
+        // fileKey null = the sandbox could not expose figma.fileKey — still
+        // connect; Min routes the lone socket and learns the key via HTTP.
+        if (socket || fileKey === null) return
         try {
-          socket = new WebSocket(`${BRIDGE_WS}&fileKey=${encodeURIComponent(fileKey)}`)
+          socket = new WebSocket(
+            BRIDGE_WS + (fileKey ? `&fileKey=${encodeURIComponent(fileKey)}` : '')
+          )
         } catch (error) {
           socket = null
           sendToPlugin({ type: 'ws-state', state: 'closed' })
@@ -136,8 +140,8 @@
           }
           return
         }
-        if (msg.type === 'ws-identify' && typeof msg.fileKey === 'string' && msg.fileKey) {
-          fileKey = msg.fileKey
+        if (msg.type === 'ws-identify') {
+          fileKey = typeof msg.fileKey === 'string' ? msg.fileKey : ''
           connectSocket()
           return
         }

@@ -105,10 +105,12 @@ async function minDesignOverlayExportAndSet (tabId, entry, variant, workspacePat
     imagePath = payload.path
     const patch = { image: imagePath }
     if (payload.node && payload.node.width) {
-      cssWidth = Math.round(payload.node.width / scale)
+      // The plugin may clamp scale for over-limit rasters — trust its report.
+      const effScale = payload.scale || scale
+      cssWidth = Math.round(payload.node.width / effScale)
       patch.cssWidth = cssWidth
       // Viewport follows the real frame size — heights differ per frame.
-      const cssHeight = payload.node.height ? Math.round(payload.node.height / scale) : null
+      const cssHeight = payload.node.height ? Math.round(payload.node.height / effScale) : null
       const vp = variant.viewport || {}
       if (cssHeight && (vp.w !== cssWidth || vp.h !== cssHeight)) {
         patch.viewport = { w: cssWidth, h: cssHeight, mobile: !!vp.mobile, dpr: vp.dpr }
