@@ -1,4 +1,4 @@
-/* global ipc, tasks */
+/* global ipc, tasks, workspaces */
 const browserUI = require('browserUI.js')
 const webviews = require('webviews.js')
 
@@ -19,11 +19,11 @@ function isRestrictedUrl (url) {
     parsed.indexOf('/pages/profiles/') !== -1
 }
 
-function getTaskContext (taskId) {
-  if (!taskId) return null
-  const home = workspaces.findWorkspaceContainingTask(taskId)
+function getTaskContext (taskId, workspaceId) {
+  const home = taskId ? workspaces.findWorkspaceContainingTask(taskId) : workspaces.get(workspaceId)
   if (!home) return null
-  const task = home.tasks.get(taskId)
+  if (workspaceId && home.id !== workspaceId) return null
+  const task = taskId ? home.tasks.get(taskId) : home.tasks.getSelected()
   if (!task) return null
   return { workspace: home, task: task }
 }
@@ -61,8 +61,8 @@ function restoreChromeFocus () {
   }
 }
 
-function focusTask (taskId) {
-  const ctx = getTaskContext(taskId)
+function focusTask (taskId, workspaceId) {
+  const ctx = getTaskContext(taskId, workspaceId)
   if (!ctx) {
     throw new Error('Task not found')
   }
@@ -81,8 +81,8 @@ function focusTask (taskId) {
   return getTaskContext(ctx.task.id)
 }
 
-function listTabsPayload (taskId) {
-  const ctx = getTaskContext(taskId)
+function listTabsPayload (taskId, workspaceId) {
+  const ctx = getTaskContext(taskId, workspaceId)
   if (!ctx) return { ok: false, error: 'Task not found' }
   return {
     ok: true,
@@ -96,8 +96,7 @@ function listTabsPayload (taskId) {
 
 function resolveTab (payload) {
   payload = payload || {}
-  const taskId = payload.taskId || payload.workspaceId
-  const ctx = payload.ensureView ? focusTask(taskId) : getTaskContext(taskId)
+  const ctx = payload.ensureView ? focusTask(payload.taskId, payload.workspaceId) : getTaskContext(payload.taskId, payload.workspaceId)
   if (!ctx) return { ok: false, error: 'Task not found' }
   if (payload.tabId && !ctx.task.tabs.has(payload.tabId)) {
     return { ok: false, error: 'Tab is not in this task' }
@@ -134,7 +133,7 @@ function resolveTab (payload) {
 function handleBrowserControl (action, payload) {
   payload = payload || {}
   if (action === 'listTabs') {
-    return listTabsPayload(payload.workspaceId)
+    return listTabsPayload(payload.taskId, payload.workspaceId)
   }
   if (action === 'resolveTab') {
     return resolveTab(payload)
@@ -143,7 +142,7 @@ function handleBrowserControl (action, payload) {
     if (isRestrictedUrl(payload.url)) {
       return { ok: false, error: 'Browser tools cannot open settings or profile pages' }
     }
-    const ctx = focusTask(payload.taskId || payload.workspaceId)
+    const ctx = focusTask(payload.taskId, payload.workspaceId)
     const newTab = ctx.task.tabs.add({ url: payload.url || '' })
     browserUI.addTab(newTab, {
       enterEditMode: false,
@@ -153,11 +152,12 @@ function handleBrowserControl (action, payload) {
     return Object.assign({ ok: true, taskId: ctx.task.id, workspaceId: ctx.workspace.id }, tabPayload(ctx, tab))
   }
   if (action === 'closeTab') {
-    const ctx = focusTask(payload.taskId || payload.workspaceId)
+    const ctx = focusTask(payload.taskId, payload.workspaceId)
     const tabId = payload.tabId || ctx.task.tabs.getSelected()
     if (!tabId || !ctx.task.tabs.has(tabId)) {
       return { ok: false, error: 'Tab not found in this task' }
     }
+    if (!isWebTab(ctx.task.tabs.get(tabId))) return { ok: false, error: 'Browser tools can only control web tabs' }
     browserUI.closeTab(tabId, { focusWebview: false })
     return {
       ok: true,
@@ -168,11 +168,12 @@ function handleBrowserControl (action, payload) {
     }
   }
   if (action === 'selectTab') {
-    const ctx = focusTask(payload.taskId || payload.workspaceId)
+    const ctx = focusTask(payload.taskId, payload.workspaceId)
     const tabId = payload.tabId
     if (!tabId || !ctx.task.tabs.has(tabId)) {
       return { ok: false, error: 'Tab not found in this task' }
     }
+    if (!isWebTab(ctx.task.tabs.get(tabId))) return { ok: false, error: 'Browser tools can only control web tabs' }
     browserUI.switchToTab(tabId, { focusWebview: false })
     return { ok: true, id: tabId, taskId: ctx.task.id, workspaceId: ctx.workspace.id }
   }

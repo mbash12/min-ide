@@ -2,6 +2,12 @@
   "name": "Indonesian",
   "identifier": "id",
   "translations": {
+    "playbookRepeat": "Pengulangan",
+    "playbookStop": "Berhenti setelah langkah ini, lalu jalankan pembersihan",
+    "playbookOpenReport": "Buka laporan",
+    "playbookStatuspassed": "Lulus",
+    "playbookStatusfailed": "Gagal",
+    "playbookStatuscancelled": "Dibatalkan",
     "designLoginInTabHint": "Masuk ke Figma di tab ini, lalu klik Connect lagi.",
     /* Context menu items
         these are the items displayed in the menu when you right-click on a page

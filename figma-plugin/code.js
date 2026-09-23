@@ -7,7 +7,7 @@
  * also a supported status surface. Every UI call below is guarded: a runtime
  * without UI support must never be able to kill the link. */
 
-const PLUGIN_VERSION = '6'
+const PLUGIN_VERSION = '8'
 // NOTE: raw IP (127.0.0.1) makes the wasm sandbox's URL parser throw
 // "must be valid url" — keep the hostname form.
 const BRIDGE_HTTP = 'http://localhost:44178'
@@ -199,15 +199,27 @@ function cssForNode(node) {
 }
 
 function walkText(node, out, depth) {
-  if (out.length >= MAX_TEXT_NODES) return
-  if (node.type === 'TEXT') {
-    out.push({ node, depth })
-    return
+  const stack = [{ node, depth }]
+  let visited = 0
+  out.truncated = false
+  while (stack.length && visited < MAX_TEXT_SEARCH_NODES) {
+    const current = stack.pop()
+    visited++
+    if (current.node.type === 'TEXT') {
+      if (out.length === MAX_TEXT_NODES) { out.truncated = true; break }
+      out.push(current)
+      continue
+    }
+    // Leaf nodes throw on .children; only traverse containers, within budget.
+    if ('children' in current.node) {
+      const children = current.node.children
+      const count = Math.min(children.length, MAX_TEXT_SEARCH_NODES - stack.length)
+      if (count < children.length) out.truncated = true
+      for (let i = count - 1; i >= 0; i--) stack.push({ node: children[i], depth: current.depth + 1 })
+    }
   }
-  // Leaf nodes (RECTANGLE, ELLIPSE, …) throw on .children — gate on presence.
-  if ('children' in node) {
-    for (const child of node.children) walkText(child, out, depth + 1)
-  }
+  out.visited = visited
+  out.truncated = out.truncated || stack.length > 0
 }
 
 function fontsForNode(node) {
@@ -216,6 +228,8 @@ function fontsForNode(node) {
   return {
     nodeId: node.id,
     name: node.name,
+    truncated: texts.truncated,
+    visited: texts.visited,
     texts: texts.map(({ node: t }) => {
       const font = t.fontName && t.fontName !== figma.mixed ? t.fontName : null
       return {
@@ -326,10 +340,96 @@ function findTextInNode(root, rawQuery, rawLimit) {
   }
 }
 
+/** Geometric lookup works even when layer names/grouping/layout are unreliable.
+ * Coordinates come from an export of root, not from the Figma canvas UI. */
+function inspectRegionInNode(root, rawRegion, rawScale, rawLimit) {
+  const scale = rawScale == null ? 1 : rawScale
+  if (!Number.isFinite(scale) || scale <= 0 || scale > 8) {
+    throw new Error('referenceScale must be > 0 and <= 8')
+  }
+  if (!rawRegion || !['x', 'y', 'width', 'height'].every((key) => Number.isFinite(rawRegion[key])) ||
+      rawRegion.x < 0 || rawRegion.y < 0 || rawRegion.width <= 0 || rawRegion.height <= 0) {
+    throw new Error('region needs finite x/y >= 0 and width/height > 0 in original export pixels')
+  }
+  const rootBox = root.absoluteBoundingBox
+  if (!rootBox) throw new Error('Export a frame or layer with finite bounds first')
+  const region = {
+    x: rawRegion.x / scale, y: rawRegion.y / scale,
+    width: rawRegion.width / scale, height: rawRegion.height / scale,
+  }
+  if (region.x + region.width > rootBox.width + 0.01 || region.y + region.height > rootBox.height + 0.01) {
+    throw new Error('region is outside the exported root at referenceScale')
+  }
+  const query = { ...region, x: rootBox.x + region.x, y: rootBox.y + region.y }
+  const limit = Math.max(1, Math.min(50, Number.isInteger(rawLimit) ? rawLimit : 20))
+  const candidates = []
+  const stack = [{ node: root, hierarchy: [], clip: rootBox }]
+  let visited = 0
+  function intersection(a, b) {
+    const x = Math.max(a.x, b.x)
+    const y = Math.max(a.y, b.y)
+    const width = Math.min(a.x + a.width, b.x + b.width) - x
+    const height = Math.min(a.y + a.height, b.y + b.height) - y
+    return width > 0 && height > 0 ? { x, y, width, height } : null
+  }
+  function relative(box) {
+    return { x: round2(box.x - rootBox.x), y: round2(box.y - rootBox.y), width: round2(box.width), height: round2(box.height) }
+  }
+  while (stack.length && visited < MAX_TEXT_SEARCH_NODES) {
+    const { node, hierarchy, clip } = stack.pop()
+    visited++
+    if (node.visible === false || node.opacity === 0) continue
+    const box = node.absoluteBoundingBox
+    const rendered = node.absoluteRenderBounds || box
+    const visibleBox = rendered && intersection(rendered, clip)
+    const overlap = visibleBox && intersection(visibleBox, query)
+    const hierarchyPath = hierarchy.concat(String(node.name || node.type))
+    if (overlap && box) {
+      const overlapArea = overlap.width * overlap.height
+      const unionArea = visibleBox.width * visibleBox.height + query.width * query.height - overlapArea
+      candidates.push({ node, box, rendered, hierarchyPath, score: overlapArea / unionArea })
+    }
+    // Do not prune on a group's bounds: descendants can overflow a group.
+    if ('children' in node) {
+      const childClip = 'clipsContent' in node && node.clipsContent && box ? intersection(clip, box) : clip
+      if (childClip && intersection(childClip, query)) {
+        for (let i = node.children.length - 1; i >= 0; i--) {
+          stack.push({ node: node.children[i], hierarchy: hierarchyPath, clip: childClip })
+        }
+      }
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score || b.hierarchyPath.length - a.hierarchyPath.length)
+  return {
+    frameId: root.id, frameName: root.name,
+    frameSize: { width: rootBox.width, height: rootBox.height },
+    region, referenceScale: scale, coordinates: 'Figma units relative to exported root',
+    total: candidates.length, visited, truncated: stack.length > 0 || candidates.length > limit,
+    matches: candidates.slice(0, limit).map(({ node, box, rendered, hierarchyPath, score }) => {
+      const match = {
+        id: node.id, name: node.name, type: node.type, path: hierarchyPath,
+        bounds: relative(box), renderBounds: relative(rendered), overlapScore: score,
+        css: cssForNode(node),
+      }
+      if (node.type === 'TEXT') {
+        match.characters = String(node.characters || '').slice(0, 6000)
+        match.style = textStyleForNode(node)
+        if (typeof node.getStyledTextSegments === 'function') {
+          const segments = node.getStyledTextSegments(['fontName', 'fontSize', 'fontWeight', 'fills', 'lineHeight', 'letterSpacing'])
+          match.textSegments = segments.slice(0, 30)
+          match.textSegmentsTruncated = segments.length > 30
+        }
+      }
+      return match
+    }),
+  }
+}
+
 function textForNode(node) {
   const texts = []
   walkText(node, texts, 0)
-  if (!texts.length) return `(no text under ${node.name})`
+  const notice = texts.truncated ? '\n[Text scan truncated; target a smaller nodeId or use find-text.]' : ''
+  if (!texts.length) return `(no text found under ${node.name})` + notice
   return texts
     .map(({ node: t, depth }) => {
       const indent = '  '.repeat(Math.min(depth, 6))
@@ -338,7 +438,7 @@ function textForNode(node) {
       const same = String(t.name).trim() === String(t.characters).trim()
       return `${indent}${same ? t.characters : `${t.name}: ${t.characters}`}`
     })
-    .join('\n')
+    .join('\n') + notice
 }
 
 function nodeSize(node) {
@@ -349,18 +449,20 @@ function nodeSize(node) {
   }
 }
 
-function buildNodeData(node) {
+function buildNodeData(node, fields) {
   const { width, height } = nodeSize(node)
-  return {
+  const wanted = Array.isArray(fields) ? fields : ['css', 'fonts', 'text']
+  const result = {
     id: node.id,
     name: node.name,
     type: node.type,
     width,
     height,
-    css: cssForNode(node),
-    fontJson: JSON.stringify(fontsForNode(node), null, 2),
-    textExtract: textForNode(node),
   }
+  if (wanted.includes('css')) result.css = cssForNode(node)
+  if (wanted.includes('fonts')) result.fontJson = JSON.stringify(fontsForNode(node), null, 2)
+  if (wanted.includes('text')) result.textExtract = textForNode(node)
+  return result
 }
 
 function pageOf(node) {
@@ -554,7 +656,7 @@ async function dispatchBridgeCommand(cmd, reply) {
     }
     if (cmd.action === 'node-data') {
       const node = await getNode(cmd.nodeId)
-      reply(true, buildNodeData(node))
+      reply(true, buildNodeData(node, cmd.fields))
       return
     }
     if (cmd.action === 'node-info') {
@@ -568,6 +670,11 @@ async function dispatchBridgeCommand(cmd, reply) {
     if (cmd.action === 'find-text') {
       const node = await getNode(cmd.nodeId)
       reply(true, findTextInNode(node, cmd.query, cmd.limit))
+      return
+    }
+    if (cmd.action === 'inspect-region') {
+      const node = await getNode(cmd.nodeId)
+      reply(true, inspectRegionInNode(node, cmd.region, cmd.referenceScale, cmd.limit))
       return
     }
     if (cmd.action === 'list-frames') {

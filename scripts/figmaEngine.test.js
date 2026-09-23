@@ -172,6 +172,51 @@ test('hidden plugin UI executes commands over WebSocket and falls back to HTTP',
   assert.equal(body.fileKey, 'target')
   assert.equal(body.nodeId, frame.id)
   assert.equal(Buffer.from(body.dataBase64, 'base64').toString(), 'rendered PNG')
+
+  // Messy grouping: an overflowing text layer is nested under an unrelated
+  // group. Geometry, visibility, export scale, and clipping decide candidates.
+  frame.absoluteBoundingBox = { x: 100, y: 200, width: 100, height: 80 }
+  const label = {
+    id: 'text',
+    name: 'Layer 347',
+    type: 'TEXT',
+    characters: 'Buy now',
+    absoluteBoundingBox: { x: 125, y: 230, width: 40, height: 20 },
+    fontName: { family: 'Inter', style: 'Bold' },
+    fontSize: 16,
+    fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }]
+  }
+  frame.children = [
+    { id: 'group', name: 'Unrelated group', type: 'GROUP', absoluteBoundingBox: { x: 100, y: 200, width: 10, height: 10 }, children: [label] },
+    { id: 'hidden', name: 'Hidden', type: 'GROUP', visible: false, children: [Object.assign({}, label, { id: 'hidden-text' })] },
+    { id: 'clipped', name: 'Clipped', type: 'FRAME', clipsContent: true, absoluteBoundingBox: { x: 100, y: 200, width: 10, height: 10 }, children: [Object.assign({}, label, { id: 'clipped-text' })] }
+  ]
+  await context.runBridgeCommand({ id: 'region', action: 'inspect-region', nodeId: frame.id, region: { x: 50, y: 60, width: 80, height: 40 }, referenceScale: 2 }, true)
+  const regionResponse = requests.find(request => request.url.endsWith('/command/result') && JSON.parse(request.options.body).id === 'region')
+  const region = JSON.parse(regionResponse.options.body)
+  assert.equal(region.ok, true)
+  assert.equal(region.payload.matches[0].id, label.id)
+  assert.deepEqual(region.payload.matches[0].bounds, { x: 25, y: 30, width: 40, height: 20 })
+  assert.equal(region.payload.matches[0].characters, 'Buy now')
+  assert.equal(region.payload.matches[0].style.fontFamily, 'Inter')
+  const manyTexts = Object.assign({}, frame, { children: Array.from({ length: 55 }, (_, i) => Object.assign({}, label, { id: 'text-' + i })) })
+  const limitedFonts = context.fontsForNode(manyTexts)
+  assert.equal(limitedFonts.texts.length, 50)
+  assert.equal(limitedFonts.truncated, true)
+  assert.match(context.textForNode(manyTexts), /Text scan truncated/)
+  const reads = []
+  context.cssForNode = () => { reads.push('css'); return 'color:red' }
+  context.fontsForNode = () => { reads.push('fonts'); return [{ family: 'Inter' }] }
+  context.textForNode = () => { reads.push('text'); return 'Buy now' }
+  await context.runBridgeCommand({ id: 'fonts-only', action: 'node-data', nodeId: frame.id, fields: ['fonts'] }, true)
+  const fontsOnly = JSON.parse(requests.find(request => request.url.endsWith('/command/result') && JSON.parse(request.options.body).id === 'fonts-only').options.body).payload
+  assert.deepEqual(reads, ['fonts'])
+  assert.equal(JSON.parse(fontsOnly.fontJson)[0].family, 'Inter')
+  assert.equal(fontsOnly.css, undefined)
+  assert.equal(fontsOnly.textExtract, undefined)
+  assert.equal(region.payload.matches.some(match => match.id === 'hidden-text' || match.id === 'clipped-text'), false)
+  assert.throws(() => context.inspectRegionInNode(frame, { x: 0, y: 0, width: 300, height: 20 }, 2), /outside/)
+  assert.throws(() => context.inspectRegionInNode(frame, { x: 0, y: 0, width: 1, height: 1 }, 0), /referenceScale/)
 })
 
 async function bridgeHarness (t) {

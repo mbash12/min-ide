@@ -20,6 +20,7 @@ let detailCache = {}
 let detailPending = {}
 let refreshSeq = 0
 let panelWasActive = false
+const repeatCounts = {}
 
 function getWorkspacePath () {
   const ws = workspaces.getSelected()
@@ -68,7 +69,7 @@ function buildEmptyState () {
 
 function listFingerprint (list) {
   return (list || []).map(function (entry) {
-    return [entry.name, entry.steps, entry.description || '', entry.error || '', entry.updatedAt || ''].join('\t')
+    return [entry.name, entry.steps, entry.description || '', entry.error || '', entry.updatedAt || '', entry.lastRun && entry.lastRun.runId].join('\t')
   }).join('\n')
 }
 
@@ -120,7 +121,7 @@ function renderSteps (detail, entry) {
   steps.forEach(function (step, i) {
     const line = document.createElement('div')
     line.className = 'playbook-step'
-    if (runningName === entry.name && runProgress && runProgress.index === i) {
+    if (runningName === entry.name && runProgress && runProgress.phase === 'steps' && runProgress.stepIndex === i) {
       line.classList.add('active')
     }
     line.textContent = (i + 1) + '. ' + stepSummary(step)
@@ -153,7 +154,7 @@ function loadDetail (entry) {
 function stepSummary (step) {
   if (!step || typeof step !== 'object') return ''
   const action = step.action || 'step'
-  const detail = step.url || step.selector || step.text || step.ref || step.path || step.key || step.value || step.operation || ''
+  const detail = step.stepName || step.testId || step.label || step.name || step.selector || step.url || step.text || step.ref || step.path || step.key || step.value || step.condition || step.operation || ''
   return detail ? action + ' · ' + String(detail).slice(0, 80) : action
 }
 
@@ -186,10 +187,22 @@ function buildRow (entry) {
     meta.textContent = bits.join(' · ')
   }
   body.appendChild(meta)
+  if (entry.lastRun) {
+    const result = document.createElement('button')
+    result.className = 'playbook-result ' + (entry.lastRun.ok ? 'passed' : 'failed')
+    const summary = entry.lastRun.summary || {}
+    result.textContent = t('playbookStatus' + (entry.lastRun.status || 'failed'), entry.lastRun.status || 'failed') + ' · ' + (summary.passed || 0) + ' ✓ / ' + (summary.failed || 0) + ' ✕ · ' + Math.round(entry.lastRun.durationMs / 100) / 10 + 's'
+    result.title = t('playbookOpenReport', 'Open report')
+    result.addEventListener('click', function (e) {
+      e.stopPropagation()
+      if (entry.lastRun.reportPath) editorView.openFile(entry.lastRun.reportPath)
+    })
+    body.appendChild(result)
+  }
   if (runningName === entry.name && runProgress) {
     const progress = document.createElement('div')
     progress.className = 'playbook-progress'
-    progress.textContent = (runProgress.index + 1) + '/' + runProgress.total + ' ' + stepSummary(runProgress.step)
+    progress.textContent = (runProgress.index + 1) + '/' + runProgress.total + ' · ' + (runProgress.case || '') + ' #' + (runProgress.iteration || 1) + ' · ' + (runProgress.phase || '') + ' ' + stepSummary(runProgress.step)
     body.appendChild(progress)
   }
   top.appendChild(body)
@@ -198,15 +211,46 @@ function buildRow (entry) {
   actions.className = 'playbook-row-actions'
 
   if (!entry.error) {
+    const repeat = document.createElement('input')
+    repeat.type = 'number'
+    repeat.min = '1'
+    repeat.max = '20'
+    repeat.step = '1'
+    repeat.className = 'playbook-repeat'
+    repeat.title = t('playbookRepeat', 'Repetitions')
+    repeat.setAttribute('aria-label', repeat.title)
+    repeat.value = repeatCounts[entry.name] || entry.repeat || 1
+    repeat.disabled = !!runningName
+    repeat.addEventListener('click', function (e) { e.stopPropagation() })
+    repeat.addEventListener('change', function () {
+      const value = Math.max(1, Math.min(20, Math.round(Number(repeat.value) || 1)))
+      repeatCounts[entry.name] = value
+      repeat.value = value
+    })
+    actions.appendChild(repeat)
     const runBtn = document.createElement('button')
     runBtn.className = 'codicon codicon-play git-icon-button'
     runBtn.title = t('playbookRun', 'Run')
     runBtn.disabled = !!runningName
     runBtn.addEventListener('click', function (e) {
       e.stopPropagation()
-      runPlaybook(entry.name)
+      runPlaybook(entry.name, Number(repeat.value))
     })
     actions.appendChild(runBtn)
+    if (runningName === entry.name) {
+      const stopBtn = document.createElement('button')
+      stopBtn.className = 'codicon codicon-debug-stop git-icon-button'
+      stopBtn.title = t('playbookStop', 'Stop after current step; run cleanup')
+      stopBtn.addEventListener('click', async function (e) {
+        e.stopPropagation()
+        stopBtn.disabled = true
+        try {
+          const result = await ipc.invoke('playbookCancel', currentWorkspaceId, entry.name)
+          if (!result.ok) { lastError = result.error; render() }
+        } catch (err) { lastError = err.message; render() }
+      })
+      actions.appendChild(stopBtn)
+    }
   }
 
   const editBtn = document.createElement('button')
@@ -360,7 +404,7 @@ async function createPlaybook () {
     description: '',
     steps: [
       { action: 'navigate', url: 'https://example.com' },
-      { action: 'wait', ms: 500 }
+      { action: 'assert', condition: 'visible', role: 'heading', name: 'Example Domain' }
     ]
   }
   const result = await ipc.invoke('playbookSave', wsPath, stub, wsId)
@@ -374,7 +418,7 @@ async function createPlaybook () {
   if (result.path) editorView.openFile(result.path)
 }
 
-async function runPlaybook (name) {
+async function runPlaybook (name, repeat) {
   const wsPath = getWorkspacePath() || null
   const wsId = getWorkspaceId()
   if (!wsId || runningName) return
@@ -382,7 +426,8 @@ async function runPlaybook (name) {
   lastError = null
   render()
   try {
-    const result = await ipc.invoke('playbookRun', wsPath, name, {}, wsId)
+    const task = tasks.getSelected()
+    const result = await ipc.invoke('playbookRun', wsPath, name, {}, wsId, { taskId: task && task.id, repeat: repeat })
     if (!result || !result.ok) {
       lastError = (result && result.error) || t('playbookRunError', 'Playbook failed')
     }
@@ -391,7 +436,7 @@ async function runPlaybook (name) {
   }
   runningName = null
   runProgress = null
-  render()
+  await refresh()
 }
 
 async function deletePlaybook (name) {
@@ -454,7 +499,7 @@ const playbookPanel = {
       }
       if (data.type === 'progress') {
         runningName = data.name
-        runProgress = { index: data.index, total: data.total, step: data.step }
+        runProgress = data
         render()
         return
       }

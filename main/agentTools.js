@@ -3,29 +3,7 @@ createMinCustomTools() is called from agent.js after the ESM SDK loads.
 
 Browser control is one tool with an `action` subcommand so the catalog stays
 small as more gestures are added. Playbooks use the same action names. */
-/* global minBrowser, listPlaybooks, getPlaybook, savePlaybook, runPlaybook, deletePlaybook, minFigmaEngine, minFigmaBridge, minDocumentStore, minDesignSpec, minDesignOverlay, browserControlTargetView, path */
-
-function minToolTextResult (text, isError) {
-  const value = String(text)
-  if (isError) throw new Error(value)
-  return {
-    content: [{ type: 'text', text: value }],
-    details: {}
-  }
-}
-
-function minToolJsonResult (value, isError) {
-  let text
-  try {
-    text = JSON.stringify(value, null, 2)
-  } catch (e) {
-    text = String(value)
-  }
-  if (isError || (value && value.ok === false)) {
-    throw new Error((value && value.error) ? String(value.error) : text)
-  }
-  return minToolTextResult(text)
-}
+/* global minBrowser, listPlaybooks, getPlaybook, savePlaybook, runPlaybook, deletePlaybook, minFigmaEngine, minFigmaBridge, minDocumentStore, minDesignSpec, minDesignOverlay, browserControlTargetView, playbookReports, cancelPlaybook, browserCommandFields, browserCommandHelp, minToolTextResult, minToolJsonResult, minToolVisualResult, minToolBrowserPayload, minToolReportPayload, path */
 
 function minOptional (Type, schema) {
   if (Type && typeof Type.Optional === 'function') return Type.Optional(schema)
@@ -41,19 +19,15 @@ function minEnum (Type, values, description) {
   return Type.String({ description: description + ' One of: ' + values.join(', ') })
 }
 
-var BROWSER_ACTIONS = [
-  'snapshot', 'read', 'screenshot', 'navigate', 'back', 'forward', 'reload', 'tabs',
-  'click', 'dblclick', 'rightclick', 'type', 'select', 'press', 'scroll',
-  'wait', 'hover', 'drag', 'assert', 'upload', 'download', 'dialog'
-]
+var BROWSER_ACTIONS = ['help', 'batch'].concat(Object.keys(browserCommandFields))
 var FIGMA_ACTIONS = [
-  'status', 'node-data', 'extract-text', 'find-text', 'export', 'list-frames',
+  'help', 'status', 'node-data', 'extract-text', 'find-text', 'inspect-region', 'export', 'list-frames',
   'spec-list', 'spec-add', 'spec-update', 'spec-remove',
   'variant-add', 'variant-remove', 'overlay', 'capture'
 ]
 /* operation names mirror the blueprint's document tools verbatim */
 var DOCS_OPERATIONS = ['listDocuments', 'readDocument', 'editDocument']
-var PLAYBOOK_OPERATIONS = ['list', 'get', 'save', 'run', 'delete']
+var PLAYBOOK_OPERATIONS = ['help', 'list', 'get', 'save', 'run', 'reports', 'report', 'cancel', 'delete']
 /* sub-actions per custom tool, surfaced in the Pro Settings tools directory */
 var MIN_TOOL_ACTIONS = {
   browser: BROWSER_ACTIONS,
@@ -143,11 +117,57 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
     return minOptional(Type, Type.Boolean({ description: description }))
   }
 
-  function withTask (params) {
-    return Object.assign({}, params, { taskId: taskId, workspaceId: workspaceId })
+  function jsonResult (value, isError, params) {
+    return minToolJsonResult(value, isError, Object.assign({}, params, { cwd: cwd, workspaceId: workspaceId }))
+  }
+  function visualResult (value, isError, params) {
+    return minToolVisualResult(value, isError, Object.assign({}, params, { cwd: cwd, workspaceId: workspaceId }))
+  }
+  const stepArray = function () {
+    return minOptional(Type, Type.Array(Type.Object({ action: minEnum(Type, Object.keys(browserCommandFields), 'browser action') }, {
+      additionalProperties: true,
+      description: 'Same fields as browser; stepName optional. Validated before execution. Playbook steps allow {{variables}} and continueOnError.'
+    })))
   }
 
+  function withTask (params) {
+    return Object.assign({}, params, { taskId: taskId, workspaceId: workspaceId, outputDir: cwd ? path.join(cwd, '.min', 'design', 'shots') : undefined })
+  }
+
+  const rectSchema = Type.Object({ x: Type.Number(), y: Type.Number(), width: Type.Number(), height: Type.Number() })
+  const visualFields = {
+    width: optNum('For viewport set: width in CSS pixels'),
+    height: optNum('For viewport set: height in CSS pixels'),
+    dpr: optNum('For viewport: device pixel ratio, default 1'),
+    mobile: optBool('For viewport: mobile emulation, default false; does not change user-agent'),
+    clip: minOptional(Type, Object.assign({}, rectSchema, { description: 'For screenshot/compare: area in viewport CSS pixels. Use either clip or an element locator. The area must be inside the viewport.' })),
+    referencePath: optStr('For compare: absolute local PNG/JPEG reference path (or min://app/...)'),
+    referenceScale: optNum('For compare: reference image pixels per CSS pixel, e.g. 2 for a 2x Figma export. Default 1. Never guess by stretching the image.'),
+    referenceClip: minOptional(Type, Object.assign({}, rectSchema, { description: 'For compare: reference area in CSS pixels, with the same CSS width/height as the capture. Default capture document coordinates; use this for a cropped reference.' })),
+    maxMismatchRatio: optNum('For compare: optional pass/fail limit 0–1. Playbook fails if exceeded or capture readiness times out. Does not update the reference.'),
+    threshold: optNum('For compare: per-channel pixel difference tolerance 0–1, default 0.1. Includes antialiasing; not a semantic score.'),
+    includeOverlay: optBool('For screenshot/inspect: include Min design overlay. Default false. compare always hides it.'),
+    hideScrollbars: optBool('For visual tools: temporarily hide scrollbars. Default true.'),
+    freezeAnimations: optBool('For visual tools: temporarily pause CSS animations and hide caret. Default true. JS/video animations can still change.')
+  }
+
+  const testFields = {
+    condition: optStr('For assert/wait: visible (default), hidden, attached, detached, text, value, checked, enabled, disabled, count, attribute, css, url, title, no-errors'),
+    expected: minOptional(Type, Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()], { description: 'Expected assertion value. Required for text/value/count/attribute/css/url/title. checked defaults true.' })),
+    contains: optBool('For string assertions: substring comparison, default false'),
+    not: optBool('Negate an assertion. Missing elements never pass a singular assertion; use hidden/detached.'),
+    attribute: optStr('Attribute name for condition=attribute'),
+    property: optStr('CSS property for condition=css'),
+    checked: optBool('For check: desired checkbox/radio state. Default true; does not toggle repeatedly.'),
+    includeHidden: optBool('For find: include hidden elements, default false')
+  }
   const locatorFields = {
+    testId: optStr('Exact data-testid value; stable across rerenders'),
+    label: optStr('Associated label or ARIA label'),
+    placeholder: optStr('Input placeholder'),
+    name: optStr('Accessible name, usually paired with role'),
+    exact: optBool('Locator names match exactly by default (case-insensitive). false allows substring.'),
+    strict: optBool('Default true: fail ambiguous action/assert locators. Refine the locator or choose nth.'),
     ref: optStr('Ref from the latest snapshot, e.g. e12. Re-resolved if the node was rerendered.'),
     selector: optStr('CSS selector. Prefer data-testid / aria-label / name in playbooks.'),
     text: optStr('Visible accessible name. For type, this is the value to type; locate the field with selector/ref/role.'),
@@ -157,187 +177,132 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
     timeout: optNum('How long to wait for a live (attached + stable) element, ms. Default 4000.')
   }
 
+  const browserParameters = Object.assign({
+    action: minEnum(Type, BROWSER_ACTIONS, 'Browser sub-action'),
+    url: optStr('For navigate, or tabs new'),
+    operation: optStr('For tabs: list, new, close, select. viewport: get, set, reset. diagnostics: get, clear.'),
+    value: optStr('For fill: field value (empty clears). For select: option value or visible label'),
+    key: optStr('For press: Enter, Tab, Escape, Control+a'),
+    submit: optBool('For type: submit the form after typing'),
+    direction: optStr('For scroll: up, down, left, right, top, bottom'),
+    amount: optNum('For scroll: pixels. Default 600.'),
+    ms: optNum('For wait: sleep milliseconds (max 60000)'),
+    load: optBool('For wait: wait until the tab finishes loading'),
+    x: optNum('Click/drag/inspect X in viewport CSS pixels'),
+    y: optNum('Click/drag/inspect Y in viewport CSS pixels'),
+    targetRef: optStr('For drag: target ref'),
+    targetSelector: optStr('For drag: target CSS selector'),
+    targetText: optStr('For drag: target visible name'),
+    targetRole: optStr('For drag: target role'),
+    targetNth: optNum('For drag: target nth match'),
+    targetX: optNum('For drag: target X in CSS pixels'),
+    targetY: optNum('For drag: target Y in CSS pixels'),
+    moves: optNum('For drag: intermediate pointer moves. Default 12.'),
+    button: optStr('For click: left, right, or middle. Default left.'),
+    clickCount: optNum('For click: 1 for single, 2 for double.'),
+    holdMs: optNum('For click: hold the button down this many ms'),
+    modifiers: optStr('For click: e.g. Control, Shift, Control+Shift'),
+    path: optStr('For upload: file path (absolute or min://app/...). For screenshot: PNG destination.'),
+    files: optStr('For upload: extra comma-separated paths'),
+    acceptDialog: optBool('For click: accept the next alert/confirm/prompt'),
+    accept: optBool('For dialog: true to accept, false to dismiss. Default true.'),
+    promptText: optStr('For dialog / acceptDialog: text to type into prompt()'),
+    limit: optNum('Page size: read characters (6000), snapshot elements (80), find matches (10), diagnostics entries (20).'),
+    offset: optNum('Resume at nextOffset returned by read/snapshot/find/diagnostics; default 0'),
+    detail: optStr('compact (default) or full. Full adds related styles/geometry.'),
+    images: optStr('auto (default): screenshot image; compare diff only when changed. all: reference+actual+diff. none: paths/metrics only.'),
+    properties: optStr('inspect: comma-separated CSS properties, e.g. gap,font-size,color'),
+    level: optStr('diagnostics: all, error, warning, info, debug'),
+    topic: optStr('help: action to explain; omit for workflow/examples'),
+    steps: stepArray()
+  }, locatorFields, testFields, visualFields)
+
   const browserTool = defineTool({
     name: 'browser',
     label: 'Browser',
     description: 'Control this workspace\'s browser: tabs (list, open, close, select), URL, and the web page. Cannot change Min settings or other chrome.',
-    promptSnippet: 'browser: snapshot / click / type / drag / tabs / playbook-ready locators',
+    promptSnippet: 'browser: find / fill / click / press / assert / diagnostics / viewport / screenshot / compare (internal browser)',
     promptGuidelines: [
-      'All actions apply only to this workspace\'s tabs, even if another workspace is selected in the window.',
-      'Use action=tabs with operation=list|new|close|select to open, close, or switch tabs in this workspace.',
-      'Call browser with action=snapshot before click/type/drag unless you already have a current ref from this turn.',
-      'Use action=read to get the page text when you need prose, table data, or an error message rather than elements.',
-      'Refs are re-resolved after React/Vue rerenders using stored role+name and selector. If a click fails, snapshot again.',
-      'Prefer selector (data-testid, aria-label, name) or role+text in playbooks — not refs.',
-      'Click variants: dblclick, rightclick, or click with button/clickCount/holdMs/modifiers. Hover then snapshot to reveal menus.',
-      'Drag: set source with ref/selector/text and target with targetRef/targetSelector/targetText, or x/y + targetX/targetY.',
-      'upload: set files on input[type=file] with path (absolute or min://app/...). download: click a link or pass url, then wait until it finishes.',
-      'screenshot captures the visible page to a PNG (path optional). dialog accepts/dismisses alert/confirm/prompt; or set acceptDialog on click.',
-      'Selectors pierce open shadow roots and same-origin iframes.',
-      'Do not open or interact with Min settings, profiles, or other browser chrome. Only tabs, URLs, and page content.'
+      'Use Min’s internal browser for UI work/testing. Tools stay in the calling task/workspace; do not drive browser settings or use an external browser.',
+      'Find targets with testId, label, or role+name; snapshot for overview. Known locators can act directly. Ambiguous actions fail; refine or choose nth. Save stable locators in playbooks.',
+      'Use fill(value), check(checked), click, press(key), then assert(condition,expected). Assertions wait; mutations never auto-retry. batch runs 1–12 known steps sequentially and stops on failure. Earlier steps have already run.',
+      'Results are compact. Use selector/limit/offset to narrow reads, properties for inspect, detail=full for related geometry/styles. Follow nextOffset or _output.fullResultPath when truncated; never infer omitted data.',
+      'Use the screenshot/export as design truth. Set viewport and compare(referencePath,known referenceScale); Figma supplies targeted styles/fonts/text. Inspect mismatches before changing CSS.',
+      'Image previewToCSS maps pixels to CSS coordinates. Compare never fits/stretches or updates references; check readiness and assertion.passed. images=all shows reference/actual/diff; unchanged comparisons return metrics only.',
+      'diagnostics clear starts an error window; assert no-errors checks observed logs. Open shadows/same-origin frames are supported. help with topic explains any action.'
     ],
-    parameters: Type.Object(Object.assign({
-      action: minEnum(Type, BROWSER_ACTIONS, 'Browser sub-action'),
-      url: optStr('For navigate, or tabs new'),
-      operation: optStr('For tabs: list, new, close, select'),
-      value: optStr('For select: option value or visible label'),
-      key: optStr('For press: Enter, Tab, Escape, Control+a'),
-      submit: optBool('For type: submit the form after typing'),
-      direction: optStr('For scroll: up, down, left, right, top, bottom'),
-      amount: optNum('For scroll: pixels. Default 600.'),
-      ms: optNum('For wait: sleep milliseconds (max 60000)'),
-      load: optBool('For wait: wait until the tab finishes loading'),
-      x: optNum('Click/drag source X in CSS pixels'),
-      y: optNum('Click/drag source Y in CSS pixels'),
-      targetRef: optStr('For drag: target ref'),
-      targetSelector: optStr('For drag: target CSS selector'),
-      targetText: optStr('For drag: target visible name'),
-      targetRole: optStr('For drag: target role'),
-      targetNth: optNum('For drag: target nth match'),
-      targetX: optNum('For drag: target X in CSS pixels'),
-      targetY: optNum('For drag: target Y in CSS pixels'),
-      moves: optNum('For drag: intermediate pointer moves. Default 12.'),
-      button: optStr('For click: left, right, or middle. Default left.'),
-      clickCount: optNum('For click: 1 for single, 2 for double.'),
-      holdMs: optNum('For click: hold the button down this many ms'),
-      modifiers: optStr('For click: e.g. Control, Shift, Control+Shift'),
-      path: optStr('For upload: file path (absolute or min://app/...). For screenshot: PNG destination.'),
-      files: optStr('For upload: extra comma-separated paths'),
-      acceptDialog: optBool('For click: accept the next alert/confirm/prompt'),
-      accept: optBool('For dialog: true to accept, false to dismiss. Default true.'),
-      promptText: optStr('For dialog / acceptDialog: text to type into prompt()'),
-      limit: optNum('For read: maximum characters of page text. Default 12000.')
-    }, locatorFields)),
+    parameters: Type.Object(browserParameters),
     execute: async function (_id, params) {
-      if (!taskId || taskId === 'default') {
-        return minToolTextResult('Browser tools need an open task', true)
+      if (params.action === 'help') {
+        const help = browserCommandHelp(params.topic)
+        if (help.fields) help.parameters = Object.fromEntries(help.fields.filter(function (key) { return browserParameters[key] }).map(function (key) { return [key, browserParameters[key].description || browserParameters[key].type || 'value'] }))
+        delete help.fields
+        return jsonResult(help)
       }
-      const action = params.action
-      if (action === 'navigate' && !params.url) {
-        return minToolTextResult('url is required for navigate', true)
-      }
-      if ((action === 'click' || action === 'dblclick' || action === 'rightclick' || action === 'hover') && !params.ref && !params.selector && !params.text && !params.role && params.x == null) {
-        return minToolTextResult(action + ' needs ref, selector, text, role, or x/y', true)
-      }
-      if (action === 'type') {
-        if (params.text == null) return minToolTextResult('text is required for type', true)
-        if (!params.ref && !params.selector && !params.role) {
-          return minToolTextResult('type needs selector, ref, or role to locate the field', true)
-        }
-      }
-      if (action === 'select' && !params.ref && !params.selector && !params.text && !params.role) {
-        return minToolTextResult('select needs ref, selector, text, or role', true)
-      }
-      if (action === 'drag') {
-        const hasFrom = params.ref || params.selector || params.text || params.role || params.x != null
-        const hasTo = params.targetRef || params.targetSelector || params.targetText || params.targetRole || params.targetX != null
-        if (!hasFrom || !hasTo) {
-          return minToolTextResult('drag needs a source (ref/selector/text/x,y) and a target (targetRef/targetSelector/targetText/targetX,Y)', true)
-        }
-      }
-      if (action === 'upload') {
-        if (!params.path && !params.files) return minToolTextResult('upload needs path', true)
-        if (!params.ref && !params.selector && !params.role) {
-          return minToolTextResult('upload needs selector, ref, or role', true)
-        }
-      }
-      if (action === 'snapshot') {
-        const result = await minBrowser.snapshot(params.tabId, taskId, workspaceId)
-        if (!result || result.ok === false) return minToolJsonResult(result, true)
-        const header = (result.title || '') + '\n' + (result.url || '') + '\n'
-        return minToolTextResult(header + (result.snapshot || ''))
-      }
-      if (action === 'read') {
-        // the page's readable text: what the snapshot does not cover
-        const result = await minBrowser.readPage({ tabId: params.tabId, taskId: taskId, workspaceId: workspaceId, limit: params.limit })
-        if (!result || result.ok === false) return minToolJsonResult(result, true)
-        const header = (result.title || '') + '\n' + (result.url || '') + '\n'
-        const suffix = result.truncated ? '\n\n[truncated at ' + String(result.text.length) + ' of ' + String(result.length) + ' characters]' : ''
-        return minToolTextResult(header + (result.text || '') + suffix)
-      }
+      if (!taskId || taskId === 'default') return minToolTextResult('Browser tools need an open task', true)
       const result = await minBrowser.runStep(withTask(params))
-      return minToolJsonResult(result, result && result.ok === false)
+      if (params.action === 'screenshot' || params.action === 'compare') return visualResult(result, false, params)
+      return jsonResult(minToolBrowserPayload(result, params), result && result.ok === false, params)
     }
   })
 
   const playbookTool = defineTool({
     name: 'playbook',
     label: 'Playbook',
-    description: 'Create, list, read, run, or delete browser automation playbooks for this workspace only. With a folder they live in .min/playbooks; without one they are stored in Min for this workspace. Step actions match browser.action and run against this workspace\'s tabs.',
-    promptSnippet: 'playbook: save/run repeated browser automations',
+    description: 'Save and repeat browser automation or testing scenarios in this workspace using Min tabs. Reports include pass/fail, assertion details, durations, diagnostics, and failure screenshots.',
+    promptSnippet: 'playbook: save / run / reports / report / cancel repeatable browser tests',
     promptGuidelines: [
-      'Playbooks belong to this workspace. With a folder they are saved in .min/playbooks; otherwise in Min\'s app data for this workspace.',
-      'For a task the user will repeat, save a playbook whose steps use the same action names as the browser tool.',
-      'Use CSS selectors or role+text in playbook steps, never snapshot refs.',
-      'Support {{variable}} placeholders in string fields and pass them via playbook run varsJson.',
-      'After saving, tell the user they can run it from the Playbook sidebar tab.'
+      'Save reusable tests with browser fields and stable locators. setup/steps/teardown run per case and repetition; teardown also runs after failures/cancellation. Sessions share cookies/storage: make setup deterministic.',
+      'vars defaults → case vars → run overrides. Whole {{variable}} fields preserve types; all resolved steps validate before mutations. repeat=1–20; continueOnError never turns failures green.',
+      'run returns status/counts/reportPath; report pages through results (status=failed filters failures). cancel finishes the current step then cleans up. Users can repeat/stop/open reports in the sidebar.'
     ],
     parameters: Type.Object({
       operation: minEnum(Type, PLAYBOOK_OPERATIONS, 'Playbook operation'),
-      name: optStr('Playbook name (slug). Required for get, save, run, delete.'),
-      description: optStr('Short description. Used with save.'),
-      steps: minOptional(Type, Type.Array(Type.Object({
-        action: Type.String({ description: BROWSER_ACTIONS.join(', ') }),
-        url: optStr('For navigate, or tabs new'),
-        selector: optStr('CSS selector'),
-        text: optStr('Visible name, or text to type, or wait/assert text'),
-        role: optStr('Accessible role'),
-        nth: optNum('Nth match'),
-        ref: optStr('Only for one-off runs; do not save refs in playbooks'),
-        value: optStr('For select'),
-        key: optStr('For press'),
-        ms: optNum('For wait duration'),
-        timeout: optNum('For wait/assert/rerender retry'),
-        direction: optStr('For scroll'),
-        amount: optNum('For scroll'),
-        submit: optBool('For type'),
-        tabId: optStr('Optional tab id'),
-        operation: optStr('For tabs steps: list, new, close, select'),
-        continueOnError: optBool('If true, keep running after this step fails'),
-        load: optBool('For wait: wait until load'),
-        x: optNum('Click/drag source X'),
-        y: optNum('Click/drag source Y'),
-        targetRef: optStr('For drag'),
-        targetSelector: optStr('For drag'),
-        targetText: optStr('For drag'),
-        targetRole: optStr('For drag'),
-        targetNth: optNum('For drag'),
-        targetX: optNum('For drag'),
-        targetY: optNum('For drag'),
-        moves: optNum('For drag pointer path'),
-        button: optStr('left, right, middle'),
-        clickCount: optNum('1 or 2'),
-        holdMs: optNum('Press-and-hold ms'),
-        modifiers: optStr('e.g. Control+Shift'),
-        path: optStr('upload file path or screenshot PNG path'),
-        files: optStr('extra upload paths'),
-        acceptDialog: optBool('Accept the next JS dialog after this click'),
-        accept: optBool('For dialog: accept vs dismiss'),
-        promptText: optStr('Text for prompt() dialogs')
-      }))),
-      varsJson: optStr('JSON object of values for {{placeholders}} when operation is run')
+      name: optStr('Playbook name, required except for list'),
+      description: optStr('Short description for save'),
+      steps: stepArray(),
+      setup: stepArray(),
+      teardown: stepArray(),
+      repeat: optNum('Save default repetitions or override on run, 1–20; default 1'),
+      tabId: optStr('Initial tab on run, defaults to this task’s selected web tab'),
+      vars: minOptional(Type, Type.Object({}, { additionalProperties: true, description: 'Default variables on save; overrides on run' })),
+      cases: minOptional(Type, Type.Array(Type.Object({ name: Type.String(), vars: Type.Object({}, { additionalProperties: true }) }), { description: 'save: up to 20 named data cases' })),
+      status: optStr('report: all (default), failed, passed, skipped'),
+      offset: optNum('report: nextOffset from previous page; default 0'),
+      limit: optNum('report: results per page, default 20, max 100'),
+      detail: optStr('report: compact (default) or full'),
+      runId: optStr('For report: runId returned by run or reports')
     }),
     execute: async function (_id, params) {
+      if (params.operation === 'help') return jsonResult({ ok: true, operations: PLAYBOOK_OPERATIONS, example: { operation: 'save', name: 'smoke', vars: { baseUrl: 'http://localhost:3000' }, setup: [{ action: 'navigate', url: '{{baseUrl}}' }], steps: [{ action: 'assert', role: 'heading', name: 'Home' }], teardown: [{ action: 'viewport', operation: 'reset' }] }, run: { operation: 'run', name: 'smoke', repeat: 3 }, reports: 'report accepts runId, status=failed, offset/limit. Browser help describes step fields.' })
+
       if (!workspaceId || workspaceId === 'default') {
         return minToolTextResult('Playbooks need an open workspace', true)
       }
       const operation = params.operation
       if (operation === 'list') {
-        return minToolJsonResult(listPlaybooks(cwd, workspaceId))
+        const result = listPlaybooks(cwd, workspaceId)
+        if (result.playbooks) result.playbooks = result.playbooks.map(function (book) { const compact = Object.assign({}, book); delete compact.stepItems; return compact })
+        return jsonResult(result)
       }
       if (operation === 'get') {
         if (!params.name) return minToolTextResult('name is required', true)
         const got = getPlaybook(cwd, params.name, workspaceId)
-        return minToolJsonResult(got, !got.ok)
+        return jsonResult(got, !got.ok)
       }
       if (operation === 'save') {
         const saved = savePlaybook(cwd, {
           name: params.name,
           description: params.description,
-          steps: params.steps
+          steps: params.steps,
+          setup: params.setup,
+          teardown: params.teardown,
+          repeat: params.repeat,
+          vars: params.vars || (params.varsJson ? JSON.parse(params.varsJson) : {}),
+          cases: params.cases || (params.casesJson ? JSON.parse(params.casesJson) : undefined)
         }, workspaceId)
-        if (!saved.ok) return minToolJsonResult(saved, true)
-        return minToolJsonResult({
+        if (!saved.ok) return jsonResult(saved, true)
+        return jsonResult({
           ok: true,
           name: saved.playbook.name,
           path: saved.path,
@@ -347,21 +312,34 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       }
       if (operation === 'run') {
         if (!params.name) return minToolTextResult('name is required', true)
-        let vars = {}
-        if (params.varsJson) {
+        let vars = params.vars || {}
+        if (!params.vars && params.varsJson) {
           try {
             vars = JSON.parse(params.varsJson)
           } catch (e) {
             return minToolTextResult('varsJson is not valid JSON', true)
           }
         }
-        const ran = await runPlaybook(cwd, params.name, vars, { workspaceId: workspaceId })
-        return minToolJsonResult(ran, ran && ran.ok === false)
+        const ran = await runPlaybook(cwd, params.name, vars, { workspaceId: workspaceId, taskId: taskId, tabId: params.tabId, repeat: params.repeat })
+        const summary = Object.assign({}, ran)
+        delete summary.scenarios
+        summary.results = (ran.results || []).filter(function (result) { return result.status === 'failed' }).slice(0, 10)
+        summary.hint = 'Use report with runId for all step results.'
+        summary.results = summary.results.map(function (step) { const result = Object.assign({}, step); if (result.diagnostics) result.diagnostics = minToolBrowserPayload(result.diagnostics, { action: 'diagnostics', level: 'error', limit: 5 }); return result })
+        return jsonResult(summary, !ran.ok, params)
       }
+      if (operation === 'reports' || operation === 'report') {
+        if (!params.name) return minToolTextResult('name is required', true)
+        if (operation === 'report' && !params.runId) return minToolTextResult('runId is required', true)
+        if (params.status && !['all', 'failed', 'passed', 'skipped'].includes(params.status)) return minToolTextResult('status must be all, failed, passed, or skipped', true)
+        if ((params.offset != null && (!Number.isInteger(params.offset) || params.offset < 0)) || (params.limit != null && (!Number.isInteger(params.limit) || params.limit < 1 || params.limit > 100))) return minToolTextResult('Invalid offset/limit', true)
+        return jsonResult(minToolReportPayload(playbookReports(cwd, params.name, workspaceId, operation === 'report' ? params.runId : undefined), params), false, params)
+      }
+      if (operation === 'cancel') return jsonResult(cancelPlaybook(workspaceId, params.name))
       if (operation === 'delete') {
         if (!params.name) return minToolTextResult('name is required', true)
         const removed = deletePlaybook(cwd, params.name, workspaceId)
-        return minToolJsonResult(removed, !removed.ok)
+        return jsonResult(removed, !removed.ok)
       }
       return minToolTextResult('Unknown playbook operation', true)
     }
@@ -379,7 +357,7 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
     promptSnippet: 'docs: listDocuments / readDocument / editDocument on request',
     promptGuidelines: [
       'Docs are scoped to this workspace. The workspace is fixed by the session; never ask for or invent a workspaceId parameter.',
-      'Use listDocuments before readDocument unless the user names a specific document. Call readDocument only when its full Markdown is relevant.',
+      'List/search documents before reading unless id is known. readDocument pages Markdown with offset/limit; follow nextOffset only when needed.',
       'editDocument creates a document without id and updates it with id; use it only when the user explicitly asks for a persistent documentation change.',
       'Private or not-found documents are unavailable. Never infer, expose, or bypass a private document.'
     ],
@@ -390,7 +368,8 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       title: optStr('Document title. Used by editDocument.'),
       markdown: optStr('Markdown content. Used by editDocument.'),
       private: optBool('Restrict the document from AI access. Used by editDocument.'),
-      limit: optNum('Maximum listDocuments results. The service caps this value.')
+      limit: optNum('listDocuments: max results. readDocument: max characters, default 6000.'),
+      offset: optNum('readDocument: resume from nextOffset; default 0')
     }),
     execute: async function (_id, params) {
       params = params || {}
@@ -400,14 +379,21 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       if (operation === 'listDocuments') {
         if (params.query != null && String(params.query).trim()) {
           const result = minDocumentStore.searchForAI(workspaceId, params.query, { limit: params.limit })
-          return minToolJsonResult(result, result && result.ok === false)
+          return jsonResult(result, result && result.ok === false)
         }
-        return minToolJsonResult(minDocumentStore.listForAI(workspaceId, { limit: params.limit }))
+        return jsonResult(minDocumentStore.listForAI(workspaceId, { limit: params.limit }))
       }
       if (operation === 'readDocument') {
         if (params.id == null || !String(params.id).trim()) return minToolTextResult('id is required', true)
         const result = minDocumentStore.getForAI(workspaceId, params.id)
-        return minToolJsonResult(result, result && result.ok === false)
+        if (result && result.ok && result.document && typeof result.document.markdown === 'string') {
+          const offset = params.offset == null ? 0 : params.offset
+          const limit = params.limit == null ? 6000 : params.limit
+          if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 30000) return minToolTextResult('readDocument needs offset >= 0 and limit 1–30000', true)
+          const markdown = result.document.markdown
+          return jsonResult(Object.assign({}, result, { document: Object.assign({}, result.document, { markdown: markdown.slice(offset, offset + limit) }), length: markdown.length, offset: offset, nextOffset: offset + limit < markdown.length ? offset + limit : null }))
+        }
+        return jsonResult(result, result && result.ok === false)
       }
       if (operation === 'editDocument') {
         const fields = {}
@@ -419,7 +405,7 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
         const result = (params.id != null && String(params.id).trim())
           ? minDocumentStore.updateForAI(workspaceId, params.id, fields)
           : minDocumentStore.createForAI(workspaceId, fields)
-        return minToolJsonResult(result, result && result.ok === false)
+        return jsonResult(result, result && result.ok === false)
       }
       return minToolTextResult('Unknown docs operation', true)
     }
@@ -428,22 +414,23 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
   const figmaTool = defineTool({
     name: 'figma',
     label: 'Figma',
-    description: 'Read and export the connected Figma file through the local plugin bridge (not the REST API), manage the design spec (objects to build with viewport variants), and overlay a design variant on a tab for visual comparison. Connect from the Design sidebar first.',
-    promptSnippet: 'figma: status / node-data / extract-text / find-text / export / list-frames / spec-* / overlay / capture',
+    description: 'Inspect/export the connected Figma file, manage design variants and overlays. Connect in Design sidebar.',
+    promptSnippet: 'figma: status / node-data / extract-text / find-text / inspect-region / export / list-frames / spec-* / overlay / capture',
     promptGuidelines: [
-      'Requires Design sidebar Connect on a Figma tab in this workspace.',
-      'Default nodeId is the node-id from the Min tab URL. Pass nodeId to target a specific layer.',
-      'export writes a PNG under .min/design/exports when the workspace has a folder.',
-      'spec-* actions manage the worklist of Figma objects to build; each entry has variants (desktop/mobile/custom) with a nodeId and viewport.',
-      'overlay exports a variant (if needed) and overlays it on the implementation tab for pixel comparison; capture screenshots the tab at the variant viewport.',
-      'Only run spec/overlay/capture actions when the user asks — never mutate the spec or toggle overlays on your own.',
-      'If the plugin is not connected, tell the user to click Connect in the Design sidebar.'
+      'Use export as visual truth; inspect-region or find-text to target layers despite messy grouping. Fetch only needed fields from node-data (css,fonts,text). nodeId defaults to the connected tab.',
+      'Regions use original export pixels with the reported referenceScale. Browser comparison uses the same scale. Overlapping layers are candidates; exports return image previews and artifact paths.',
+      'Only change spec entries/overlays when authorized. If disconnected, Connect in Design sidebar. help provides examples; images=none suppresses image previews.'
     ],
     parameters: Type.Object({
       action: minEnum(Type, FIGMA_ACTIONS, 'Figma sub-action'),
       nodeId: optStr('Figma node id such as 12:34. Defaults to the connected tab node-id.'),
+      fields: optStr('node-data: comma-separated css,fonts,text; default css,fonts. full detail includes all.'),
+      detail: optStr('compact (default) or full'),
+      images: optStr('auto (default), all, or none'),
       query: optStr('For find-text: case-insensitive text or layer name'),
-      limit: optNum('For find-text: max matches, 1-50'),
+      limit: optNum('For find-text/inspect-region: max matches, 1-50'),
+      region: minOptional(Type, Object.assign({}, rectSchema, { description: 'For inspect-region: x/y/width/height in original export pixels, relative to exported nodeId. Use a small rectangle to probe a point.' })),
+      referenceScale: optNum('For inspect-region: original export pixels per Figma unit, default 1. Use export payload scale.'),
       format: optStr('For export: PNG, JPG, or SVG. Default PNG.'),
       scale: optNum('For export: scale. Default 2.'),
       entryId: optStr('For spec-update/spec-remove/variant-add/variant-remove/overlay: spec entry id'),
@@ -458,6 +445,8 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       on: optBool('For overlay: true to show, false to clear. Default true.')
     }),
     execute: async function (_id, params) {
+      if (params.action === 'help') return jsonResult({ ok: true, actions: FIGMA_ACTIONS, examples: [{ action: 'export', nodeId: '12:34', scale: 2 }, { action: 'inspect-region', nodeId: '12:34', referenceScale: 2, region: { x: 100, y: 80, width: 40, height: 40 } }, { action: 'node-data', nodeId: '12:35', fields: 'css,fonts' }], workflow: 'Export → inspect-region/find-text → node-data for a specific layer. Compare the export in Min browser.' })
+
       if (!workspaceId || workspaceId === 'default') {
         return minToolTextResult('Figma tools need an open workspace', true)
       }
@@ -466,11 +455,11 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
 
       // Spec actions only need the workspace store — no Figma connection.
       if (params.action === 'spec-list') {
-        return minToolJsonResult(minDesignSpec.list(specWorkspace).doc)
+        return jsonResult(minDesignSpec.list(specWorkspace).doc)
       }
       if (params.action === 'spec-add') {
         if (!params.name) return minToolTextResult('name is required for spec-add', true)
-        return minToolJsonResult(minDesignSpec.add(specWorkspace, {
+        return jsonResult(minDesignSpec.add(specWorkspace, {
           name: params.name,
           kind: params.kind,
           figmaUrl: params.figmaUrl,
@@ -480,17 +469,17 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       }
       if (params.action === 'spec-update') {
         if (!params.entryId) return minToolTextResult('entryId is required for spec-update', true)
-        return minToolJsonResult(minDesignSpec.update(specWorkspace, params.entryId, {
+        return jsonResult(minDesignSpec.update(specWorkspace, params.entryId, {
           name: params.name, kind: params.kind, status: params.status, nodeId: params.nodeId
         }))
       }
       if (params.action === 'spec-remove') {
         if (!params.entryId) return minToolTextResult('entryId is required for spec-remove', true)
-        return minToolJsonResult(minDesignSpec.remove(specWorkspace, params.entryId))
+        return jsonResult(minDesignSpec.remove(specWorkspace, params.entryId))
       }
       if (params.action === 'variant-add') {
         if (!params.entryId) return minToolTextResult('entryId is required for variant-add', true)
-        return minToolJsonResult(minDesignSpec.variantAdd(specWorkspace, params.entryId, {
+        return jsonResult(minDesignSpec.variantAdd(specWorkspace, params.entryId, {
           label: params.label, nodeId: params.nodeId, viewport: params.viewport
         }))
       }
@@ -498,19 +487,19 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
         if (!params.entryId || !params.variantId) {
           return minToolTextResult('entryId and variantId are required for variant-remove', true)
         }
-        return minToolJsonResult(minDesignSpec.variantRemove(specWorkspace, params.entryId, params.variantId))
+        return jsonResult(minDesignSpec.variantRemove(specWorkspace, params.entryId, params.variantId))
       }
       if (params.action === 'capture') {
         const target = await browserControlTargetView(params.tabId, taskId, workspaceId)
         if (target.error) return minToolTextResult(target.error, true)
         const dir = specWorkspace ? path.join(specWorkspace, '.min', 'design', 'shots') : null
-        return minToolJsonResult(await minDesignOverlay.capture(target.id, params.name, dir))
+        return visualResult(await minBrowser.runStep(withTask({ action: 'screenshot', tabId: target.id, outputDir: dir })), false, params)
       }
       if (params.action === 'overlay') {
         const target = await browserControlTargetView(params.tabId, taskId, workspaceId)
         if (target.error) return minToolTextResult(target.error, true)
         if (params.on === false) {
-          return minToolJsonResult(await minDesignOverlay.clear(target.id))
+          return jsonResult(await minDesignOverlay.clear(target.id))
         }
         if (!params.entryId || !params.variantId) {
           return minToolTextResult('entryId and variantId are required for overlay', true)
@@ -519,11 +508,11 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
         const entry = doc.entries.find(function (e) { return e.id === params.entryId })
         const variant = entry && entry.variants.find(function (v) { return v.id === params.variantId })
         if (!variant) return minToolTextResult('Variant not found in the design spec', true)
-        return minToolJsonResult(await minDesignOverlayExportAndSet(target.id, entry, variant, specWorkspace))
+        return jsonResult(await minDesignOverlayExportAndSet(target.id, entry, variant, specWorkspace))
       }
       const ctx = engine.context
       if (params.action === 'status') {
-        return minToolJsonResult({
+        return jsonResult({
           ok: true,
           running: engine.running,
           connected: !!(ctx && ctx.fileKey),
@@ -542,22 +531,30 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
       }
       const nodeId = params.nodeId || ctx.nodeId || undefined
       if (params.action === 'extract-text' || params.action === 'node-data') {
+        const wanted = (params.action === 'extract-text' ? 'text' : params.fields || (params.detail === 'full' ? 'css,fonts,text' : 'css,fonts')).split(',').map(function (field) { return field.trim() })
+        if (wanted.some(function (field) { return !['css', 'fonts', 'text'].includes(field) })) return minToolTextResult('fields must be css,fonts,text', true)
         const result = await minFigmaBridge.command('node-data', {
           nodeId: nodeId,
-          fileKey: ctx.fileKey
+          fileKey: ctx.fileKey,
+          fields: wanted
         })
-        if (!result || result.ok === false) return minToolJsonResult(result, true)
+        if (!result || result.ok === false) return jsonResult(result, true)
         if (params.action === 'extract-text') {
           const payload = result.payload || {}
-          return minToolTextResult(payload.textExtract || JSON.stringify(payload, null, 2))
+          return jsonResult({ id: payload.id, text: payload.textExtract || '' }, false, params)
         }
-        return minToolJsonResult(result.payload || result)
+        const payload = result.payload || result
+        const out = { id: payload.id, name: payload.name, type: payload.type, width: payload.width, height: payload.height }
+        if (wanted.includes('css')) out.css = payload.css
+        if (wanted.includes('fonts')) { try { out.fonts = JSON.parse(payload.fontJson || '[]') } catch (err) { out.fonts = payload.fontJson } }
+        if (wanted.includes('text')) out.text = payload.textExtract
+        return jsonResult(out, false, params)
       }
       if (params.action === 'list-frames') {
         const result = await minFigmaBridge.command('list-frames', {
           fileKey: ctx.fileKey
         })
-        return minToolJsonResult(result && result.payload ? result.payload : result, result && result.ok === false)
+        return jsonResult(result && result.payload ? result.payload : result, result && result.ok === false)
       }
       if (params.action === 'find-text') {
         if (!params.query) return minToolTextResult('query is required for find-text', true)
@@ -565,9 +562,16 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
           nodeId: nodeId,
           fileKey: ctx.fileKey,
           query: params.query,
-          limit: params.limit
+          limit: params.limit == null ? 5 : params.limit
         })
-        return minToolJsonResult(result && result.payload ? result.payload : result, result && result.ok === false)
+        return jsonResult(result && result.payload ? result.payload : result, result && result.ok === false)
+      }
+      if (params.action === 'inspect-region') {
+        if (!params.region) return minToolTextResult('region is required for inspect-region', true)
+        const result = await minFigmaBridge.command('inspect-region', {
+          nodeId: nodeId, fileKey: ctx.fileKey, region: params.region, referenceScale: params.referenceScale, limit: params.limit == null ? 5 : params.limit
+        })
+        return jsonResult(result && result.payload ? result.payload : result, result && result.ok === false)
       }
       if (params.action === 'export') {
         const result = await minFigmaBridge.command('export', {
@@ -575,9 +579,10 @@ function createMinCustomTools (defineTool, Type, cwd, taskId, workspaceId) {
           fileKey: ctx.fileKey,
           format: params.format || 'PNG',
           scale: params.scale == null ? 2 : params.scale,
+          exportDir: specWorkspace ? path.join(specWorkspace, '.min', 'design', 'exports') : undefined,
           target: 'asset'
         })
-        return minToolJsonResult(result && result.payload ? result.payload : result, result && result.ok === false)
+        return visualResult(result && result.payload ? result.payload : result, result && result.ok === false, params)
       }
       return minToolTextResult('Unknown figma action', true)
     }

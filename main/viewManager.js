@@ -608,8 +608,9 @@ function loadURLInView (id, url, win) {
   if (typeof applyUAForURL === 'function') {
     applyUAForURL(viewMap[id].webContents, url)
   }
-  viewMap[id].webContents.loadURL(url)
+  const loading = viewMap[id].webContents.loadURL(url)
   viewStateMap[id].loadedInitialURL = true
+  return loading
 }
 
 ipc.on('loadURLInView', function (e, args) {

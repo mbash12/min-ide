@@ -1,7 +1,7 @@
 /* Design overlay: injects a Figma export into a tab's page DOM so the design
 sits on top of the implementation for pixel comparison. The overlay lives
 inside the page (absolute-positioned, pointer-events:none) so it scrolls with
-the content and shows up in screenshots — including ones the agent takes.
+the content. Browser visual tools mask it temporarily for clean captures.
 
 Companion behaviors while an overlay is active:
   - viewport emulation via CDP (Emulation.setDeviceMetricsOverride) so a
@@ -11,7 +11,7 @@ Companion behaviors while an overlay is active:
 
 Control changes inside the page are reported back through a magic-prefixed
 console message, which keeps main-side state accurate across re-injects. */
-/* global ipc, viewMap, fs, path, app */
+/* global ipc, viewMap, fs, path, app, browserVisualSetViewport */
 
 var designOverlayMap = {} // tabId -> overlay state
 var DESIGN_OVERLAY_PREFIX = '__min_design_overlay__'
@@ -186,38 +186,11 @@ function designOverlayEnsureHooks (tabId, wc) {
 }
 
 async function designOverlayEmulate (wc, state) {
-  var dbg = wc.debugger
-  try {
-    if (!dbg.isAttached()) {
-      dbg.attach('1.3')
-      state.debuggerAttached = true
-    }
-    if (state.viewport) {
-      await dbg.sendCommand('Emulation.setDeviceMetricsOverride', {
-        width: state.viewport.w,
-        height: state.viewport.h,
-        deviceScaleFactor: state.viewport.dpr || 0,
-        mobile: !!state.viewport.mobile
-      })
-    } else {
-      await dbg.sendCommand('Emulation.clearDeviceMetricsOverride')
-    }
-    return true
-  } catch (e) {
-    return false
-  }
+  await browserVisualSetViewport(wc, 'overlay', state.viewport)
 }
 
 async function designOverlayDeEmulate (wc, state) {
-  try {
-    if (wc.debugger.isAttached()) {
-      await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride').catch(function () {})
-      if (state.debuggerAttached) {
-        wc.debugger.detach()
-        state.debuggerAttached = false
-      }
-    }
-  } catch (e) {}
+  await browserVisualSetViewport(wc, 'overlay', null)
 }
 
 async function designOverlayInject (tabId) {
@@ -268,14 +241,18 @@ async function designOverlaySet (tabId, opts) {
     visible: true,
     offsetX: 0,
     offsetY: 0,
-    debuggerAttached: false,
     hooksAttached: false
   }
   var wc = view.webContents
   designOverlayEnsureHooks(tabId, wc)
   state.cssKey = await wc.insertCSS(DESIGN_OVERLAY_CSS).catch(function () { return null })
   state.scrollCssKey = await wc.insertCSS(DESIGN_OVERLAY_SCROLLBAR_CSS).catch(function () { return null })
-  await designOverlayEmulate(wc, state)
+  try {
+    await designOverlayEmulate(wc, state)
+  } catch (err) {
+    await designOverlayClear(tabId).catch(function () {})
+    return { ok: false, error: err.message || String(err) }
+  }
   await designOverlayInject(tabId)
   return { ok: true, tabId: tabId }
 }

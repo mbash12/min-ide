@@ -1,4 +1,4 @@
-/* global viewMap, windows, ipc, loadURLInView, sendIPCToWindow, getWindowWebContents, location, KeyboardEvent, MouseEvent, PointerEvent, DragEvent, DataTransfer, document, window, fs, path, app, minDownloadBeginCapture, minDownloadCancelCapture */
+/* global viewMap, windows, ipc, loadURLInView, sendIPCToWindow, getWindowWebContents, location, KeyboardEvent, MouseEvent, PointerEvent, DragEvent, DataTransfer, document, window, fs, path, app, minDownloadBeginCapture, minDownloadCancelCapture, browserVisualRun, browserVisualWithDebugger, browserVisualEvaluate, browserTestingRun, browserTestingLocate, browserTestingObserve, browserTestingHasLocator, browserCommandValidate */
 /* Browser automation used by the AI agent tools and playbook runner.
 Runs in the main process against Electron WebContentsViews. Tab create /
 close / select is delegated to the renderer, where Min's tab state lives. */
@@ -144,6 +144,7 @@ async function browserControlTargetView (tabId, taskId, workspaceId, options) {
   if (options.allowRestricted !== true && browserControlIsRestrictedUrl(url)) {
     return { error: 'Browser tools cannot control settings or profile pages' }
   }
+  if (typeof browserTestingObserve === 'function') browserTestingObserve(view.webContents)
   return { id: id, view: view, taskId: taskId || (resolved && resolved.taskId), workspaceId: workspaceId || (resolved && resolved.workspaceId), url: url, keepChromeFocus: !!(resolved && resolved.keepChromeFocus) }
 }
 
@@ -179,12 +180,13 @@ function browserControlPageDom (opts) {
 
   function visible (el) {
     if (!el || el.nodeType !== 1) return false
-    if (el.getAttribute('aria-hidden') === 'true') return false
+    if (el.checkVisibility && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false
     const view = (el.ownerDocument && el.ownerDocument.defaultView) || window
     const style = view.getComputedStyle(el)
     if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false
     const r = el.getBoundingClientRect()
     if (r.width < 1 && r.height < 1) return false
+    try { if (view.frameElement && !visible(view.frameElement)) return false } catch (e) {}
     return true
   }
 
@@ -195,20 +197,30 @@ function browserControlPageDom (opts) {
   function accessibleName (el) {
     if (!el) return ''
     let label = ''
-    if (el.getAttribute('aria-label')) label = el.getAttribute('aria-label')
-    else if (el.labels && el.labels[0]) label = el.labels[0].innerText
-    else if (el.getAttribute('placeholder')) label = el.getAttribute('placeholder')
-    else if (el.getAttribute('alt')) label = el.getAttribute('alt')
-    else if (el.getAttribute('title')) label = el.getAttribute('title')
-    else if (el.getAttribute('name')) label = el.getAttribute('name')
-    else label = el.innerText || el.value || ''
-    return String(label).replace(/\s+/g, ' ').trim().slice(0, 80)
+    if (el.getAttribute('aria-labelledby')) {
+      label = el.getAttribute('aria-labelledby').split(/\s+/).map(function (id) {
+        const target = el.ownerDocument.getElementById(id)
+        return target ? target.textContent : ''
+      }).join(' ')
+    }
+    if (!label) {
+      if (el.getAttribute('aria-label')) label = el.getAttribute('aria-label')
+      else if (el.labels && el.labels[0]) label = el.labels[0].innerText
+      else if (el.getAttribute('placeholder')) label = el.getAttribute('placeholder')
+      else if (el.getAttribute('alt')) label = el.getAttribute('alt')
+      else if (el.getAttribute('title')) label = el.getAttribute('title')
+      else if (el.getAttribute('name')) label = el.getAttribute('name')
+      else label = el.innerText || (el.type !== 'password' && el.value) || ''
+    }
+    return String(label).replace(/\s+/g, ' ').trim().slice(0, 500)
   }
 
   function roleOf (el) {
     const explicit = el.getAttribute('role')
     if (explicit) return explicit
     const tag = el.tagName.toLowerCase()
+    if (/^h[1-6]$/.test(tag)) return 'heading'
+    if (tag === 'img') return 'img'
     if (tag === 'a') return 'link'
     if (tag === 'button') return 'button'
     if (tag === 'select') return 'combobox'
@@ -340,17 +352,118 @@ function browserControlPageDom (opts) {
   }
 
   function viewportPoint (el) {
-    const r = el.getBoundingClientRect()
-    let x = r.left + r.width / 2
-    let y = r.top + r.height / 2
-    let win = el.ownerDocument && el.ownerDocument.defaultView
-    while (win && win.frameElement) {
-      const fr = win.frameElement.getBoundingClientRect()
-      x += fr.left
-      y += fr.top
+    const r = visualRect(el).rect
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2, width: r.width, height: r.height }
+  }
+
+  function visualRect (el, bounds) {
+    const r = bounds || el.getBoundingClientRect()
+    const rect = { x: r.left, y: r.top, width: r.width, height: r.height }
+    let win = el.ownerDocument.defaultView
+    let approximate = false
+    while (win && win !== window && win.frameElement) {
+      const frame = win.frameElement
+      const fr = frame.getBoundingClientRect()
+      const sx = frame.offsetWidth ? fr.width / frame.offsetWidth : 1
+      const sy = frame.offsetHeight ? fr.height / frame.offsetHeight : 1
+      const transform = win.parent.getComputedStyle(frame).transform
+      if (transform !== 'none' && !/^matrix\([^,]+, 0, 0, [^,]+, [^,]+, [^,]+\)$/.test(transform)) approximate = true
+      rect.x = fr.left + (frame.clientLeft + rect.x) * sx
+      rect.y = fr.top + (frame.clientTop + rect.y) * sy
+      rect.width *= sx
+      rect.height *= sy
       win = win.parent
     }
-    return { x: x, y: y, width: r.width, height: r.height }
+    return { rect: rect, approximate: approximate }
+  }
+
+  function visualElementAt (root, x, y) {
+    let el = root.elementFromPoint(x, y)
+    if (!el) return null
+    if (el.shadowRoot && el.shadowRoot.elementFromPoint) {
+      const inner = el.shadowRoot.elementFromPoint(x, y)
+      if (inner && inner !== el) el = visualElementAt(el.shadowRoot, x, y) || inner
+    }
+    if (el.tagName === 'IFRAME') {
+      try {
+        const doc = el.contentDocument
+        const r = el.getBoundingClientRect()
+        if (doc && r.width && r.height) {
+          return visualElementAt(doc, (x - r.left) * el.offsetWidth / r.width - el.clientLeft, (y - r.top) * el.offsetHeight / r.height - el.clientTop) || el
+        }
+      } catch (e) {}
+    }
+    return el
+  }
+
+  function visualDescription (el) {
+    const view = el.ownerDocument.defaultView
+    const style = view.getComputedStyle(el)
+    const properties = [
+      'display', 'position', 'box-sizing', 'width', 'height', 'min-width', 'max-width', 'min-height', 'max-height',
+      'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width', 'border-color', 'border-style', 'border-radius',
+      'gap', 'row-gap', 'column-gap', 'flex-direction', 'flex-wrap', 'flex-grow', 'flex-shrink', 'flex-basis', 'align-items', 'align-self', 'justify-content',
+      'grid-template-columns', 'grid-template-rows', 'grid-column', 'grid-row',
+      'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing', 'text-align', 'text-transform', 'text-decoration', 'white-space',
+      'color', 'background-color', 'background-image', 'box-shadow', 'opacity', 'overflow-x', 'overflow-y', 'transform', 'z-index'
+    ]
+    const styles = {}
+    properties.forEach(function (key) { styles[key] = style.getPropertyValue(key) })
+    const geometry = visualRect(el)
+    return {
+      tag: el.tagName.toLowerCase(),
+      id: el.id || null,
+      selector: cssSelector(el),
+      name: accessibleName(el),
+      rect: geometry.rect,
+      geometryApproximate: geometry.approximate,
+      styles: styles
+    }
+  }
+
+  if (opts.op === 'inspect') {
+    const located = opts.ref || opts.selector || opts.role || opts.text
+    if (!located && (!Number.isFinite(opts.x) || !Number.isFinite(opts.y))) return { ok: false, error: 'inspect needs a locator or x/y in viewport CSS pixels' }
+    const pending = located ? waitLive(opts, opts.timeout || 4000) : Promise.resolve(visualElementAt(document, opts.x, opts.y))
+    return pending.then(function (el) {
+      if (!el) return { ok: false, error: 'Element not found at this locator or point' }
+      const result = Object.assign({ ok: true, coordinates: 'viewport CSS pixels' }, visualDescription(el))
+      if (opts.properties) {
+        const style = el.ownerDocument.defaultView.getComputedStyle(el)
+        result.styles = {}
+        opts.properties.split(',').map(function (key) { return key.trim() }).filter(Boolean).forEach(function (key) { result.styles[key] = style.getPropertyValue(key) })
+      }
+      result.documentRect = Object.assign({}, result.rect, { x: result.rect.x + window.scrollX, y: result.rect.y + window.scrollY })
+      if (opts.geometryOnly) return result
+      window.__minAgentInspectEl = el
+      result.text = String(el.innerText || el.textContent || '').slice(0, 2000)
+      result.fontsReady = el.ownerDocument.fonts.status === 'loaded'
+      result.viewport = { width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio, scrollX: window.scrollX, scrollY: window.scrollY }
+      let parent = el.parentElement || (el.getRootNode().host) || el.ownerDocument.defaultView.frameElement
+      result.ancestors = []
+      while (parent && result.ancestors.length < 3) {
+        result.ancestors.push(visualDescription(parent))
+        parent = parent.parentElement || parent.getRootNode().host
+      }
+      const limit = Math.max(0, Math.min(30, opts.limit == null ? 10 : opts.limit))
+      result.children = Array.from(el.children).filter(visible).slice(0, limit).map(visualDescription)
+      result.childrenTruncated = el.children.length > result.children.length
+      result.textRects = []
+      const walker = el.ownerDocument.createTreeWalker(el, 4)
+      let node
+      let visited = 0
+      while ((node = walker.nextNode()) && visited++ < 100 && result.textRects.length < 30) {
+        if (!String(node.textContent).trim()) continue
+        const range = el.ownerDocument.createRange()
+        range.selectNodeContents(node)
+        for (const rect of range.getClientRects()) {
+          if (result.textRects.length >= 30) break
+          result.textRects.push(visualRect(el, rect).rect)
+        }
+      }
+      return result
+    })
   }
 
   function collectInteractive () {
@@ -372,7 +485,7 @@ function browserControlPageDom (opts) {
 
   function findByRoleName (role, name, nth, contains) {
     const needle = String(name || '').trim().toLowerCase()
-    if (!needle) return null
+    if (!needle && !role) return null
     const nodes = collectInteractive()
     const matches = []
     let i
@@ -380,7 +493,8 @@ function browserControlPageDom (opts) {
       if (!isLive(nodes[i])) continue
       if (role && roleOf(nodes[i]) !== role) continue
       const label = accessibleName(nodes[i]).toLowerCase()
-      if (contains) {
+      if (!needle) matches.push(nodes[i])
+      else if (contains) {
         if (label.indexOf(needle) !== -1) matches.push(nodes[i])
       } else if (label === needle) {
         matches.push(nodes[i])
@@ -388,7 +502,114 @@ function browserControlPageDom (opts) {
     }
     if (!matches.length) return null
     const index = typeof nth === 'number' ? nth : 0
-    return matches[Math.max(0, Math.min(index, matches.length - 1))] || null
+    return matches[index] || null
+  }
+
+  function matchesForTest (spec) {
+    const out = []
+    const hasFilter = spec.selector || spec.testId || spec.label || spec.placeholder || spec.name || spec.role || spec.text
+    if (spec.ref) {
+      const entry = window.__minAgentRefs && window.__minAgentRefs[spec.ref]
+      if (entry && entry.el && entry.el.isConnected) return [entry.el]
+      if (entry) {
+        const locator = entry.locator || { selector: entry.selector, nth: entry.nth }
+        const candidates = matchesForTest(locator).filter(function (el) { return locator.includeHidden || visible(el) })
+        return candidates[locator.nth || 0] ? [candidates[locator.nth || 0]] : []
+      }
+      return []
+    }
+    if (!hasFilter) return out
+    if (spec.selector) document.createElement('div').matches(spec.selector) // validate syntax once
+    function match (actual, expected) {
+      const a = String(actual || '').replace(/\s+/g, ' ').trim().toLowerCase()
+      const b = String(expected).replace(/\s+/g, ' ').trim().toLowerCase()
+      return spec.exact === false ? a.indexOf(b) !== -1 : a === b
+    }
+    forEachDeep(document, function (el) {
+      if (spec.selector && !el.matches(spec.selector)) return
+      if (spec.testId && el.getAttribute('data-testid') !== spec.testId) return
+      if (spec.role && roleOf(el) !== spec.role) return
+      if (spec.placeholder && !match(el.getAttribute('placeholder'), spec.placeholder)) return
+      if (spec.label) {
+        const labels = Array.from(el.labels || []).map(function (label) { return label.textContent }).join(' ')
+        if (!match(el.hasAttribute('aria-labelledby') ? accessibleName(el) : labels || el.getAttribute('aria-label'), spec.label)) return
+      }
+      const text = spec.name == null ? spec.text : spec.name
+      if (text != null && !match(accessibleName(el), text)) return
+      out.push(el)
+    })
+    return out
+  }
+
+  function testElement (el, spec) {
+    const refs = window.__minAgentRefs || (window.__minAgentRefs = {})
+    window.__minAgentFindId = (window.__minAgentFindId || 0) + 1
+    const ref = 'f' + window.__minAgentFindId
+    refs[ref] = { el: el, selector: cssSelector(el), role: roleOf(el), name: accessibleName(el), locator: spec }
+    // Bound retained DOM references between snapshots.
+    const keys = Object.keys(refs)
+    if (keys.length > 1000) keys.slice(0, keys.length - 1000).forEach(function (key) { delete refs[key] })
+    return {
+      ref: ref,
+      selector: cssSelector(el),
+      testId: el.getAttribute('data-testid'),
+      role: roleOf(el),
+      name: accessibleName(el),
+      visible: visible(el),
+      enabled: !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true',
+      checked: typeof el.checked === 'boolean' ? el.checked : null,
+      value: el.type === 'password' ? '[redacted]' : typeof el.value === 'string' ? el.value.slice(0, 500) : null,
+      rect: visualRect(el).rect
+    }
+  }
+
+  if (opts.op === 'find') {
+    const all = matchesForTest(opts).filter(function (el) { return opts.includeHidden || visible(el) })
+    const limit = Math.max(1, Math.min(100, opts.limit || 10))
+    const offset = opts.offset || 0
+    const previous = opts.ref && window.__minAgentRefs && window.__minAgentRefs[opts.ref]
+    const spec = previous ? Object.assign({}, previous.locator || { selector: previous.selector, nth: previous.nth }) : {}
+    ;['selector', 'testId', 'label', 'placeholder', 'name', 'role', 'text', 'exact', 'includeHidden'].forEach(function (key) {
+      if (opts[key] != null) spec[key] = opts[key]
+    })
+    return { ok: true, count: all.length, offset: offset, nextOffset: offset + limit < all.length ? offset + limit : null, truncated: offset + limit < all.length, matches: all.slice(offset, offset + limit).map(function (el, index) { return testElement(el, Object.assign({}, spec, { nth: previous ? spec.nth || 0 : offset + index })) }) }
+  }
+
+  if (opts.op === 'assert') {
+    const condition = opts.condition
+    const pageCondition = condition === 'url' || condition === 'title'
+    const all = pageCondition ? [] : matchesForTest(opts)
+    const matches = typeof opts.nth === 'number' ? (all[opts.nth] ? [all[opts.nth]] : []) : all
+    const selected = matches[0]
+    const plural = ['count', 'hidden', 'detached', 'attached'].indexOf(condition) !== -1
+    if (!pageCondition && !plural && opts.nth == null && opts.strict !== false && matches.length > 1) {
+      return { ok: false, retryable: false, error: 'Locator matches ' + matches.length + ' elements; refine it or set nth', matched: matches.length }
+    }
+    let actual
+    let expected = opts.expected
+    if (condition === 'url') actual = location.href
+    else if (condition === 'title') actual = document.title
+    else if (condition === 'count') actual = matches.length
+    else if (condition === 'attached' || condition === 'detached') { actual = matches.length > 0; expected = condition === 'attached' } else if (condition === 'hidden' || condition === 'visible') {
+      actual = condition === 'hidden' ? matches.some(visible) : !!selected && visible(selected)
+      expected = condition === 'visible'
+    } else if (condition === 'enabled' || condition === 'disabled') {
+      actual = selected ? !selected.matches(':disabled') && selected.getAttribute('aria-disabled') !== 'true' : null
+      expected = condition === 'enabled'
+    } else if (condition === 'checked') {
+      actual = selected ? (typeof selected.checked === 'boolean' ? selected.checked : selected.getAttribute('aria-checked') === 'true') : null
+      if (expected == null) expected = true
+    } else if (condition === 'text') actual = selected ? String(selected.innerText || selected.textContent || '').replace(/\s+/g, ' ').trim() : null
+    else if (condition === 'value') actual = selected && 'value' in selected ? selected.value : null
+    else if (condition === 'attribute') actual = selected ? selected.getAttribute(opts.attribute) : null
+    else if (condition === 'css') actual = selected ? selected.ownerDocument.defaultView.getComputedStyle(selected).getPropertyValue(opts.property) : null
+    else return { ok: false, retryable: false, error: 'Unknown assertion condition: ' + condition }
+    if (condition === 'text' && typeof expected === 'string') expected = expected.replace(/\s+/g, ' ').trim()
+    let passed = opts.contains && typeof actual === 'string' && typeof expected === 'string' ? actual.indexOf(expected) !== -1 : actual === expected
+    if (opts.not) passed = !passed
+    if (!pageCondition && !plural && !selected) passed = false
+    const privateValue = selected && selected.type === 'password' && condition === 'value'
+    return { ok: passed, condition: condition, expected: privateValue ? '[redacted]' : expected, actual: privateValue ? '[redacted]' : actual, matched: matches.length, not: !!opts.not, contains: !!opts.contains }
   }
 
   function resolveOnce (spec) {
@@ -398,6 +619,10 @@ function browserControlPageDom (opts) {
       const live = liveEl(entry)
       if (live) return live
       if (entry && entry.nodeType !== 1) {
+        if (entry.locator) {
+          const matches = matchesForTest(entry.locator).filter(visible)
+          return matches[entry.locator.nth || 0] || null
+        }
         if (entry.selector) {
           try {
             const bySel = document.querySelector(entry.selector)
@@ -413,7 +638,7 @@ function browserControlPageDom (opts) {
     }
     if (spec.selector) {
       try {
-        const el = queryDeep(spec.selector)
+        const el = typeof spec.nth === 'number' ? matchesForTest(spec).filter(visible)[spec.nth] : queryDeep(spec.selector)
         if (isLive(el)) return el
       } catch (e) {}
     }
@@ -435,6 +660,7 @@ function browserControlPageDom (opts) {
       function tick () {
         const el = resolveOnce(spec)
         if (el) {
+          if (timeout === 0) { resolve(el); return }
           const r = el.getBoundingClientRect()
           const box = r.x + ',' + r.y + ',' + r.width + ',' + r.height
           if (box === lastBox) {
@@ -562,7 +788,8 @@ function browserControlPageDom (opts) {
 
   function nativeSetValue (el, value) {
     const tag = el.tagName
-    const proto = tag === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype
+    const owner = el.ownerDocument.defaultView
+    const proto = tag === 'TEXTAREA' ? owner.HTMLTextAreaElement.prototype : owner.HTMLInputElement.prototype
     const desc = Object.getOwnPropertyDescriptor(proto, 'value')
     if (desc && desc.set) desc.set.call(el, value)
     else el.value = value
@@ -571,89 +798,80 @@ function browserControlPageDom (opts) {
   }
 
   if (opts.op === 'snapshot') {
-    const refs = {}
+    const refs = window.__minAgentRefs || {}
+    window.__minAgentSnapshotId = (window.__minAgentSnapshotId || 0) + 1
+    const prefix = 's' + window.__minAgentSnapshotId + '_'
     const seen = {}
-    let n = 0
     const lines = []
-    lines.push('- document: ' + (document.title || '') + ' url=' + location.href)
     const nodes = []
-    forEachDeep(document, function (el) {
-      if (!el || !el.tagName) return
-      const tag = el.tagName.toLowerCase()
-      if (/^h[1-6]$/.test(tag) || (el.matches && el.matches(INTERACTIVE))) nodes.push(el)
-    })
-    let i
-    for (i = 0; i < nodes.length && n < 250; i++) {
+    const root = opts.selector ? queryDeep(opts.selector) : document
+    if (!root) return { ok: false, error: 'Snapshot scope not found' }
+    const consider = function (el) {
+      if (!el || !el.tagName || !visible(el)) return
+      if (/^H[1-6]$/.test(el.tagName) || el.matches(INTERACTIVE)) nodes.push(el)
+    }
+    consider(root)
+    forEachDeep(root, consider)
+    const offset = opts.offset || 0
+    const limit = Math.max(1, Math.min(250, opts.limit || 80))
+    for (let i = 0; i < nodes.length && i < offset + limit; i++) {
       const el = nodes[i]
-      if (!visible(el)) continue
-      const tag = el.tagName.toLowerCase()
       const name = accessibleName(el)
-      if (/^h[1-6]$/.test(tag)) {
-        if (name) lines.push('  - heading "' + name.replace(/"/g, '\\"') + '"')
-        continue
-      }
-      n += 1
-      const ref = 'e' + n
       const role = roleOf(el)
-      const selector = cssSelector(el)
       const seenKey = role + '\0' + name.toLowerCase()
       const nth = seen[seenKey] || 0
       seen[seenKey] = nth + 1
+      if (i < offset) continue
+      const ref = prefix + (i + 1)
+      const selector = cssSelector(el)
       refs[ref] = { el: el, role: role, name: name, selector: selector, nth: nth }
       let extra = ''
-      if (selector) extra += ' selector=' + selector
-      if (el.href) extra += ' href=' + el.href
-      if ((tag === 'input' || tag === 'textarea') && el.value) {
-        extra += ' value="' + String(el.value).slice(0, 60).replace(/"/g, '\\"') + '"'
-      }
-      if (el.disabled) extra += ' disabled'
+      if (el.getAttribute('data-testid')) extra += ' testId=' + JSON.stringify(el.getAttribute('data-testid'))
+      if (opts.detail === 'full' && selector) extra += ' selector=' + selector
+      if (opts.detail === 'full' && el.href) extra += ' href=' + el.href
+      if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value) extra += ' value=' + JSON.stringify(el.type === 'password' ? '[redacted]' : String(el.value).slice(0, 60))
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') extra += ' disabled'
       if (el.checked) extra += ' checked'
       if (el.getAttribute('draggable') === 'true') extra += ' draggable'
       if (el.type === 'file') extra += ' file'
-      if (el.shadowRoot) extra += ' shadow'
-      lines.push('  - ' + role + ' "' + name.replace(/"/g, '\\"') + '" [ref=' + ref + ']' + extra)
+      lines.push(role + ' ' + JSON.stringify(name) + ' [' + ref + ']' + extra)
     }
+    const keys = Object.keys(refs)
+    if (keys.length > 1000) keys.slice(0, keys.length - 1000).forEach(function (key) { delete refs[key] })
     window.__minAgentRefs = refs
-    return {
-      ok: true,
-      url: location.href,
-      title: document.title || '',
-      snapshot: lines.join('\n'),
-      refs: n
-    }
+    return { ok: true, url: location.href, title: document.title || '', snapshot: lines.join('\n'), refs: lines.length, total: nodes.length, offset: offset, nextOffset: offset + limit < nodes.length ? offset + limit : null, truncated: offset + limit < nodes.length }
   }
 
   if (opts.op === 'read') {
-    const limit = Math.min(Math.max(opts.limit || 12000, 200), 60000)
-    const body = document.body
-    // innerText is what the page actually renders, so hidden menus and
-    // display:none blocks stay out of the result
-    const text = body ? String(body.innerText || body.textContent || '') : ''
+    const limit = Math.min(Math.max(opts.limit || 6000, 1), 60000)
+    const offset = opts.offset || 0
+    const body = opts.selector ? queryDeep(opts.selector) : document.body
+    if (!body) return { ok: false, error: 'Read scope not found' }
+    const text = String(body.innerText || body.textContent || '')
     const cleaned = text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
-    return {
-      ok: true,
-      url: location.href,
-      title: document.title || '',
-      text: cleaned.length > limit ? cleaned.slice(0, limit) : cleaned,
-      truncated: cleaned.length > limit,
-      length: cleaned.length
-    }
+    return { ok: true, url: location.href, title: document.title || '', text: cleaned.slice(offset, offset + limit), offset: offset, nextOffset: offset + limit < cleaned.length ? offset + limit : null, truncated: offset + limit < cleaned.length, length: cleaned.length }
   }
 
   if (opts.op === 'locate' || opts.op === 'markEl') {
     const timeout = typeof opts.timeout === 'number' ? opts.timeout : 4000
     const spec = { ref: opts.ref, selector: opts.selector, text: opts.text, role: opts.role, nth: opts.nth }
     if (opts.x != null && opts.y != null && !opts.ref && !opts.selector && !opts.text && !opts.role) {
-      const at = document.elementFromPoint(opts.x, opts.y)
+      const at = visualElementAt(document, opts.x, opts.y)
       if (!at) return { ok: false, error: 'No element at coordinates' }
-      const p = viewportPoint(at)
+      if (opts.hitTest && (at.matches(':disabled') || at.getAttribute('aria-disabled') === 'true')) return { ok: false, error: 'Element is disabled' }
+      const p = { x: opts.x, y: opts.y, width: at.getBoundingClientRect().width, height: at.getBoundingClientRect().height }
       if (opts.op === 'markEl') window.__minAgentMarkEl = at
       return { ok: true, x: p.x, y: p.y, width: p.width, height: p.height, tag: at.tagName.toLowerCase(), name: accessibleName(at) }
     }
     return waitLive(spec, timeout).then(function (el) {
       if (!el) return { ok: false, error: 'Element not found (detached or rerendered)' }
-      try { el.scrollIntoView({ block: 'center', inline: 'nearest' }) } catch (e) {}
+      try { el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }) } catch (e) {}
       const p = viewportPoint(el)
+      if (opts.hitTest) {
+        const at = visualElementAt(document, p.x, p.y)
+        if (!at || (at !== el && !el.contains(at) && !(el.shadowRoot && el.shadowRoot.contains(at)))) return { ok: false, error: 'Element is covered or outside the viewport; inspect or wait for the covering element to disappear' }
+        if (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true') return { ok: false, error: 'Element is disabled' }
+      }
       if (opts.op === 'markEl') window.__minAgentMarkEl = el
       return {
         ok: true,
@@ -753,7 +971,21 @@ function browserControlPageDom (opts) {
   }
 
   function actOn (el) {
-    try { el.scrollIntoView({ block: 'center', inline: 'nearest' }) } catch (e) {}
+    try { el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }) } catch (e) {}
+    if (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true') return { ok: false, error: 'Element is disabled' }
+    if (opts.op === 'focus') {
+      el.focus()
+      return { ok: el.ownerDocument.activeElement === el, name: accessibleName(el) }
+    }
+    if (opts.op === 'check') {
+      if (el.tagName !== 'INPUT' || ['checkbox', 'radio'].indexOf(el.type) === -1) return { ok: false, error: 'check requires a checkbox or radio input' }
+      const wanted = opts.checked !== false
+      if (!wanted && el.type === 'radio') return { ok: false, error: 'Select a different radio option to uncheck this one' }
+      const changed = el.checked !== wanted
+      if (opts.prepare) return { ok: true, checked: el.checked, changed: changed }
+      if (changed) el.click()
+      return { ok: el.checked === wanted, checked: el.checked, changed: changed, error: el.checked === wanted ? undefined : 'Page did not accept the checked state' }
+    }
     if (opts.op === 'click' || opts.op === 'dblclick' || opts.op === 'rightclick') {
       const spec = Object.assign({}, opts)
       if (opts.op === 'dblclick') spec.clickCount = 2
@@ -766,13 +998,18 @@ function browserControlPageDom (opts) {
       return { ok: true, name: accessibleName(el) }
     }
     if (opts.op === 'type') {
-      try { if (!opts.keepChromeFocus) el.focus() } catch (e) {}
+      if (el.readOnly) return { ok: false, error: 'Element is read-only' }
+      if (!el.isContentEditable && !['INPUT', 'TEXTAREA'].includes(el.tagName)) return { ok: false, error: 'fill/type requires an input, textarea, or contenteditable element' }
+      try { el.focus() } catch (e) {}
       const text = opts.text == null ? '' : String(opts.text)
       if (el.isContentEditable) {
-        try { document.execCommand('selectAll', false, null) } catch (e) {}
-        try { document.execCommand('insertText', false, text) } catch (e2) {
-          el.textContent = text
-        }
+        const doc = el.ownerDocument
+        const range = doc.createRange()
+        range.selectNodeContents(el)
+        const selection = doc.getSelection()
+        selection.removeAllRanges()
+        selection.addRange(range)
+        if (!doc.execCommand('insertText', false, text)) { el.textContent = text; el.dispatchEvent(new Event('input', { bubbles: true })) }
       } else {
         nativeSetValue(el, text)
       }
@@ -845,7 +1082,7 @@ function browserControlPageDom (opts) {
       if (!toEl && hasToPoint) toEl = document.elementFromPoint(opts.targetX, opts.targetY)
       if (!fromEl) return { ok: false, error: 'Drag source not found' }
       if (!toEl) return { ok: false, error: 'Drag target not found' }
-      try { fromEl.scrollIntoView({ block: 'center', inline: 'nearest' }) } catch (e) {}
+      try { fromEl.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }) } catch (e) {}
       performDrag(fromEl, toEl, opts)
       return {
         ok: true,
@@ -874,10 +1111,9 @@ async function browserControlRunInView (view, opts) {
     return { ok: false, error: 'Tab has no page' }
   }
   try {
-    return await view.webContents.executeJavaScript(
-      '(' + browserControlPageDom.toString() + ')(' + JSON.stringify(opts) + ')',
-      true
-    )
+    return await browserVisualWithDebugger(view.webContents, function () {
+      return browserVisualEvaluate(view.webContents, browserControlPageDom, opts)
+    })
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) }
   }
@@ -919,18 +1155,24 @@ async function browserControlNavigate (url, tabId, taskId, workspaceId) {
   const target = await browserControlTargetView(tabId, taskId, workspaceId, { allowRestricted: true })
   if (target.error) return { ok: false, error: target.error }
   const win = windows.getCurrent()
+  let timer
   try {
-    loadURLInView(target.id, url, win)
-  } catch (err) {
+    let loading
     try {
-      await target.view.webContents.loadURL(url)
-    } catch (err2) {
-      return { ok: false, error: (err2 && err2.message) || String(err2) }
-    }
+      loading = loadURLInView(target.id, url, win)
+    } catch (err) { loading = target.view.webContents.loadURL(url) }
+    await Promise.race([loading, new Promise(function (resolve, reject) {
+      timer = setTimeout(function () { reject(new Error('Timed out waiting for navigation')) }, 30000)
+    })])
+    const waited = await browserControlWaitIdle(target.view, 30000)
+    if (waited.timedOut) throw new Error('Timed out waiting for page load')
+    return Object.assign({ ok: true, taskId: taskId || target.taskId, workspaceId: workspaceId || target.workspaceId }, browserControlTabInfo(target.id))
+  } catch (err) {
+    return { ok: false, error: err.message || String(err), tabId: target.id, url: url }
+  } finally {
+    clearTimeout(timer)
+    browserControlRestoreChromeFocus(target.keepChromeFocus)
   }
-  await browserControlWaitIdle(target.view, 30000)
-  browserControlRestoreChromeFocus(target.keepChromeFocus)
-  return Object.assign({ ok: true, taskId: taskId || target.taskId, workspaceId: workspaceId || target.workspaceId }, browserControlTabInfo(target.id))
 }
 
 async function browserControlHistory (method, tabId, taskId, workspaceId) {
@@ -944,15 +1186,16 @@ async function browserControlHistory (method, tabId, taskId, workspaceId) {
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) }
   }
-  await browserControlWaitIdle(target.view, 20000)
+  const waited = await browserControlWaitIdle(target.view, 20000)
   browserControlRestoreChromeFocus(target.keepChromeFocus)
+  if (waited.timedOut) return { ok: false, error: 'Timed out waiting for navigation', tabId: target.id }
   return Object.assign({ ok: true }, browserControlTabInfo(target.id))
 }
 
-async function browserControlSnapshot (tabId, taskId, workspaceId) {
+async function browserControlSnapshot (tabId, taskId, workspaceId, options) {
   const target = await browserControlTargetView(tabId, taskId, workspaceId)
   if (target.error) return { ok: false, error: target.error }
-  const result = await browserControlRunInView(target.view, { op: 'snapshot' })
+  const result = await browserControlRunInView(target.view, Object.assign({}, options, { op: 'snapshot' }))
   browserControlRestoreChromeFocus(target.keepChromeFocus)
   if (!result || result.ok === false) return result || { ok: false, error: 'Snapshot failed' }
   result.tabId = target.id
@@ -970,6 +1213,8 @@ async function browserControlReadPage (params) {
   if (target.error) return { ok: false, error: target.error }
   const result = await browserControlRunInView(target.view, {
     op: 'read',
+    selector: params.selector,
+    offset: params.offset,
     limit: params.limit
   })
   browserControlRestoreChromeFocus(target.keepChromeFocus)
@@ -1000,23 +1245,19 @@ async function browserControlAct (op, params) {
 
 async function browserControlWait (params) {
   params = params || {}
-  if (typeof params.ms === 'number' && params.ms > 0) {
+  if (typeof params.ms === 'number' && params.ms >= 0) {
     await browserControlSleep(Math.min(params.ms, 60000))
     return { ok: true, waited: params.ms }
   }
   const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
   if (params.load) {
-    await browserControlWaitIdle(target.view, params.timeout || 20000)
+    const waited = await browserControlWaitIdle(target.view, params.timeout || 20000)
     browserControlRestoreChromeFocus(target.keepChromeFocus)
+    if (waited.timedOut) return { ok: false, error: 'Timed out waiting for page load', tabId: target.id }
     return Object.assign({ ok: true, workspaceId: params.workspaceId }, browserControlTabInfo(target.id))
   }
-  const waited = await browserControlRunInView(target.view, {
-    op: 'wait',
-    selector: params.selector,
-    text: params.text,
-    timeout: params.timeout
-  })
+  const waited = await browserTestingRun(Object.assign({}, params, { action: 'assert' }))
   browserControlRestoreChromeFocus(target.keepChromeFocus)
   return waited
 }
@@ -1116,45 +1357,37 @@ function browserControlParseFiles (params) {
 
 function browserControlArmDialog (wc, options) {
   options = options || {}
-  return new Promise(function (resolve) {
-    const dbg = wc.debugger
-    let attached = false
-    const timeout = setTimeout(function () {
-      cleanup()
-      resolve({ ok: false, error: 'No JavaScript dialog' })
-    }, options.timeout || 8000)
-    function cleanup () {
-      clearTimeout(timeout)
-      try { dbg.removeListener('message', onMessage) } catch (e) {}
-      if (attached) {
-        try { dbg.detach() } catch (e2) {}
-      }
-    }
-    function onMessage (event, method, params) {
-      if (method !== 'Page.javascriptDialogOpening') return
-      dbg.sendCommand('Page.handleJavaScriptDialog', {
-        accept: options.accept !== false,
-        promptText: options.promptText || ''
-      }).then(function () {
+  return browserVisualWithDebugger(wc, function (dbg) {
+    return new Promise(function (resolve) {
+      const timeout = setTimeout(function () {
         cleanup()
-        resolve({ ok: true, type: params.type, message: params.message })
-      }).catch(function (err) {
+        resolve({ ok: false, error: 'No JavaScript dialog' })
+      }, options.timeout || 8000)
+      function cleanup () {
+        clearTimeout(timeout)
+        try { dbg.removeListener('message', onMessage) } catch (e) {}
+      }
+      function onMessage (event, method, params) {
+        if (method !== 'Page.javascriptDialogOpening') return
+        dbg.sendCommand('Page.handleJavaScriptDialog', {
+          accept: options.accept !== false,
+          promptText: options.promptText || ''
+        }).then(function () {
+          cleanup()
+          resolve({ ok: true, type: params.type, message: params.message })
+        }).catch(function (err) {
+          cleanup()
+          resolve({ ok: false, error: (err && err.message) || String(err) })
+        })
+      }
+      dbg.on('message', onMessage)
+      dbg.sendCommand('Page.enable').catch(function (err) {
         cleanup()
         resolve({ ok: false, error: (err && err.message) || String(err) })
       })
-    }
-    Promise.resolve().then(function () {
-      if (!dbg.isAttached()) {
-        attached = true
-        return dbg.attach('1.3')
-      }
-    }).then(function () {
-      dbg.on('message', onMessage)
-      return dbg.sendCommand('Page.enable')
-    }).catch(function (err) {
-      cleanup()
-      resolve({ ok: false, error: (err && err.message) || String(err) })
     })
+  }).catch(function (err) {
+    return { ok: false, error: (err && err.message) || String(err) }
   })
 }
 
@@ -1162,7 +1395,7 @@ async function browserControlPointer (op, params) {
   params = params || {}
   const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
   if (target.error) return { ok: false, error: target.error }
-  const loc = await browserControlRunInView(target.view, Object.assign({}, params, { op: 'locate' }))
+  const loc = await browserControlRunInView(target.view, Object.assign({}, params, { op: 'locate', hitTest: op !== 'hover' }))
   if (!loc || loc.ok === false) return loc || { ok: false, error: 'Element not found' }
   const button = op === 'rightclick' ? 'right' : (params.button || 'left')
   const clickCount = op === 'dblclick' ? 2 : (params.clickCount || 1)
@@ -1183,16 +1416,22 @@ async function browserControlPointer (op, params) {
     const wc = target.view.webContents
     const x = Math.round(loc.x)
     const y = Math.round(loc.y)
-    wc.sendInputEvent({ type: 'mouseMove', x: x, y: y, modifiers: modifiers })
-    if (op !== 'hover') {
-      const holdMs = typeof params.holdMs === 'number' ? params.holdMs : 0
-      let n
-      for (n = 1; n <= clickCount; n++) {
-        wc.sendInputEvent({ type: 'mouseDown', x: x, y: y, button: button, clickCount: n, modifiers: modifiers })
-        if (holdMs && n === clickCount) await browserControlSleep(Math.min(holdMs, 10000))
-        wc.sendInputEvent({ type: 'mouseUp', x: x, y: y, button: button, clickCount: n, modifiers: modifiers })
+    const bits = { alt: 1, control: 2, ctrl: 2, meta: 4, command: 4, shift: 8 }
+    const flags = modifiers.reduce(function (value, key) { return value | (bits[key.toLowerCase()] || 0) }, 0)
+    await browserVisualWithDebugger(wc, async function (dbg) {
+      await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x, y: y, modifiers: flags })
+      if (op !== 'hover') {
+        const holdMs = typeof params.holdMs === 'number' ? params.holdMs : 0
+        for (let n = 1; n <= clickCount; n++) {
+          await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: x, y: y, button: button, clickCount: n, modifiers: flags })
+          try {
+            if (holdMs && n === clickCount) await browserControlSleep(Math.min(holdMs, 10000))
+          } finally {
+            await dbg.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x, y: y, button: button, clickCount: n, modifiers: flags })
+          }
+        }
       }
-    }
+    })
   } catch (e) {
     inputError = (e && e.message) || String(e)
   }
@@ -1263,26 +1502,7 @@ async function browserControlDrag (params) {
 }
 
 async function browserControlScreenshot (params) {
-  params = params || {}
-  const target = await browserControlTargetView(params.tabId, params.taskId, params.workspaceId)
-  if (target.error) return { ok: false, error: target.error }
-  try {
-    const image = await target.view.webContents.capturePage()
-    const dir = path.join(app.getPath('userData'), 'playbook-captures')
-    fs.mkdirSync(dir, { recursive: true })
-    let dest
-    if (params.path) {
-      dest = browserControlResolveLocalPath(params.path) || path.join(dir, path.basename(String(params.path)))
-    } else {
-      dest = path.join(dir, 'shot-' + Date.now() + '.png')
-    }
-    fs.writeFileSync(dest, image.toPNG())
-    const size = image.getSize()
-    browserControlRestoreChromeFocus(target.keepChromeFocus)
-    return { ok: true, path: dest, width: size.width, height: size.height }
-  } catch (err) {
-    return { ok: false, error: (err && err.message) || String(err) }
-  }
+  return browserVisualRun(Object.assign({}, params, { action: 'screenshot' }))
 }
 
 async function browserControlUpload (params) {
@@ -1294,32 +1514,24 @@ async function browserControlUpload (params) {
   const marked = await browserControlRunInView(target.view, Object.assign({}, params, { op: 'markEl' }))
   if (!marked || marked.ok === false) return marked || { ok: false, error: 'File input not found' }
   const wc = target.view.webContents
-  const dbg = wc.debugger
-  let attached = false
   try {
-    if (!dbg.isAttached()) {
-      await dbg.attach('1.3')
-      attached = true
-    }
-    await dbg.sendCommand('DOM.enable')
-    const evaluated = await dbg.sendCommand('Runtime.evaluate', {
-      expression: 'window.__minAgentMarkEl',
-      returnByValue: false
+    return await browserVisualWithDebugger(wc, async function (dbg) {
+      await dbg.sendCommand('DOM.enable')
+      const evaluated = await dbg.sendCommand('Runtime.evaluate', {
+        expression: 'window.__minAgentMarkEl',
+        returnByValue: false
+      })
+      if (!evaluated || !evaluated.result || !evaluated.result.objectId) {
+        return { ok: false, error: 'Could not bind file input' }
+      }
+      const node = await dbg.sendCommand('DOM.requestNode', { objectId: evaluated.result.objectId })
+      if (!node || !node.nodeId) return { ok: false, error: 'Could not resolve file input node' }
+      await dbg.sendCommand('DOM.setFileInputFiles', { nodeId: node.nodeId, files: files })
+      browserControlRestoreChromeFocus(target.keepChromeFocus)
+      return { ok: true, files: files, name: marked.name }
     })
-    if (!evaluated || !evaluated.result || !evaluated.result.objectId) {
-      return { ok: false, error: 'Could not bind file input' }
-    }
-    const node = await dbg.sendCommand('DOM.requestNode', { objectId: evaluated.result.objectId })
-    if (!node || !node.nodeId) return { ok: false, error: 'Could not resolve file input node' }
-    await dbg.sendCommand('DOM.setFileInputFiles', { nodeId: node.nodeId, files: files })
-    browserControlRestoreChromeFocus(target.keepChromeFocus)
-    return { ok: true, files: files, name: marked.name }
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) }
-  } finally {
-    if (attached) {
-      try { dbg.detach() } catch (e) {}
-    }
   }
 }
 
@@ -1362,14 +1574,62 @@ async function browserControlDialog (params) {
   return result
 }
 
+async function browserControlBatch (params) {
+  const fields = ['action', 'steps', 'tabId', 'taskId', 'workspaceId', 'outputDir', 'detail']
+  const unknown = Object.keys(params).find(function (key) { return params[key] !== undefined && !fields.includes(key) })
+  if (unknown) return { ok: false, error: 'Unknown batch field: ' + unknown, completed: 0 }
+  if (params.detail && !['compact', 'full'].includes(params.detail)) return { ok: false, error: 'detail must be compact or full', completed: 0 }
+  if (!Array.isArray(params.steps) || !params.steps.length || params.steps.length > 12) return { ok: false, error: 'batch needs 1–12 steps; use playbook for longer/repeated scenarios' }
+  for (let i = 0; i < params.steps.length; i++) {
+    const step = params.steps[i]
+    const valid = browserCommandValidate(step)
+    if (!valid.ok) return Object.assign({}, valid, { validationIndex: i, completed: 0 })
+    if (step.taskId || step.workspaceId || step.outputDir || step.continueOnError) return { ok: false, error: 'Batch steps inherit scope and always stop on failure', validationIndex: i, completed: 0 }
+  }
+  const listed = await browserControlListTabs(params.taskId, params.workspaceId)
+  if (!listed.ok) return listed
+  const scope = { taskId: listed.taskId, workspaceId: listed.workspaceId, outputDir: params.outputDir }
+  let tabId = params.tabId || listed.selected
+  if (!listed.tabs.some(function (tab) { return tab.id === tabId })) return { ok: false, error: 'Select a web tab before running a batch', completed: 0 }
+  const results = []
+  for (let i = 0; i < params.steps.length; i++) {
+    const step = params.steps[i]
+    let result
+    try {
+      result = await browserControlRunStep(Object.assign({}, step, scope, { tabId: step.tabId || tabId }))
+    } catch (err) { result = { ok: false, error: err.message || String(err) } }
+    if (!result) result = { ok: false, error: 'No step result' }
+    if (result.ok && result.assertion && result.assertion.passed === false) result = Object.assign({}, result, { ok: false, error: 'Visual assertion failed' })
+    results.push(Object.assign({ index: i, action: step.action }, result))
+    if (!result.ok) return { ok: false, error: result.error || 'Batch step failed', stoppedAt: i, completed: i, total: params.steps.length, tabId: tabId, results: results, hint: 'Earlier steps already ran. Inspect the failure before resuming; do not blindly replay the batch.' }
+    if (step.action === 'tabs') {
+      if (step.operation === 'new' || step.operation === 'select' || step.operation === 'switch') tabId = result.id
+      if (step.operation === 'close' && (!step.tabId || step.tabId === tabId)) tabId = result.selected
+    }
+  }
+  return { ok: true, completed: results.length, total: params.steps.length, tabId: tabId, results: results }
+}
+
 async function browserControlRunStep (step) {
   if (!step || typeof step !== 'object') return { ok: false, error: 'Invalid step' }
   const action = step.action
+  if (action === 'batch') return browserControlBatch(step)
+  const valid = browserCommandValidate(step)
+  if (!valid.ok) return valid
+  if (['find', 'assert', 'diagnostics'].includes(action)) return browserTestingRun(step)
+  if (['type', 'fill', 'check', 'focus', 'select', 'upload'].includes(action) && !browserTestingHasLocator(step, action === 'type')) return { ok: false, error: action + ' needs an element locator (testId, label, role+name, selector, or ref)' }
+  if (['click', 'dblclick', 'rightclick', 'hover', 'drag', 'type', 'fill', 'check', 'focus', 'select', 'press', 'upload', 'inspect', 'screenshot', 'compare', 'scroll'].includes(action) && browserTestingHasLocator(step, action === 'type')) {
+    try {
+      const located = await browserTestingLocate(step)
+      if (!located.ok) return located
+      step = Object.assign({}, step, { ref: located.ref, tabId: located.tabId })
+    } catch (err) { return { ok: false, error: err.message } }
+  }
   if (action === 'navigate') return browserControlNavigate(step.url, step.tabId, step.taskId, step.workspaceId)
   if (action === 'back') return browserControlHistory('back', step.tabId, step.taskId, step.workspaceId)
   if (action === 'forward') return browserControlHistory('forward', step.tabId, step.taskId, step.workspaceId)
   if (action === 'reload') return browserControlHistory('reload', step.tabId, step.taskId, step.workspaceId)
-  if (action === 'snapshot') return browserControlSnapshot(step.tabId, step.taskId, step.workspaceId)
+  if (action === 'snapshot') return browserControlSnapshot(step.tabId, step.taskId, step.workspaceId, step)
   if (action === 'read') return browserControlReadPage(step)
   if (action === 'click') return browserControlPointer('click', step)
   if (action === 'dblclick') return browserControlPointer('dblclick', step)
@@ -1377,27 +1637,21 @@ async function browserControlRunStep (step) {
   if (action === 'hover') return browserControlPointer('hover', step)
   if (action === 'drag') return browserControlDrag(step)
   if (action === 'type') return browserControlAct('type', step)
+  if (action === 'fill') {
+    if (typeof step.value !== 'string') return { ok: false, error: 'fill needs value (use an empty string to clear)' }
+    return browserControlAct('type', Object.assign({}, step, { text: step.value }))
+  }
+  if (action === 'check') return global.minBrowserTesting.check(step)
+  if (action === 'focus') return browserControlAct(action, step)
   if (action === 'select') return browserControlAct('select', step)
-  if (action === 'press') return browserControlAct('press', step)
+  if (action === 'press') return global.minBrowserTesting.press(step)
   if (action === 'scroll') return browserControlAct('scroll', step)
   if (action === 'screenshot') return browserControlScreenshot(step)
+  if (action === 'viewport' || action === 'inspect' || action === 'compare') return browserVisualRun(step)
   if (action === 'upload') return browserControlUpload(step)
   if (action === 'download') return browserControlDownload(step)
   if (action === 'dialog') return browserControlDialog(step)
   if (action === 'wait') return browserControlWait(step)
-  if (action === 'assert') {
-    const result = await browserControlWait({
-      tabId: step.tabId,
-      workspaceId: step.workspaceId,
-      selector: step.selector,
-      text: step.text,
-      timeout: step.timeout || 2000
-    })
-    if (!result || !result.ok) {
-      return { ok: false, error: result && result.error ? result.error : 'Assertion failed' }
-    }
-    return { ok: true, asserted: true }
-  }
   if (action === 'tabs') return browserControlTabs(step.operation || 'list', step)
   return { ok: false, error: 'Unknown action: ' + action }
 }
