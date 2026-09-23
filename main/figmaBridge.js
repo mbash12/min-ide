@@ -134,8 +134,8 @@ function figmaBridgeWriteExport (payload) {
 
 function figmaBridgeFinish (id, result) {
   var pending = figmaBridgePending.get(id)
-  figmaBridgeJobMark(id, result && result.ok === false ? 'error' : 'done', result && result.error)
   if (!pending) return
+  figmaBridgeJobMark(id, result && result.ok === false ? 'error' : 'done', result && result.error)
   clearTimeout(pending.timer)
   figmaBridgePending.delete(id)
   pending.resolve(result)
@@ -329,6 +329,10 @@ function figmaBridgeWsAttach (server) {
     ws.on('error', function () {
       try { ws.close() } catch (e) {}
     })
+    // HTTP can report the plugin alive before its hidden iframe opens the
+    // socket. Polling stops as soon as WS opens, so drain any commands that
+    // arrived during that handoff instead of leaving them in the HTTP queue.
+    figmaBridgeFlushQueue()
   })
   server.on('upgrade', function (req, socket, head) {
     var pathname = ''
@@ -374,6 +378,7 @@ function figmaBridgeWsClaim (fileKey) {
   if (count === 1) {
     unkeyed.fileKey = fileKey
     figmaBridgeSocketsByFile.set(fileKey, unkeyed)
+    figmaBridgeFlushQueue()
   }
 }
 
@@ -381,7 +386,8 @@ function figmaBridgeWsSend (command) {
   var target = null
   if (command.fileKey) target = figmaBridgeSocketsByFile.get(command.fileKey) || null
   if (!target && figmaBridgeSockets.size === 1) {
-    target = figmaBridgeSockets.values().next().value
+    var only = figmaBridgeSockets.values().next().value
+    if (!command.fileKey || !only.fileKey || only.fileKey === command.fileKey) target = only
   }
   if (!target || target.readyState !== 1) return null
   try {
@@ -391,6 +397,18 @@ function figmaBridgeWsSend (command) {
   } catch (e) {
     return null
   }
+}
+
+function figmaBridgeFlushQueue () {
+  figmaBridgeQueue = figmaBridgeQueue.filter(function (command) {
+    var pending = figmaBridgePending.get(command.id)
+    if (!pending) return false
+    var socket = figmaBridgeWsSend(command)
+    if (!socket) return true
+    pending.ws = socket
+    figmaBridgeJobMarkSent(command.id, 'ws')
+    return false
+  })
 }
 
 function figmaBridgeStart () {
@@ -420,6 +438,7 @@ function figmaBridgeStart () {
 }
 
 function figmaBridgeStop () {
+  figmaBridgeRejectAll('Figma bridge stopped')
   if (figmaBridgePingTimer) {
     clearInterval(figmaBridgePingTimer)
     figmaBridgePingTimer = null
@@ -428,6 +447,11 @@ function figmaBridgeStop () {
     try { ws.terminate() } catch (e) {}
   })
   figmaBridgeSockets.clear()
+  figmaBridgeSocketsByFile.clear()
+  figmaBridgeLastSeen = 0
+  figmaBridgeFileKey = null
+  figmaBridgeSelection = null
+  figmaBridgeBootId = null
   figmaBridgeTransport = null
   if (figmaBridgeWss) {
     try { figmaBridgeWss.close() } catch (e) {}
@@ -448,6 +472,7 @@ function figmaBridgeSetFileKey (key) {
   var next = key || null
   if (figmaBridgeFileKey !== next) figmaBridgeSelection = null
   figmaBridgeFileKey = next
+  figmaBridgeWsClaim(next)
 }
 
 function figmaBridgeStatus () {
@@ -490,6 +515,8 @@ function figmaBridgeCommand (action, params) {
       var timeoutMs = action === 'export' ? 125000 : FIGMA_BRIDGE_COMMAND_TIMEOUT_MS
       var timer = setTimeout(function () {
         figmaBridgePending.delete(id)
+        var wasQueued = figmaBridgeQueue.some(function (queued) { return queued.id === id })
+        figmaBridgeQueue = figmaBridgeQueue.filter(function (queued) { return queued.id !== id })
         figmaBridgeJobMark(id, 'error', 'timed out')
         // Diagnose which side stalled: commands still in the queue mean the
         // plugin never polled (transport dead); an empty queue means it took
@@ -500,7 +527,7 @@ function figmaBridgeCommand (action, params) {
           ' — queue ' + figmaBridgeQueue.length +
           ', lastSeen ' + ago +
           ', transport ' + (figmaBridgeTransport || 'unknown') +
-          (figmaBridgeQueue.length ? ' (plugin is not picking up commands — reconnect)' : '')
+          (wasQueued ? ' (plugin did not pick up this command — reconnect)' : '')
         ))
       }, timeoutMs)
       var pending = { resolve: resolve, reject: reject, timer: timer, ws: null }

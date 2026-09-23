@@ -79,6 +79,7 @@
   "scripts": {
     "postinstall": "node ./scripts/setupDevEnv.js",
     "test": "standard --verbose js/**/*.js main/*.js",
+    "test:figma": "node --test scripts/figmaEngine.test.js",
     "watch": "node ./scripts/watch.js",
     "startElectron": "electron . --development-mode",
     "startElectronDev": "electron . --development-mode --dev",

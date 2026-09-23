@@ -4,6 +4,12 @@ Personal-use architecture. Min is the controller; a hidden figma-linux-next wind
 
 `vendor/figma-linux-next` stays gitignored. This plan describes Min-owned code plus a small set of patches on that clone.
 
+Implementation update (2026-09-23): Connect and plugin actions now activate the
+renderer without showing a native Figma window. Login uses the Figma tab in Min;
+Show engine is optional. See the current [engine patch instructions](../patches/figma-linux-next/README.md)
+for runtime readiness, the background renderer, and WebSocket queue handoff.
+The login-reveal and window-priming options below describe the original plan.
+
 ---
 
 

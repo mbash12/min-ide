@@ -1,6 +1,6 @@
 /* global ipc, l, tasks, tabs, empty */
 /* Design sidebar: engine controls are global; file and layer context follows
-the active tab. Engine login / visibility live in Pro Settings. */
+the active tab. The engine uses the Figma session from the Min tab. */
 
 const panel = document.getElementById('sidebar-panel-design')
 
@@ -602,19 +602,6 @@ function cardConnectButton () {
   return btn
 }
 
-function cardEngineButton () {
-  const btn = el('button', 'design-connect-btn', t('designShowEngineSignIn', 'Show engine to sign in'))
-  btn.type = 'button'
-  btn.title = t('designShowEngineSignInHint', 'Opens the Figma engine window so you can sign in, then Connect again.')
-  btn.disabled = busy || !(lastStatus && lastStatus.running)
-  btn.addEventListener('click', function (e) {
-    e.stopPropagation()
-    if (btn.disabled) return
-    ipc.invoke('figmaEngine:setVisible', { visible: true }).then(refreshStatus)
-  })
-  return btn
-}
-
 /* Compact pipeline indicator: engine → file → plugin, each a single icon with
 a state dot. Detail text lives in tooltips instead of extra rows; the header
 stays an icon bar like the other sidebar panels. */
@@ -674,7 +661,6 @@ function buildStatusCard () {
   }
 
   const actions = el('div', 'design-status-actions')
-  if (needsLogin()) actions.appendChild(cardEngineButton())
   // One button slot swaps Connect ↔ Disconnect so the card never grows a row.
   if (connectedToSelected()) {
     const btn = el('button', 'design-connect-btn', t('designDisconnect', 'Disconnect'))
@@ -691,6 +677,9 @@ function buildStatusCard () {
   }
   if (actions.childNodes.length) top.appendChild(actions)
   card.appendChild(top)
+  if (needsLogin()) {
+    card.appendChild(el('div', 'design-status-label', t('designLoginInTabHint', 'Sign in to Figma in this tab, then Connect again.')))
+  }
 
   if (tab && isFigma) {
     const file = el('div', 'design-status-file')
@@ -1380,14 +1369,6 @@ function buildHeader () {
   // Everything else in this panel's header is a Figma-tab action — on a
   // non-Figma tab the build list below is the whole panel.
   if (isFigma) {
-    if (needsLogin()) {
-      actions.appendChild(iconButton(
-        'codicon-sign-in',
-        t('designShowEngineSignIn', 'Show engine to sign in'),
-        function () { ipc.invoke('figmaEngine:setVisible', { visible: true }).then(refreshStatus) },
-        busy || !(lastStatus && lastStatus.running)
-      ))
-    }
     // Connect and disconnect share one slot and the same icon-button style.
     if (scoped) {
       actions.appendChild(iconButton(

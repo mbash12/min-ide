@@ -135,7 +135,7 @@
     "designShowEngineSignIn": "Show engine to sign in",
     "designShowEngine": "Show engine window",
     "designHideEngine": "Hide engine window",
-    "designShowEngineSignInHint": "Opens the Figma engine window so you can sign in, then Connect again.",
+    "designLoginInTabHint": "Sign in to Figma in this tab, then Connect again.",
     "designStartEngine": "Start engine",
     "designStopEngine": "Stop engine",
     "designExport": "Export PNG",

@@ -7,7 +7,7 @@
  * also a supported status surface. Every UI call below is guarded: a runtime
  * without UI support must never be able to kill the link. */
 
-const PLUGIN_VERSION = '5'
+const PLUGIN_VERSION = '6'
 // NOTE: raw IP (127.0.0.1) makes the wasm sandbox's URL parser throw
 // "must be valid url" — keep the hostname form.
 const BRIDGE_HTTP = 'http://localhost:44178'
@@ -37,9 +37,9 @@ function log() {
 let pluginUi = null
 try {
   if (typeof figma.showUI === 'function') {
-    // Tiny visible status window — the only reliable status surface when the
-    // console is closed. Guarded so UI-less runtimes can never kill the link.
-    figma.showUI(__html__, { width: 240, height: 84, themeColors: true })
+    // Keep the iframe alive for WebSocket transport without opening a panel.
+    // Status is surfaced by Min; polling still works if UI is unavailable.
+    figma.showUI(__html__, { visible: false, width: 240, height: 84, themeColors: true })
     pluginUi = figma.ui || null
   }
 } catch (e) {
@@ -478,8 +478,8 @@ figma.on('selectionchange', () => {
 
 // --- commands from UIX ------------------------------------------------------
 
-async function runBridgeCommand(cmd, viaWs) {
-  const commandIdentity = () => ({
+function commandIdentity(cmd) {
+  return {
     protocolVersion: cmd.protocolVersion,
     jobId: cmd.jobId,
     runId: cmd.runId,
@@ -490,9 +490,12 @@ async function runBridgeCommand(cmd, viaWs) {
     sourceRevision: cmd.sourceRevision,
     slot: cmd.slot,
     exportTarget: cmd.exportTarget,
-  })
+  }
+}
+
+async function runBridgeCommand(cmd, viaWs) {
   const reply = (ok, payload, error) => {
-    const msg = { type: 'result', ...commandIdentity(), id: cmd.id, ok, payload, error, transport: transport() }
+    const msg = { type: 'result', ...commandIdentity(cmd), id: cmd.id, ok, payload, error, transport: transport() }
     let sent = false
     if (viaWs && wsOpen && pluginUi) {
       try {
@@ -633,7 +636,7 @@ async function dispatchBridgeCommand(cmd, reply) {
           headers: bridgeHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             id: cmd.id,
-            ...commandIdentity(),
+            ...commandIdentity(cmd),
             target: cmd.target,
             exportTarget: cmd.exportTarget,
             exportDir: typeof cmd.exportDir === 'string' ? cmd.exportDir : undefined,

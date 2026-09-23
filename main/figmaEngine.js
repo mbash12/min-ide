@@ -9,7 +9,8 @@ var FIGMA_ENGINE_CONTROL_PORT = 44179
 var FIGMA_ENGINE_PLUGIN_NAME = 'Min Figma Bridge'
 var FIGMA_ENGINE_READY_MS = 45000
 var FIGMA_ENGINE_PLUGIN_WAIT_MS = 25000
-var FIGMA_ENGINE_FILE_WAIT_MS = 60000
+// A first load downloads the editor/WASM assets into the engine's own cache.
+var FIGMA_ENGINE_FILE_WAIT_MS = 150000
 var FIGMA_ENGINE_FILE_STABLE_MS = 2500
 
 var figmaEngineChild = null
@@ -211,9 +212,8 @@ async function figmaEngineWaitReady (timeoutMs) {
 
 async function figmaEngineWaitFile (parsed, timeoutMs) {
   // Wait until the engine's tab has finished loading the requested file. The
-  // engine reports loading from webContents.isLoading(). Keep that state
-  // stable briefly as the Figma SPA can report loading=false before its
-  // plugin/runtime bridge is ready.
+  // The desktop handler must be installed as well as the document loaded.
+  // Keep both stable briefly while the Figma SPA finishes its startup.
   var deadline = Date.now() + (timeoutMs || FIGMA_ENGINE_FILE_WAIT_MS)
   var lastError = null
   var lastStatus = null
@@ -221,9 +221,12 @@ async function figmaEngineWaitFile (parsed, timeoutMs) {
   var stableSince = 0
   while (Date.now() < deadline) {
     try {
+      // The home tab can finish its initial login redirect after openUrl.
+      // Keep the requested file active inside the hidden engine while it loads.
+      await figmaEngineRpc('ensureRuntime', { fileKey: parsed.fileKey }, 1500)
       var status = await figmaEngineGetStatus(1500)
       lastStatus = status
-      if (status && status.ok && !status.loading) {
+      if (status && status.ok && !status.loading && status.runtimeReady === true) {
         var currentFileKey = status.currentFileKey || figmaParseUrl(status.currentUrl || '').fileKey || null
         if (currentFileKey === parsed.fileKey) {
           if (stableFileKey !== currentFileKey) {
@@ -257,7 +260,8 @@ async function figmaEngineWaitFile (parsed, timeoutMs) {
     : 'unknown'
   throw new Error(
     'figma engine did not finish loading the file' +
-    ' (target=' + parsed.fileKey + ', current=' + current + ', loading=' + loading + ')'
+    ' (target=' + parsed.fileKey + ', current=' + current + ', loading=' + loading +
+    ', runtimeReady=' + !!(lastStatus && lastStatus.runtimeReady) + ')'
   )
 }
 
@@ -392,7 +396,10 @@ async function figmaEngineEnsureStarted () {
       await figmaEngineClearStaleEngine()
     }
     await figmaEngineSpawn()
-    await figmaEngineWaitReady()
+    var engine = await figmaEngineWaitReady()
+    if (!engine.backgroundRuntime) {
+      throw new Error('Rebuild the Figma engine with the background runtime patches (vendor/figma-linux-next: bun run build).')
+    }
     figmaEngineControlReady = true
     if (!figmaEngineContext) figmaEngineEmitPhase('engine-ready', {})
   })().catch(function (err) {
@@ -475,7 +482,6 @@ async function figmaEngineWaitPlugin (fileKey, timeoutMs) {
   var deadline = Date.now() + (timeoutMs || FIGMA_ENGINE_PLUGIN_WAIT_MS)
   var last = null
   var launched = false
-  var primeActive = false
   var engineOnTargetFile = async function () {
     try {
       var status = await figmaEngineGetStatus(1500)
@@ -500,26 +506,19 @@ async function figmaEngineWaitPlugin (fileKey, timeoutMs) {
     }
     return false
   }
-  var releasePrime = async function () {
-    if (!primeActive || figmaEngineWindowVisible) return
-    primeActive = false
-    try {
-      await figmaEngineRpc('hide')
-    } catch (e) {}
-  }
   try {
-    try {
-      await figmaEngineRpc('ensureRuntime')
-    } catch (e) {}
+    var runtime = await figmaEngineRpc('ensureRuntime', { fileKey: fileKey })
+    if (!runtime || !runtime.ok) {
+      return { ok: false, error: (runtime && runtime.error) || 'Figma background runtime is not ready' }
+    }
 
-    // Avoid re-priming a live connection, but do not trust the engine's
+    // Reuse a live connection, but do not trust the engine's
     // global plugin-menu cache for a different file: it can still describe
     // the previous tab while the new tab is settling.
     if (await bridgeConnectedForFile()) {
       return { ok: true, alreadyConnected: true }
     }
 
-    var launchedAt = 0
     var attemptLaunch = async function () {
       try {
         last = await figmaEngineRpc('runPlugin', {
@@ -532,58 +531,17 @@ async function figmaEngineWaitPlugin (fileKey, timeoutMs) {
         // not ready" failure keeps launched=false so the loop retries once
         // the file tab's panel has reported its plugin menu.
         launched = !!(last && last.ok)
-        if (launched) launchedAt = Date.now()
       } catch (err) {
         last = { ok: false, error: err.message }
       }
     }
 
-    // A cold engine reports a successful dispatch but drops it silently —
-    // its SPA has no plugin runtime until the window has been mapped once.
-    // Only skip the window when the engine reports it was shown before.
-    var engineWarm = figmaEngineWindowVisible
-    if (!engineWarm) {
-      try {
-        var engineStatus = await figmaEngineGetStatus(1500)
-        engineWarm = !!(engineStatus && engineStatus.everShown)
-      } catch (e) {}
-    }
-    if (engineWarm) await attemptLaunch()
-
     while (Date.now() < deadline) {
       if (await bridgeConnectedForFile()) return { ok: true, alreadyConnected: true }
-
-      // A "successful" dispatch that produced no plugin on the bridge within
-      // a few seconds was dropped before the runtime existed — treat it as
-      // a miss and fall through to the prime path below.
-      if (launched && launchedAt && Date.now() - launchedAt > 8000 &&
-          !primeActive && !figmaEngineWindowVisible) {
-        launched = false
-        launchedAt = 0
-      }
-
-      // The Figma SPA only exposes its plugin menu once the engine window
-      // has been mapped. Show the real window briefly — no transparency
-      // tricks, they render as a broken frame-only window on several Linux
-      // WMs — and hide it again as soon as the plugin has been dispatched.
-      if (!launched && !primeActive && !figmaEngineWindowVisible) {
-        try {
-          var primed = await figmaEngineRpc('primeWindow', { keepInvisible: true }, 16000)
-          primeActive = !!(primed && primed.keptInvisible)
-          if (!primeActive && primed && primed.primed === false) {
-            last = { ok: false, error: 'Figma renderer did not activate its plugin runtime' }
-          }
-        } catch (err) {
-          last = { ok: false, error: err.message }
-        }
-      }
-
-      if (!launched) {
-        await attemptLaunch()
-        // The dispatch went through — the window can hide again now; the
-        // plugin keeps running because backgroundThrottling is disabled.
-        if (launched) await releasePrime()
-      }
+      // runPlugin acknowledges only after the editor has installed its
+      // desktop message handler. Once accepted, wait for the bridge instead
+      // of launching a second copy of the plugin.
+      if (!launched) await attemptLaunch()
       await figmaEngineSleep(800)
     }
     if (await bridgeConnectedForFile()) return { ok: true, alreadyConnected: true }
@@ -591,8 +549,8 @@ async function figmaEngineWaitPlugin (fileKey, timeoutMs) {
       ok: false,
       error: last && last.error ? last.error : 'plugin did not connect'
     }
-  } finally {
-    await releasePrime()
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) }
   }
 }
 
@@ -648,9 +606,7 @@ async function figmaEngineConnectInner (opts) {
 
   var sessionStatus = await figmaEngineRpc('hasSession')
   if (!sessionStatus || !sessionStatus.authed) {
-    // Connect never changes the user-visible window state. The user reveals
-    // the engine via "Show engine" (Pro Settings or the sidebar login prompt),
-    // signs in there, then connects again.
+    // Authenticate in the Min tab and copy its session on the next connect.
     figmaEngineContext = {
       tabId: opts.tabId != null ? String(opts.tabId) : null,
       url: parsed.url,
@@ -667,7 +623,7 @@ async function figmaEngineConnectInner (opts) {
     return {
       ok: false,
       needsLogin: true,
-      error: 'Figma engine needs login. Show the engine window, sign in, then Connect again.',
+      error: 'Sign in to Figma in the Min tab, then Connect again.',
       context: figmaEngineContext
     }
   }

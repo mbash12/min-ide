@@ -1,5 +1,5 @@
 import http from "node:http";
-import { app, session, type BrowserWindow, type Rectangle } from "electron";
+import { app, session, type BrowserWindow, type Rectangle, type WebContents } from "electron";
 
 import { FIGMA_SESSION_COOKIE_NAME, HOMEPAGE } from "Const";
 import { logger } from "./Logger";
@@ -30,13 +30,7 @@ export function parseFigmaFileKey(rawUrl: string): string | null {
 }
 
 let windowVisible = false;
-let windowPriming = false;
-let windowPrimeState: {
-  win: BrowserWindow;
-  bounds: Rectangle;
-  opacity: number;
-} | null = null;
-let windowPrimeCssKey: string | null = null;
+let windowEverShown = false;
 let savedBounds: Rectangle | null = null;
 let engineProcessQuitting = false;
 
@@ -46,6 +40,11 @@ export function isEngineWindowVisible(): boolean {
 
 export function setEngineWindowVisible(visible: boolean): void {
   windowVisible = visible;
+}
+
+/** Diagnostic only: background operation never maps the native window. */
+export function engineWindowEverShown(): boolean {
+  return windowEverShown;
 }
 
 export function isEngineProcessQuitting(): boolean {
@@ -71,11 +70,11 @@ export function watchMinParentProcess(): void {
   }, 750);
 }
 
-/** Keep the user-visible visibility flag in sync with show/hide events.
- *  Transparent off-screen priming is intentionally excluded. */
+/** Report actual native window visibility, including unexpected reveals. */
 export function trackEngineWindowVisibility(win: BrowserWindow): void {
   win.on("show", () => {
-    if (!windowPriming) setEngineWindowVisible(true);
+    windowEverShown = true;
+    setEngineWindowVisible(true);
   });
   win.on("hide", () => setEngineWindowVisible(false));
   win.on("closed", () => setEngineWindowVisible(false));
@@ -92,74 +91,58 @@ function rememberBounds(win: BrowserWindow): void {
  *  with disable-backgrounding-occluded-windows, so plugins stay alive. */
 export function hideEngineBrowserWindow(win: BrowserWindow): void {
   if (!win || win.isDestroyed()) return;
-  if (windowPrimeState?.win === win) {
-    finishEngineWindowPrime(win);
-    return;
-  }
   rememberBounds(win);
   win.setSkipTaskbar(true);
   if (win.isVisible()) win.hide();
 }
 
-async function startEngineWindowPrime(win: BrowserWindow): Promise<void> {
-  if (windowPrimeState?.win === win) return;
-  const bounds = win.getBounds();
-  windowPriming = true;
-  windowPrimeState = {
-    win,
-    bounds,
-    opacity: win.getOpacity(),
-  };
-  await clearEnginePrimeShield(win);
+const backgroundRenderers = new WeakMap<WebContents, Promise<void>>();
+
+/** Activate the page's focus/visibility lifecycle without showing or focusing
+ *  a native window. Keep the CDP session attached while the renderer lives. */
+export function prepareEngineWebContents(contents: WebContents): Promise<void> {
+  if (!isMinFigmaEngine() || contents.isDestroyed()) return Promise.resolve();
+  const pending = backgroundRenderers.get(contents);
+  if (pending) return pending;
+  contents.setBackgroundThrottling(false);
+  const ready = (async () => {
+    if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
+    await contents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true });
+  })();
+  backgroundRenderers.set(contents, ready);
+  contents.debugger.once("detach", () => backgroundRenderers.delete(contents));
+  void ready.catch(() => backgroundRenderers.delete(contents));
+  return ready;
+}
+
+export async function engineDesktopReady(contents: WebContents): Promise<boolean> {
+  if (contents.isDestroyed() || contents.isLoading()) return false;
   try {
-    windowPrimeCssKey = await win.webContents.insertCSS(
-      "html, body { opacity: 0 !important; background: transparent !important; }",
-    );
+    await prepareEngineWebContents(contents);
+    const result = await contents.debugger.sendCommand("Runtime.evaluate", {
+      expression: "window.__minFigmaDesktopReady === true",
+      returnByValue: true,
+    });
+    return result.result?.value === true;
   } catch {
-    /* Native opacity/off-screen positioning remain as fallback. */
-  }
-  // Figma only enables its editor/plugin runtime after the BrowserWindow is
-  // mapped. Keep that activation completely outside the user's viewport.
-  win.setSkipTaskbar(true);
-  win.setIgnoreMouseEvents(true);
-  win.setOpacity(0);
-  win.setBounds({ ...bounds, x: -10000, y: -10000 });
-  win.showInactive();
-}
-
-async function clearEnginePrimeShield(win: BrowserWindow): Promise<void> {
-  const cssKey = windowPrimeCssKey;
-  windowPrimeCssKey = null;
-  if (!cssKey || win.isDestroyed()) return;
-  try {
-    await win.webContents.removeInsertedCSS(cssKey);
-  } catch {
-    /* The document may have navigated and removed the stylesheet already. */
+    return false;
   }
 }
 
-function finishEngineWindowPrime(win: BrowserWindow): void {
-  const state = windowPrimeState;
-  if (!state || state.win !== win) {
-    windowPriming = false;
-    return;
-  }
-  if (!win.isDestroyed()) {
-    if (win.isVisible()) win.hide();
-    win.setIgnoreMouseEvents(false);
-    win.setOpacity(state.opacity);
-    win.setBounds(state.bounds);
-  }
-  windowPrimeState = null;
-  windowPriming = false;
-  setEngineWindowVisible(false);
-}
-
-/** Readiness probe for Min: the window is created with show:false and only
- *  mapped by an explicit show RPC or the transparent plugin prime. */
-export function ensureEngineRuntime(windowManager: WindowManager): void {
+export async function ensureEngineRuntime(
+  windowManager: WindowManager,
+  fileKey?: string,
+): Promise<boolean> {
   const window = windowManager.getLastFocusedWindow();
-  if (!window || window.win.isDestroyed()) return;
+  if (!window || window.win.isDestroyed()) return false;
+  const tab = fileKey
+    ? [...window.tabs.values()].find((tab) => parseFigmaFileKey(tab.getUrl()) === fileKey)
+    : window.tabs.get(window.getLatestFocusedTabId());
+  if (!tab || tab.view.webContents.isDestroyed()) return false;
+  // Select the child view and give it real bounds; the BrowserWindow stays hidden.
+  if (window.getLatestFocusedTabId() !== tab.id) window.setTabFocus(tab.id);
+  window.updateTabsBounds();
+  return engineDesktopReady(tab.view.webContents);
 }
 
 export function revealEngineWindow(windowManager: WindowManager, revealContent = true): void {
@@ -176,8 +159,6 @@ async function applyWindowVisibility(
   const win = window.win;
   if (win.isDestroyed()) return;
   if (visible) {
-    if (windowPrimeState?.win === win) finishEngineWindowPrime(win);
-    await clearEnginePrimeShield(win);
     setEngineWindowVisible(true);
     win.setSkipTaskbar(false);
     if (savedBounds) {
@@ -294,6 +275,7 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
           const window = deps.windowManager.getLastFocusedWindow();
           let currentUrl = "";
           let loading = false;
+          let runtimeReady = false;
           if (window) {
             try {
               const tabId = window.getLatestFocusedTabId();
@@ -302,6 +284,9 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
               const webContents =
                 window.tabs.get(tabId)?.view?.webContents ?? window.win?.webContents;
               loading = !!webContents?.isLoading();
+              if (parseFigmaFileKey(currentUrl) && webContents) {
+                runtimeReady = await engineDesktopReady(webContents);
+              }
             } catch {
               /* tab vanished mid-read — report empty url, not a 500 */
             }
@@ -310,10 +295,13 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
           json(res, 200, {
             ok: true,
             authed: await hasFigmaSessionCookie(),
+            backgroundRuntime: true,
+            runtimeReady,
             currentUrl,
             loading,
             currentFileKey: parseFigmaFileKey(currentUrl),
             windowVisible: isEngineWindowVisible(),
+            everShown: engineWindowEverShown(),
             pluginPath: enginePluginPath(),
             hasPluginMenu: pluginMenu.matched,
             pluginMenuTabs: pluginMenu.tabs,
@@ -344,15 +332,21 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
           }
 
           if (method === "ensureRuntime") {
-            ensureEngineRuntime(deps.windowManager);
-            json(res, 200, { ok: true, windowVisible: isEngineWindowVisible() });
+            const fileKey = typeof params.fileKey === "string" ? params.fileKey : undefined;
+            const ready = await ensureEngineRuntime(deps.windowManager, fileKey);
+            json(res, 200, {
+              ok: ready,
+              error: ready ? undefined : "Figma editor is still starting in the background",
+              windowVisible: isEngineWindowVisible(),
+            });
             return;
           }
 
           if (method === "runPlugin") {
             const name = String(params.name || ENGINE_PLUGIN_NAME);
             const fileKey = typeof params.fileKey === "string" ? params.fileKey : undefined;
-            const ran = deps.windowManager.runPluginByName(name, fileKey);
+            const ready = await ensureEngineRuntime(deps.windowManager, fileKey);
+            const ran = ready && deps.windowManager.runPluginByName(name, fileKey);
             json(res, 200, {
               ok: ran,
               error: ran ? undefined : `plugin menu item not ready: ${name}`,
@@ -376,55 +370,6 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
             const target = String(params.url || "");
             const ok = deps.windowManager.tryHandleAppAuthRedeemUrl(target);
             json(res, 200, { ok });
-            return;
-          }
-
-          // Invisible prime: the Figma SPA only loads local dev plugins (and
-          // pushes its full plugin menu) once its window has been shown.
-          // Map the window at opacity 0 without focus, wait for the menu,
-          // then hide again — nothing ever reaches the screen.
-          if (method === "primeWindow") {
-            const window = deps.windowManager.getLastFocusedWindow();
-            if (!window || window.win.isDestroyed()) {
-              json(res, 200, { ok: false, error: "no window" });
-              return;
-            }
-            const win = window.win;
-            const wasVisible = isEngineWindowVisible();
-            const keepInvisible = params.keepInvisible === true;
-            const targetTab = window.getTabInfo(window.getLatestFocusedTabId());
-            const targetFileKey = parseFigmaFileKey(targetTab?.url || "");
-            const deadline = Date.now() + 12000;
-            if (!wasVisible) {
-              await startEngineWindowPrime(win);
-            }
-            let primed = false;
-            let matchedSince = 0;
-            while (Date.now() < deadline) {
-              await new Promise((r) => setTimeout(r, 400));
-              const menuReady = targetFileKey
-                ? !!deps.windowManager.findPluginMenuAction(ENGINE_PLUGIN_NAME, targetFileKey)
-                : deps.windowManager.describePluginMenu(ENGINE_PLUGIN_NAME).matched;
-              const loading = !!window.tabs
-                .get(window.getLatestFocusedTabId())
-                ?.view?.webContents?.isLoading?.();
-              if (menuReady && !loading) {
-                if (!matchedSince) matchedSince = Date.now();
-                if (Date.now() - matchedSince < 1200) continue;
-                primed = true;
-                break;
-              }
-              matchedSince = 0;
-            }
-            if (!wasVisible && !keepInvisible) {
-              finishEngineWindowPrime(win);
-            }
-            json(res, 200, {
-              ok: true,
-              primed,
-              kept: wasVisible,
-              keptInvisible: !wasVisible && keepInvisible,
-            });
             return;
           }
 
