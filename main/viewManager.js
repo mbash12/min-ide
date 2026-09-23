@@ -1,4 +1,4 @@
-/* global minFigmaEngine */
+/* global minFigmaEngine, settings */
 
 var viewMap = {} // id: view
 var viewStateMap = {} // id: view state
@@ -99,7 +99,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
   viewStateMap[id] = {
     loadedInitialURL: false,
     hasJS: viewPrefs.javascript, // need this later to see if we should swap the view for a JS-enabled one
-    partition: viewPrefs.partition || null, // used to give popups the same session as their parent
+    partition: viewPrefs.partition || null,
     resource: resource || null, // what an internal surface is showing, see getViewResource
     rootPath: rootPath || null,
     extra: extra || null // per-surface extras (e.g. terminal scrollback for restore)
@@ -160,47 +160,30 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
       }
     }
 
-    /*
-      Opening a popup with window.open() generally requires features to be set
-      So if there are no features, the event is most likely from clicking on a link, which should open a new tab.
-      Clicking a link can still have a "new-window" or "foreground-tab" disposition depending on which keys are pressed
-      when it is clicked.
-      (https://github.com/minbrowser/min/issues/1835)
-    */
-    if (details.url && details.url !== 'about:blank' && !details.features) {
-      const eventTarget = getWindowFromViewContents(view.webContents) || windows.getCurrent()
-
-      getWindowWebContents(eventTarget).send('view-event', {
-        tabId: id,
-        event: 'new-tab',
-        args: [details.url, !(details.disposition === 'background-tab')]
-      })
-      return {
-        action: 'deny'
-      }
-    }
-
+    // Even a featureless window.open() can be an OAuth popup. Adopt Chromium's
+    // window so window.opener, postMessage, form data and referrers survive.
+    // Apply preferences before Electron creates the popup's WebContents.
+    const popupPrefs = Object.assign({}, getDefaultViewWebPreferences(), {
+      session: view.webContents.session
+    })
     return {
       action: 'allow',
+      outlivesOpener: true,
+      overrideBrowserWindowOptions: { webPreferences: popupPrefs },
       createWindow: function (options) {
-        // popups inherit the session partition of the view that opened them
-        const popupPrefs = getDefaultViewWebPreferences()
-        if (viewStateMap[id] && viewStateMap[id].partition) {
-          popupPrefs.partition = viewStateMap[id].partition
-        }
+        const popupView = new WebContentsView(options)
         if (typeof applyUAForURL === 'function') {
-          applyUAForURL(options.webContents, details.url)
+          applyUAForURL(popupView.webContents, details.url)
         }
-        const view = new WebContentsView({ webPreferences: popupPrefs, webContents: options.webContents })
 
         var popupId = Math.random().toString()
-        temporaryPopupViews[popupId] = view
+        temporaryPopupViews[popupId] = popupView
 
         /* Popups that are closed before the renderer adopts them (or whose
         did-create-popup notification is lost) would otherwise leak their
         WebContentsView in the map forever. */
-        view.webContents.once('destroyed', function () {
-          if (temporaryPopupViews[popupId] === view) {
+        popupView.webContents.once('destroyed', function () {
+          if (temporaryPopupViews[popupId] === popupView) {
             delete temporaryPopupViews[popupId]
           }
         })
@@ -210,10 +193,24 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
         getWindowWebContents(eventTarget).send('view-event', {
           tabId: id,
           event: 'did-create-popup',
-          args: [popupId, details.url]
+          args: [popupId, details.url, settings.get('openTabsInForeground') || details.disposition !== 'background-tab']
         })
 
-        return view.webContents
+        // For browser-initiated tabs (e.g. Ctrl+click), Electron may not supply
+        // a WebContents or start its navigation when createWindow is provided.
+        if (!options.webContents) {
+          const loadOptions = { httpReferrer: details.referrer }
+          if (details.postBody) {
+            loadOptions.postData = details.postBody.data
+            let contentType = details.postBody.contentType
+            if (details.postBody.boundary) contentType += '; boundary=' + details.postBody.boundary
+            loadOptions.extraHeaders = 'Content-Type: ' + contentType
+          }
+          // did-fail-load handles navigation errors in the adopted tab.
+          popupView.webContents.loadURL(details.url, loadOptions).catch(function () {})
+        }
+
+        return popupView.webContents
       }
     }
   })
@@ -604,9 +601,6 @@ function loadURLInView (id, url, win) {
     if (win && (id === windows.getState(win).selectedView || (windows.getState(win).splitPaneIds && windows.getState(win).splitPaneIds.includes(id)))) {
       win.getContentView().addChildView(viewMap[id])
     }
-  }
-  if (typeof applyUAForURL === 'function') {
-    applyUAForURL(viewMap[id].webContents, url)
   }
   const loading = viewMap[id].webContents.loadURL(url)
   viewStateMap[id].loadedInitialURL = true

@@ -92,6 +92,7 @@
     "test:agent-tools": "node --test scripts/agentTools.test.js",
     "test:playbook": "node --test scripts/playbook.test.js",
     "test:browser-visual": "node scripts/runBrowserVisualTests.js",
+    "test:google-auth": "node scripts/googleAuth.test.js",
     "watch": "node ./scripts/watch.js",
     "startElectron": "electron . --development-mode",
     "startElectronDev": "electron . --development-mode --dev",
