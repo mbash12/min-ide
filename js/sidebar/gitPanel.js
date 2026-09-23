@@ -34,7 +34,7 @@ let lastRenderKey = null // data signature of the last render; skips no-op re-re
    only rebuilds the DOM when this changes, so open diffs, scroll positions
    and the commit box aren't torn down by a no-op poll */
 function renderKey () {
-  return currentWorkspaceId + '|' + JSON.stringify([currentStatus, currentGraph, currentLogDetailed])
+  return currentWorkspaceId + '|' + currentWorkspacePath + '|' + JSON.stringify([currentStatus, currentGraph, currentLogDetailed])
 }
 
 let currentWorkspaceId = null
@@ -60,13 +60,14 @@ const defaultCollapsedSections = ['branches', 'graph']
 
 async function loadSavedState (workspaceId) {
   workspaceId = workspaceId || currentWorkspaceId
+  const workspacePath = currentWorkspacePath
   const key = workspaceId ? 'git:' + workspaceId : null
   if (!key) return
   try {
     const state = await uiStateDB.getGitPanelState(key)
     // A later selection may have happened while the state was loading. Do
     // not apply the old workspace's draft or graph state to the new one.
-    if (workspaceId !== currentWorkspaceId) return
+    if (workspaceId !== currentWorkspaceId || workspacePath !== currentWorkspacePath) return
     collapsedSections.clear()
     if (state && state.collapsedSections) {
       ;(state.collapsedSections || []).forEach(function (s) { collapsedSections.add(s) })
@@ -118,7 +119,7 @@ function onWorkspaceSelected (workspaceId) {
   isLoading = false
   loadingWorkspacePath = null
   currentWorkspaceId = nextWorkspaceId
-  currentWorkspacePath = null
+  currentWorkspacePath = getWorkspacePath() || null
   currentGitRoot = null
   currentStatus = null
   currentGraph = null
@@ -129,9 +130,40 @@ function onWorkspaceSelected (workspaceId) {
   graphScrollTop = 0
   graphViewHeight = 0
   graphExpandedCommit = null
+  lastRenderKey = null
+  updateBadge(0)
+  render()
   loadSavedState(nextWorkspaceId).then(function () {
-    if (nextWorkspaceId === currentWorkspaceId) refresh()
+    if (nextWorkspaceId === currentWorkspaceId) render()
   })
+}
+
+function syncWorkspacePath () {
+  const workspaceId = getWorkspaceId()
+  const workspacePath = getWorkspacePath() || null
+  if (workspaceId !== currentWorkspaceId) {
+    onWorkspaceSelected(workspaceId)
+    return
+  }
+  if (workspacePath === currentWorkspacePath) return
+
+  // Drop path-scoped status immediately. The next render starts a fresh read;
+  // old git status/graph data must not remain visible while it is in flight.
+  refreshGeneration++
+  isLoading = false
+  loadingWorkspacePath = null
+  currentWorkspacePath = workspacePath
+  currentGitRoot = null
+  currentStatus = null
+  currentGraph = null
+  currentLogDetailed = null
+  commitMessage = ''
+  graphExpandedCommit = null
+  graphScrollTop = 0
+  lastRenderKey = null
+  persistStateSoon()
+  updateBadge(0)
+  render()
 }
 
 function statusLetterColor (status) {
@@ -1233,13 +1265,25 @@ function buildViewSplitter (graphView) {
 }
 
 async function refresh () {
-  const wsPath = getWorkspacePath()
-  if (isLoading && loadingWorkspacePath === wsPath) return
+  const wsPath = getWorkspacePath() || null
+  const wsId = getWorkspaceId()
+  if (wsPath !== currentWorkspacePath || wsId !== currentWorkspaceId) {
+    syncWorkspacePath()
+    return
+  }
+  if (isLoading && loadingWorkspacePath === wsPath && currentWorkspaceId === wsId) return
   const generation = ++refreshGeneration
-  currentWorkspacePath = wsPath
+  const isCurrentRequest = function () {
+    return generation === refreshGeneration && getWorkspacePath() === wsPath && getWorkspaceId() === wsId
+  }
   if (!wsPath) {
     currentGitRoot = null
     currentStatus = null
+    currentGraph = null
+    currentLogDetailed = null
+    isLoading = false
+    loadingWorkspacePath = null
+    updateBadge(0)
     if (renderKey() !== lastRenderKey) render()
     return
   }
@@ -1249,13 +1293,13 @@ async function refresh () {
   if (loadingEl) loadingEl.hidden = false
   try {
     const status = await ipc.invoke('gitStatus', wsPath)
-    if (generation !== refreshGeneration || getWorkspacePath() !== wsPath) return
+    if (!isCurrentRequest()) return
     if (status && status.isRepo) {
       const gitRoot = status.gitRoot || wsPath
       currentStatus = status
       // fetch branches and graph in parallel when repo exists
       const graph = await fetchGraph(gitRoot)
-      if (generation !== refreshGeneration || getWorkspacePath() !== wsPath) return
+      if (!isCurrentRequest()) return
       currentGitRoot = gitRoot
       currentGraph = graph.graph
       currentLogDetailed = graph.commits
@@ -1267,9 +1311,14 @@ async function refresh () {
     } else {
       currentGitRoot = null
       currentStatus = status
+      currentGraph = null
+      currentLogDetailed = null
     }
   } catch (e) {
-    if (generation !== refreshGeneration || getWorkspacePath() !== wsPath) return
+    if (!isCurrentRequest()) return
+    currentGitRoot = null
+    currentGraph = null
+    currentLogDetailed = null
     currentStatus = { error: e.message }
   } finally {
     if (generation === refreshGeneration) {
@@ -1277,7 +1326,7 @@ async function refresh () {
       loadingWorkspacePath = null
     }
   }
-  if (generation === refreshGeneration && getWorkspacePath() === wsPath) {
+  if (isCurrentRequest()) {
     if (renderKey() !== lastRenderKey) render()
   }
 }
@@ -1505,7 +1554,7 @@ function updateBadge (count) {
 const gitPanel = {
   initialize: function () {
     // initial workspace path
-    currentWorkspacePath = getWorkspacePath()
+    currentWorkspacePath = getWorkspacePath() || null
     currentWorkspaceId = getWorkspaceId()
     loadSavedState().then(function () {
       render()
@@ -1516,11 +1565,13 @@ const gitPanel = {
     // task switches within a workspace share the same repo/state; the
     // workspace-selected handler above covers re-renders
     workspaces.on('state-sync-change', function () {
-      const wsPath = getWorkspacePath()
-      if (wsPath !== currentWorkspacePath) {
-        currentStatus = null
-        refresh()
-      }
+      syncWorkspacePath()
+    })
+    workspaces.on('workspace-updated', function (workspaceId, key) {
+      if (key !== 'path') return
+      const selectedWorkspaceId = getWorkspaceId()
+      if (selectedWorkspaceId && String(workspaceId) !== selectedWorkspaceId) return
+      syncWorkspacePath()
     })
     // auto refresh when panel becomes visible
     const observer = new MutationObserver(function () {

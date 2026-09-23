@@ -19,7 +19,6 @@ const panel = document.getElementById('sidebar-panel-files')
 let treeBody = null // the scrollable area that holds the tree rows
 
 let renderToken = 0 // invalidates stale async renders after a re-render
-let lastRenderedPath = null
 const expandedPaths = new Set() // directories the user has expanded
 let activeEditor = null // { input, commit } for the inline name editor
 
@@ -42,15 +41,17 @@ function getWorkspaceId () {
 /* ----- per-workspace state persistence ----- */
 
 let currentWorkspaceId = null
+let currentWorkspacePath = null
 
-async function loadSavedState (workspaceId) {
+async function loadSavedState (workspaceId, workspacePath) {
   workspaceId = workspaceId || currentWorkspaceId
+  workspacePath = workspacePath === undefined ? currentWorkspacePath : workspacePath
   if (!workspaceId) return
   try {
     const state = await uiStateDB.getFileTreeState('tree:' + workspaceId)
     // A second workspace can be selected while the state is being read. Do
     // not let the slower response overwrite the newly selected workspace.
-    if (workspaceId !== currentWorkspaceId) return
+    if (workspaceId !== currentWorkspaceId || workspacePath !== currentWorkspacePath) return
     if (!state || !state.expandedPaths) return
     expandedPaths.clear()
     state.expandedPaths.forEach(function (p) { expandedPaths.add(p) })
@@ -82,14 +83,37 @@ function onWorkspaceSelected (workspaceId) {
   // Ignore a queued compatibility event if another selection has already
   // superseded it before the deferred event callback ran.
   if (workspaceId != null && workspaceId !== '' && selectedWorkspaceId && nextWorkspaceId !== selectedWorkspaceId) return
-  if (nextWorkspaceId === currentWorkspaceId) return
+  syncWorkspaceScope(nextWorkspaceId)
+}
 
-  persistStateSoon()
+function syncWorkspaceScope (workspaceId) {
+  const selectedWorkspaceId = getWorkspaceId()
+  const nextWorkspaceId = workspaceId != null ? String(workspaceId) : selectedWorkspaceId
+  const nextWorkspacePath = getWorkspacePath() || null
+  if (nextWorkspaceId === currentWorkspaceId && nextWorkspacePath === currentWorkspacePath) return
+
+  const workspaceChanged = nextWorkspaceId !== currentWorkspaceId
+  // Save expansions for the workspace being left. When only the folder path
+  // changes, its old absolute paths no longer describe the visible tree.
+  if (workspaceChanged) persistStateSoon()
   currentWorkspaceId = nextWorkspaceId
+  currentWorkspacePath = nextWorkspacePath
   expandedPaths.clear()
-  loadSavedState(nextWorkspaceId).then(function () {
-    if (nextWorkspaceId === currentWorkspaceId) render()
-  })
+  lastOpenedFilePath = null
+  if (activeEditor) {
+    activeEditor.input.disabled = true
+    activeEditor = null
+  }
+  render()
+
+  if (workspaceChanged) {
+    loadSavedState(nextWorkspaceId, nextWorkspacePath).then(function () {
+      if (nextWorkspaceId === currentWorkspaceId && nextWorkspacePath === currentWorkspacePath) render()
+    })
+  } else {
+    // Do not restore folders from the previous path under the same workspace.
+    persistStateSoon()
+  }
 }
 
 /* ----- row rendering ----- */
@@ -511,8 +535,12 @@ function showBackgroundMenu (x, y) {
 
 /* renders the tree for the given workspace path, or an empty state */
 function render () {
-  const wsPath = getWorkspacePath()
-  lastRenderedPath = wsPath
+  const wsPath = getWorkspacePath() || null
+  const wsId = getWorkspaceId()
+  if (wsPath !== currentWorkspacePath || wsId !== currentWorkspaceId) {
+    syncWorkspaceScope(wsId)
+    return
+  }
   renderToken++
   empty(treeBody)
 
@@ -580,20 +608,21 @@ const fileTree = {
 
     // bind to the current workspace and restore its saved tree state
     currentWorkspaceId = getWorkspaceId()
-    loadSavedState().then(function () {
-      render()
+    currentWorkspacePath = getWorkspacePath() || null
+    loadSavedState(currentWorkspaceId, currentWorkspacePath).then(function () {
+      if (currentWorkspaceId === getWorkspaceId() && currentWorkspacePath === (getWorkspacePath() || null)) render()
     })
 
     // re-render when the selected workspace changes or its path is updated
     workspaces.on('workspace-selected', onWorkspaceSelected)
-    // task switches within a workspace share the same path/state; the
-    // workspace-selected handler above covers re-renders
-    workspaces.on('state-sync-change', function () {
-      const wsPath = getWorkspacePath()
-      if (wsPath !== lastRenderedPath) {
-        render()
-      }
+    workspaces.on('workspace-updated', function (workspaceId, key) {
+      if (key !== 'path') return
+      const selectedWorkspaceId = getWorkspaceId()
+      if (selectedWorkspaceId && String(workspaceId) !== selectedWorkspaceId) return
+      syncWorkspaceScope()
     })
+    // Covers synchronized workspace updates and task switches.
+    workspaces.on('state-sync-change', function () { syncWorkspaceScope() })
     tasks.on('tab-selected', function (tabId, taskId) {
       const activeTask = window.tasks.getSelected()
       if (activeTask && taskId === activeTask.id) {

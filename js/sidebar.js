@@ -77,7 +77,7 @@ const sidebar = {
       // stay visible so a valid folder is never hidden for a moment
       const pathStatus = require('workspacePathStatus.js')
       pathStatus.refresh(ws)
-      if (pathStatus.isUsable(ws.id) === false) {
+      if (pathStatus.isUsable(ws.id, ws.path) === false) {
         hasPath = false
       }
     }

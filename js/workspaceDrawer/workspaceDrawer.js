@@ -182,7 +182,7 @@ function createWorkspaceRow (ws) {
     pathEl.title = ws.path
     // the folder is gone: say so instead of pretending the workspace still has
     // files, and leave the stored path in place so the user can replace it (§8)
-    if (require('workspacePathStatus.js').isUsable(ws.id) === false) {
+    if (require('workspacePathStatus.js').isUsable(ws.id, ws.path) === false) {
       const warning = document.createElement('span')
       warning.className = 'codicon codicon-warning ws-row-warning'
       warning.title = l('workspaceFolderMissing')
@@ -370,7 +370,7 @@ function createArchivedWorkspaceRow (ws) {
     pathEl.title = ws.path
     // the folder is gone: say so instead of pretending the workspace still has
     // files, and leave the stored path in place so the user can replace it (§8)
-    if (require('workspacePathStatus.js').isUsable(ws.id) === false) {
+    if (require('workspacePathStatus.js').isUsable(ws.id, ws.path) === false) {
       const warning = document.createElement('span')
       warning.className = 'codicon codicon-warning ws-row-warning'
       warning.title = l('workspaceFolderMissing')

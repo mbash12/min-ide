@@ -23,9 +23,10 @@ function notify () {
 /* true when the folder is usable, false when it is gone, undefined while it has
 not been checked yet. Call sites treat unknown as usable, so a valid folder is
 never hidden just because the check is still running. */
-function isUsable (workspaceId) {
+function isUsable (workspaceId, path) {
   const entry = cache[workspaceId]
-  return entry ? entry.usable : undefined
+  if (!entry || (path !== undefined && entry.path !== path)) return undefined
+  return entry.usable
 }
 
 function onChange (fn) {
@@ -47,15 +48,16 @@ async function refresh (workspace) {
     }
     return
   }
-  if (checksInFlight[workspace.id]) {
+  const workspaceKey = String(workspace.id)
+  if (checksInFlight[workspaceKey] === storedPath) {
     return
   }
-  const cached = cache[workspace.id]
+  const cached = cache[workspaceKey]
   if (cached && cached.path === storedPath) {
     return
   }
 
-  checksInFlight[workspace.id] = true
+  checksInFlight[workspaceKey] = storedPath
   let usable = true
   try {
     const result = await ipc.invoke('workspacePathStatus', storedPath)
@@ -65,14 +67,16 @@ async function refresh (workspace) {
     // folder that may well be fine
     usable = true
   }
-  delete checksInFlight[workspace.id]
+  if (checksInFlight[workspaceKey] === storedPath) delete checksInFlight[workspaceKey]
 
   const current = workspaces.get(workspace.id)
   if (!current || current.path !== storedPath) {
-    // the path changed while checking; that change runs its own check
+    // A newer path may have been selected while this check was running. Make
+    // sure its status is checked even if its initial refresh hit this request.
+    if (current) refresh(current)
     return
   }
-  cache[workspace.id] = { path: storedPath, usable: usable }
+  cache[workspaceKey] = { path: storedPath, usable: usable }
   notify()
 }
 

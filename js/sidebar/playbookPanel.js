@@ -19,6 +19,7 @@ let lastError = null
 let detailCache = {}
 let detailPending = {}
 let refreshSeq = 0
+let scopeGeneration = 0
 let panelWasActive = false
 const repeatCounts = {}
 
@@ -133,8 +134,12 @@ function loadDetail (entry) {
   if (stepsFor(entry) || (detailCache[entry.name] && detailCache[entry.name].error)) return
   const name = entry.name
   if (detailPending[name]) return
+  const workspacePath = currentWorkspacePath
+  const workspaceId = currentWorkspaceId
+  const generation = scopeGeneration
   detailPending[name] = true
-  ipc.invoke('playbookGet', currentWorkspacePath, name, currentWorkspaceId).then(function (result) {
+  ipc.invoke('playbookGet', workspacePath, name, workspaceId).then(function (result) {
+    if (generation !== scopeGeneration || workspacePath !== currentWorkspacePath || workspaceId !== currentWorkspaceId) return
     delete detailPending[name]
     if (!result || !result.ok) {
       detailCache[name] = { error: (result && result.error) || t('playbookLoadError', 'Could not load playbook'), steps: [] }
@@ -144,6 +149,7 @@ function loadDetail (entry) {
     const detail = findDetailEl(name)
     if (detail) renderSteps(detail, entry)
   }).catch(function () {
+    if (generation !== scopeGeneration || workspacePath !== currentWorkspacePath || workspaceId !== currentWorkspaceId) return
     delete detailPending[name]
     detailCache[name] = { error: t('playbookLoadError', 'Could not load playbook'), steps: [] }
     const detail = findDetailEl(name)
@@ -330,8 +336,10 @@ async function refresh (options) {
   const silent = !!options.silent
   const wsPath = getWorkspacePath() || null
   const wsId = getWorkspaceId() || null
-  currentWorkspacePath = wsPath
-  currentWorkspaceId = wsId
+  if (wsPath !== currentWorkspacePath || wsId !== currentWorkspaceId) {
+    syncWorkspaceScope()
+    return
+  }
   if (!wsId) {
     playbooks = []
     detailCache = {}
@@ -347,8 +355,7 @@ async function refresh (options) {
   }
   try {
     const result = await ipc.invoke('playbookList', wsPath, wsId)
-    if (seq !== refreshSeq) return
-    if (currentWorkspaceId !== wsId) return
+    if (seq !== refreshSeq || currentWorkspaceId !== wsId || currentWorkspacePath !== wsPath) return
     const next = (result && result.ok) ? (result.playbooks || []) : playbooks
     if (result && result.ok) {
       lastError = null
@@ -362,7 +369,7 @@ async function refresh (options) {
     isLoading = false
     if (!silent || changed) render()
   } catch (err) {
-    if (seq !== refreshSeq) return
+    if (seq !== refreshSeq || currentWorkspaceId !== wsId || currentWorkspacePath !== wsPath) return
     lastError = (err && err.message) || String(err)
     isLoading = false
     if (!silent) render()
@@ -459,6 +466,32 @@ async function deletePlaybook (name) {
   await refresh()
 }
 
+function syncWorkspaceScope () {
+  const workspacePath = getWorkspacePath() || null
+  const workspaceId = getWorkspaceId() || null
+  if (workspacePath === currentWorkspacePath && workspaceId === currentWorkspaceId) return
+
+  // Clear the old folder's rows before asking for the new list. Incrementing
+  // both generations also prevents old list/detail requests from repopulating
+  // the panel after the workspace path changes.
+  refreshSeq++
+  scopeGeneration++
+  currentWorkspacePath = workspacePath
+  currentWorkspaceId = workspaceId
+  playbooks = []
+  isLoading = !!workspaceId
+  runningName = null
+  runProgress = null
+  expandedName = null
+  lastError = null
+  detailCache = {}
+  detailPending = {}
+  Object.keys(repeatCounts).forEach(function (name) { delete repeatCounts[name] })
+  render()
+  updateBadge()
+  refresh()
+}
+
 const playbookPanel = {
   initialize: function () {
     currentWorkspacePath = getWorkspacePath() || null
@@ -467,31 +500,20 @@ const playbookPanel = {
     render()
     refresh()
 
-    workspaces.on('workspace-selected', function () {
-      runningName = null
-      runProgress = null
-      expandedName = null
-      detailCache = {}
-      detailPending = {}
-      refresh()
+    workspaces.on('workspace-selected', syncWorkspaceScope)
+    workspaces.on('workspace-updated', function (workspaceId, key) {
+      if (key !== 'path') return
+      const selectedWorkspaceId = getWorkspaceId()
+      if (selectedWorkspaceId && String(workspaceId) !== String(selectedWorkspaceId)) return
+      syncWorkspaceScope()
     })
-    // task switches within a workspace share the same playbook scope;
-    // workspace-selected above covers re-renders
-    workspaces.on('state-sync-change', function () {
-      const wsPath = getWorkspacePath() || null
-      const wsId = getWorkspaceId() || null
-      if (wsPath !== currentWorkspacePath || String(wsId || '') !== String(currentWorkspaceId || '')) {
-        expandedName = null
-        detailCache = {}
-        detailPending = {}
-        refresh()
-      }
-    })
+    // Covers synchronized path changes; task switches retain the same scope.
+    workspaces.on('state-sync-change', syncWorkspaceScope)
 
     ipc.on('playbook-event', function (e, data) {
       if (!data) return
       if (data.workspaceId && currentWorkspaceId && String(data.workspaceId) !== String(currentWorkspaceId)) return
-      if (!data.workspaceId && data.cwd && currentWorkspacePath && data.cwd !== currentWorkspacePath) return
+      if (data.cwd && data.cwd !== currentWorkspacePath) return
       if (data.type === 'changed') {
         if (data.name) delete detailCache[data.name]
         refresh({ silent: true })

@@ -15,6 +15,16 @@ let resultModalOpen = false
 let busy = false
 let renderKey = ''
 let statusRefreshGeneration = 0
+let overlayRefreshGeneration = 0
+let queuedRenderFrame = null
+
+function scheduleRender () {
+  if (queuedRenderFrame != null) return
+  queuedRenderFrame = requestAnimationFrame(function () {
+    queuedRenderFrame = null
+    render()
+  })
+}
 
 function t (key, fallback) {
   const value = l(key)
@@ -195,7 +205,7 @@ async function refreshStatus () {
     lastError = err.message || String(err)
   }
   if (generation !== statusRefreshGeneration) return
-  render()
+  scheduleRender()
 }
 
 function setBusy (value) {
@@ -311,12 +321,16 @@ let exportFormat = 'PNG'
 let exportScale = 2
 let exportDir = ''
 let exportBusy = false
+let exportPrefsGeneration = 0
 
 /* Design spec (build list) state — the list of Figma objects to implement,
 each with variants pinned to a node id and a target viewport. */
 let spec = { entries: [] }
 let specWorkspace = ''
+let activeSpecWorkspace = null
+let specRequestGeneration = 0
 const specExpanded = {}
+const variantRemovePending = new Set()
 let specAddOpen = false
 let variantFormFor = null
 let variantEditFor = null // 'entryId|variantId'
@@ -328,17 +342,24 @@ let overlayTabId = null
 
 async function loadExportPrefs () {
   const ws = workspaceInfo()
+  const workspacePath = ws.workspacePath || null
+  const generation = ++exportPrefsGeneration
   try {
     const prefs = await ipc.invoke('figmaEngine:getExportPrefs', { workspacePath: ws.workspacePath })
+    if (generation !== exportPrefsGeneration || workspacePath !== (workspaceInfo().workspacePath || null)) return false
     exportDir = (prefs && prefs.effective) || (prefs && prefs.fallback) || ''
+    return true
   } catch (e) {
-    exportDir = ''
+    if (generation === exportPrefsGeneration && workspacePath === (workspaceInfo().workspacePath || null)) exportDir = ''
+    return false
   }
 }
 
 async function openExportModal () {
   if (busy || !connectedToSelected() || !pluginReady()) return
-  await loadExportPrefs()
+  const workspacePath = workspaceInfo().workspacePath || null
+  const loaded = await loadExportPrefs()
+  if (!loaded || workspacePath !== (workspaceInfo().workspacePath || null)) return
   exportModalOpen = true
   exportBusy = false
   render(true)
@@ -472,12 +493,13 @@ function exportModal () {
 
 function iconButton (icon, title, onClick, disabled) {
   const btn = el('button', 'codicon ' + icon + ' git-icon-button')
+  btn.type = 'button'
   btn.title = title
   btn.disabled = !!disabled
   btn.addEventListener('click', function (e) {
     e.stopPropagation()
     if (btn.disabled) return
-    onClick()
+    onClick(e, btn)
   })
   return btn
 }
@@ -709,17 +731,52 @@ function selectedNodeText (node) {
 
 let specUnavailable = false
 
+function specWorkspaceKey () {
+  return workspaceInfo().workspacePath || 'default'
+}
+
+function syncSpecWorkspace () {
+  const key = specWorkspaceKey()
+  if (key === activeSpecWorkspace) return
+
+  // Build-list entries are stored by folder path. Clear them synchronously so
+  // a new path never shows the previous folder while its list is loading.
+  activeSpecWorkspace = key
+  specRequestGeneration++
+  exportPrefsGeneration++
+  exportDir = ''
+  exportModalOpen = false
+  spec = { entries: [] }
+  specWorkspace = key
+  specUnavailable = false
+  specAddOpen = false
+  variantFormFor = null
+  variantEditFor = null
+  Object.keys(specExpanded).forEach(function (id) { delete specExpanded[id] })
+  render(true)
+  refreshSpec().then(scheduleRender)
+}
+
 function specFail (err) {
   lastError = (err && err.message) || String(err)
-  render(true)
+  render()
 }
 
 async function refreshSpec () {
   const ws = workspaceInfo()
   const key = ws.workspacePath || 'default'
+  if (key !== activeSpecWorkspace) {
+    syncSpecWorkspace()
+    return
+  }
+  const generation = ++specRequestGeneration
   try {
     const result = await ipc.invoke('designSpec:list', { workspacePath: ws.workspacePath })
-    if (key === (workspaceInfo().workspacePath || 'default')) {
+    if (
+      generation === specRequestGeneration &&
+      key === activeSpecWorkspace &&
+      key === specWorkspaceKey()
+    ) {
       spec = (result && result.doc) || { entries: [] }
       specWorkspace = key
       specUnavailable = false
@@ -727,24 +784,96 @@ async function refreshSpec () {
   } catch (e) {
     // Old main process without designSpec handlers — flag it so the section
     // can hint at a restart instead of looking broken.
-    specUnavailable = true
+    if (
+      generation === specRequestGeneration &&
+      key === activeSpecWorkspace &&
+      key === specWorkspaceKey()
+    ) specUnavailable = true
   }
 }
 
 async function refreshOverlay () {
+  const generation = ++overlayRefreshGeneration
   const tab = selectedTab()
-  overlayTabId = tab ? tab.id : null
+  const tabId = tab ? tab.id : null
   try {
-    overlayState = tab ? await ipc.invoke('designOverlay:get', { tabId: tab.id }) : null
+    const nextState = tab ? await ipc.invoke('designOverlay:get', { tabId: tab.id }) : null
+    if (generation !== overlayRefreshGeneration) return
+    const currentTab = selectedTab()
+    if ((tabId == null && currentTab) || (tabId != null && (!currentTab || !sameTab(tabId, currentTab.id)))) return
+    overlayTabId = tabId
+    overlayState = nextState
   } catch (e) {
-    overlayState = null
+    if (generation === overlayRefreshGeneration) {
+      overlayTabId = tabId
+      overlayState = null
+    }
   }
 }
 
 function overlayActiveFor (entryId, variantId) {
   const tab = selectedTab()
   return !!(overlayState && overlayState.active && tab && sameTab(overlayTabId, tab.id) &&
+    sameTab(overlayState.tabId, tab.id) &&
     overlayState.entryId === entryId && overlayState.variantId === variantId)
+}
+
+function variantRemovalKey (workspaceKey, entryId, variantId) {
+  return JSON.stringify([workspaceKey, entryId, variantId])
+}
+
+async function removeVariant (entry, variant, button, workspacePath) {
+  const workspaceKey = workspacePath || 'default'
+  if (workspaceKey !== specWorkspaceKey()) return
+  const pendingKey = variantRemovalKey(workspaceKey, entry.id, variant.id)
+  if (variantRemovePending.has(pendingKey)) return
+  variantRemovePending.add(pendingKey)
+  if (button) button.disabled = true
+  const wasOverlayActive = overlayActiveFor(entry.id, variant.id)
+  const tab = selectedTab()
+
+  try {
+    lastError = null
+    const result = await ipc.invoke('designSpec:variantRemove', {
+      workspacePath: workspacePath,
+      entryId: entry.id,
+      variantId: variant.id
+    })
+    if (!result || result.ok === false) {
+      throw new Error((result && result.error) || t('designVariantRemoveFailed', 'Could not remove variant'))
+    }
+    if (workspaceKey !== specWorkspaceKey()) return
+
+    spec = Object.assign({}, spec, {
+      updatedAt: Date.now(),
+      entries: (spec.entries || []).map(function (currentEntry) {
+        if (currentEntry.id !== entry.id) return currentEntry
+        return Object.assign({}, currentEntry, {
+          variants: (currentEntry.variants || []).filter(function (currentVariant) {
+            return currentVariant.id !== variant.id
+          })
+        })
+      })
+    })
+    if (variantEditFor === entry.id + '|' + variant.id) variantEditFor = null
+    render()
+
+    if (wasOverlayActive && tab) {
+      ipc.invoke('designOverlay:clear', { tabId: tab.id }).then(function () {
+        return refreshOverlay()
+      }).then(scheduleRender).catch(function () {})
+    }
+    await refreshSpec()
+    if (workspaceKey === specWorkspaceKey()) render()
+  } catch (err) {
+    if (workspaceKey === specWorkspaceKey()) {
+      lastError = err && err.message ? err.message : t('designVariantRemoveFailed', 'Could not remove variant')
+    }
+  } finally {
+    variantRemovePending.delete(pendingKey)
+    if (button && button.isConnected) button.disabled = busy
+    if (workspaceKey === specWorkspaceKey() && lastError) scheduleRender()
+  }
 }
 
 async function ensureVariantImage (entry, variant) {
@@ -890,7 +1019,7 @@ async function addEntry (name, kind, nodeId) {
     lastError = err.message || String(err)
   }
   await refreshSpec()
-  render(true)
+  render()
 }
 
 function variantViewportText (variant) {
@@ -973,17 +1102,13 @@ function buildVariantRow (entry, variant) {
     },
     busy
   ))
+  const removeKey = variantRemovalKey(activeSpecWorkspace, entry.id, variant.id)
+  const workspacePath = workspaceInfo().workspacePath
   actions.appendChild(iconButton(
     'codicon-close',
     t('designVariantRemove', 'Remove variant'),
-    function () {
-      ipc.invoke('designSpec:variantRemove', {
-        workspacePath: workspaceInfo().workspacePath,
-        entryId: entry.id,
-        variantId: variant.id
-      }).then(refreshSpec).then(function () { render(true) }).catch(specFail)
-    },
-    busy
+    function (event, button) { removeVariant(entry, variant, button, workspacePath) },
+    busy || variantRemovePending.has(removeKey)
   ))
   row.appendChild(actions)
   return row
@@ -1063,10 +1188,10 @@ function buildVariantForm (entry, variant) {
     const done = function () {
       variantFormFor = null
       variantEditFor = null
-      render(true)
+      render()
       // The main process fetches the node's real dims in the background —
       // refresh once more so the row shows them without another click.
-      setTimeout(function () { refreshSpec().then(function () { render(true) }) }, 1200)
+      setTimeout(function () { refreshSpec().then(scheduleRender) }, 1200)
     }
     if (editing) {
       ipc.invoke('designSpec:variantUpdate', {
@@ -1141,7 +1266,7 @@ function buildEntryRow (entry) {
       ipc.invoke('designSpec:remove', {
         workspacePath: workspaceInfo().workspacePath,
         entryId: entry.id
-      }).then(refreshSpec).then(function () { render(true) }).catch(specFail)
+      }).then(refreshSpec).then(function () { render() }).catch(specFail)
     }
   ))
   head.appendChild(actions)
@@ -1408,11 +1533,24 @@ function buildHeader () {
   return header
 }
 
+function specFingerprint () {
+  return JSON.stringify((spec && spec.entries) || [])
+}
+
 function fingerprint () {
   const parsed = activeParsed() || {}
   const node = selectedNode() || {}
   const payload = payloadOf(lastResult)
   const tab = selectedTab()
+  const jobs = bridgeJobs()
+  const activeJobCount = jobs.filter(function (job) {
+    return job.state === 'queued' || job.state === 'sent'
+  }).length
+  const queueDetails = panelTab === 'queue'
+    ? jobs.map(function (job) {
+      return [job.id, job.state, job.transport || '', job.doneAt || '', job.error || ''].join(':')
+    }).join(',')
+    : ''
   return [
     stateName(),
     tab ? tab.id : '',
@@ -1433,18 +1571,22 @@ function fingerprint () {
     specWorkspace,
     specUnavailable ? 'unavailable' : '',
     (spec && spec.updatedAt) || '',
-    (spec && spec.entries && spec.entries.length) || 0,
+    specFingerprint(),
     specAddOpen ? 'add' : '',
     variantFormFor || '',
     variantEditFor || '',
     exportingFor || '',
+    exportModalOpen ? 'export' : '',
+    exportBusy ? 'export-busy' : '',
+    exportDir,
+    exportFormat,
+    exportScale,
     resultModalOpen ? 'result' : '',
     importModalOpen ? 'import' : '',
     panelTab,
     !!(lastStatus && lastStatus.windowVisible),
-    bridgeJobs().map(function (j) {
-      return j.id + ':' + j.state + ':' + (j.doneAt || '') + ':' + (j.error || '')
-    }).join(','),
+    activeJobCount,
+    queueDetails,
     overlayState && overlayState.active
       ? overlayState.tabId + ':' + overlayState.entryId + ':' + overlayState.variantId
       : '',
@@ -1502,7 +1644,7 @@ const designPanel = {
       lastError = null
       render()
       refreshStatus()
-      refreshOverlay().then(function () { render() })
+      refreshOverlay().then(scheduleRender)
     })
     tasks.on('tab-updated', function (id, key, value) {
       if (key !== 'url') return
@@ -1531,19 +1673,27 @@ const designPanel = {
     })
     workspaces.on('workspace-selected', function () {
       refreshStatus()
-      spec = { entries: [] }
-      refreshSpec().then(function () { render() })
+      syncSpecWorkspace()
     })
+    workspaces.on('workspace-updated', function (workspaceId, key) {
+      if (key !== 'path') return
+      const selected = workspaces.getSelected()
+      if (selected && String(workspaceId) !== String(selected.id)) return
+      syncSpecWorkspace()
+    })
+    workspaces.on('state-sync-change', syncSpecWorkspace)
 
     refreshStatus()
-    refreshSpec().then(function () { render() })
-    refreshOverlay().then(function () { render() })
+    activeSpecWorkspace = specWorkspaceKey()
+    specWorkspace = activeSpecWorkspace
+    refreshSpec().then(scheduleRender)
+    refreshOverlay().then(scheduleRender)
     setInterval(function () {
       if (panel.classList.contains('active')) {
         refreshStatus()
         // The in-page ✕ control clears the overlay in main — poll keeps the
         // variant's eye state honest without an extra event channel.
-        refreshOverlay().then(function () { render() })
+        refreshOverlay().then(scheduleRender)
       }
     }, 2500)
   }
