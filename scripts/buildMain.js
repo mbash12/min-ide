@@ -29,6 +29,7 @@ const modules = [
   'main/designOverlay.js',
   'main/toolResults.js',
   'main/agentTools.js',
+  'main/agentOAuth.js',
   'main/agent.js',
   'main/editorFileIO.js',
   'main/download.js',

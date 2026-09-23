@@ -1,4 +1,4 @@
-/* global fs, ipc, net, settings, minAgentTools */
+/* global fs, ipc, net, settings, minAgentTools, agentOAuth */
 /* AI sidebar agent: runs a pi SDK (https://pi.dev) AgentSession in the main
 process and streams its events to the renderer over IPC. The renderer's chat
 UI lives in js/sidebar/agentPanel.js.
@@ -64,7 +64,7 @@ const PROVIDER_LABELS = {
   'xiaomi-token-plan-ams': 'Xiaomi MiMo (AMS)',
   'xiaomi-token-plan-sgp': 'Xiaomi MiMo (SGP)'
 }
-const KNOWN_PROVIDERS = Object.keys(PROVIDER_LABELS)
+
 /* built-in pi tools every session gets; also listed by the Pro Settings
 "Tools" tab, so keep both reads off the same list */
 const AGENT_BUILTIN_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']
@@ -451,17 +451,49 @@ async function installProviderKeys (modelRuntime) {
   return keys
 }
 
+function getAgentAuthFilePath () {
+  try {
+    return require('path').join(require('electron').app.getPath('userData'), 'pi-agent', 'auth.json')
+  } catch (err) {
+    return null
+  }
+}
+
+/* reads the SDK's auth.json once; used to flag which providers already have
+stored credentials (api_key entries are synced from provider_config, oauth
+entries are written by agent-provider-login) */
+function readAgentAuthFile () {
+  const authPath = getAgentAuthFilePath()
+  if (!authPath || !fs.existsSync(authPath)) return {}
+  try {
+    return JSON.parse(fs.readFileSync(authPath, 'utf8')) || {}
+  } catch (err) {
+    return {}
+  }
+}
+
+/* every ModelRuntime gets the same treatment: replicated omp OAuth providers
+registered, then Min's stored provider_config keys installed as runtime keys */
+async function createAgentModelRuntime () {
+  const sdk = await loadPiSdk()
+  const modelRuntime = await sdk.ModelRuntime.create()
+  try {
+    agentOAuth.installOmpProviders(modelRuntime)
+  } catch (err) {
+    console.warn('failed to install omp provider replicas', err)
+  }
+  await installProviderKeys(modelRuntime)
+  return modelRuntime
+}
+
 /* mirrors provider_config api keys into the SDK's own auth.json so
 credentials are resolved natively (auth file takes priority over env vars);
 OAuth and other non-api-key entries are preserved untouched */
 function syncProviderAuthFile () {
   try {
-    const agentDataDir = require('path').join(require('electron').app.getPath('userData'), 'pi-agent')
-    const authPath = require('path').join(agentDataDir, 'auth.json')
-    let auth = {}
-    try {
-      auth = JSON.parse(fs.readFileSync(authPath, 'utf-8'))
-    } catch (e) {}
+    const authPath = getAgentAuthFilePath()
+    if (!authPath) return
+    const auth = readAgentAuthFile()
     const keys = getAllProviderKeys()
     // drop api_key entries for providers no longer configured, keep the rest
     Object.keys(auth).forEach(function (provider) {
@@ -475,7 +507,7 @@ function syncProviderAuthFile () {
         auth[provider] = { type: 'api_key', key: keys[provider] }
       }
     })
-    fs.mkdirSync(agentDataDir, { recursive: true })
+    fs.mkdirSync(require('path').dirname(authPath), { recursive: true })
     require('write-file-atomic').sync(authPath, JSON.stringify(auth, null, 2), { mode: 0o600 })
   } catch (err) {
     console.warn('failed to sync provider auth.json', err)
@@ -727,8 +759,7 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
 
   await destroySession(sessionKey)
 
-  const modelRuntime = await sdk.ModelRuntime.create()
-  await installProviderKeys(modelRuntime)
+  const modelRuntime = await createAgentModelRuntime()
 
   let model = null
   const resolvedProvider = provider
@@ -1014,8 +1045,7 @@ ipc.handle('agent-test-key', async function (e, data) {
   /* generic check for the other providers: install the key on a throwaway
   runtime and see whether the SDK accepts it (models become available) */
   try {
-    const sdk = await loadPiSdk()
-    const modelRuntime = await sdk.ModelRuntime.create()
+    const modelRuntime = await createAgentModelRuntime()
     await modelRuntime.setRuntimeApiKey(provider, key)
     const models = await modelRuntime.getAvailable(provider)
     if (models && models.length) {
@@ -1027,24 +1057,143 @@ ipc.handle('agent-test-key', async function (e, data) {
   }
 })
 
-/* the providers the installed SDK actually knows, for the Pro Settings
-"add provider" picker - probed live so it tracks the SDK version */
+/* the providers the runtime actually knows - builtin SDK providers plus the
+registered omp replicas - probed live so the Pro Settings "add provider"
+picker tracks the SDK version and the replica list */
 ipc.handle('agent-list-providers', async function () {
   try {
-    const sdk = await loadPiSdk()
-    const modelRuntime = await sdk.ModelRuntime.create()
-    return KNOWN_PROVIDERS
-      .map(function (id) {
+    const modelRuntime = await createAgentModelRuntime()
+    const stored = readAgentAuthFile()
+    return modelRuntime.getProviders()
+      .map(function (p) {
+        const credential = stored[p.id]
         return {
-          id: id,
-          label: PROVIDER_LABELS[id] || id,
-          models: modelRuntime.getModels(id).length,
-          known: !!modelRuntime.getProvider(id)
+          id: p.id,
+          label: PROVIDER_LABELS[p.id] || agentOAuth.replicaLabels[p.id] || p.name || p.id,
+          models: p.getModels().length,
+          apiKey: !!(p.auth && p.auth.apiKey),
+          oauth: !!(p.auth && p.auth.oauth),
+          authType: credential ? credential.type : null,
+          replica: agentOAuth.replicaIds.indexOf(p.id) !== -1,
+          disabled: isProviderDisabled(p.id)
         }
       })
-      .filter(function (p) { return p.known })
+      .sort(function (a, b) { return a.label.localeCompare(b.label) })
   } catch (err) {
     return []
+  }
+})
+
+/* ------------------------------------------------------------------ */
+/* OAuth provider login (builtin SDK flows + omp replicas)              */
+/* ------------------------------------------------------------------ */
+
+const oauthPendingFlows = new Map() // providerId -> AbortController
+const oauthPendingPrompts = new Map() // requestId -> {resolve, reject, sender}
+let oauthPromptSeq = 0
+
+ipc.on('agent-auth-respond', function (e, data) {
+  const pending = oauthPendingPrompts.get(data && data.requestId)
+  if (!pending) return
+  oauthPendingPrompts.delete(data.requestId)
+  if (data && data.cancelled) {
+    pending.reject(new Error('Login cancelled'))
+  } else {
+    pending.resolve(data && data.value !== undefined ? data.value : '')
+  }
+})
+
+/* renderer push: events + prompt requests go to the webContents that started
+the login (the settings webview relays them to its page via postMessage) */
+function oauthSendToSender (sender, payload) {
+  try {
+    if (sender && !sender.isDestroyed()) sender.send('agent-auth-event', payload)
+  } catch (err) {}
+}
+
+ipc.handle('agent-provider-login', async function (e, data) {
+  const providerId = data && data.provider
+  if (!providerId) return { ok: false, message: 'No provider specified.' }
+  if (oauthPendingFlows.has(providerId)) {
+    return { ok: false, message: 'A sign-in is already running for this provider.' }
+  }
+  let modelRuntime
+  try {
+    modelRuntime = await createAgentModelRuntime()
+  } catch (err) {
+    return { ok: false, message: (err && err.message) || String(err) }
+  }
+  const provider = modelRuntime.getProvider(providerId)
+  if (!provider) return { ok: false, message: 'Unknown provider: ' + providerId }
+
+  const abort = new AbortController()
+  oauthPendingFlows.set(providerId, abort)
+  const sender = e.sender
+  const sendEvent = function (payload) {
+    oauthSendToSender(sender, Object.assign({ provider: providerId }, payload))
+  }
+
+  const interaction = {
+    signal: abort.signal,
+    notify: function (event) {
+      /* auth_url events open the provider's sign-in page in a Min tab so the
+      whole flow stays inside the browser the user is already in */
+      if (event && event.type === 'auth_url' && event.url) {
+        agentOAuth.openAuthUrl(event.url)
+      }
+      sendEvent({ type: 'event', event: event })
+    },
+    prompt: function (prompt) {
+      return new Promise(function (resolve, reject) {
+        const requestId = 'auth-' + (++oauthPromptSeq)
+        oauthPendingPrompts.set(requestId, { resolve: resolve, reject: reject, sender: sender })
+        abort.signal.addEventListener('abort', function () {
+          if (oauthPendingPrompts.delete(requestId)) reject(new Error('Login cancelled'))
+        }, { once: true })
+        sendEvent({ type: 'prompt', requestId: requestId, prompt: prompt })
+      })
+    }
+  }
+
+  try {
+    await modelRuntime.login(providerId, 'oauth', interaction)
+    sendEvent({ type: 'done' })
+    /* credential stays in the main process (auth.json) - only the outcome
+    crosses IPC, never tokens */
+    return { ok: true }
+  } catch (err) {
+    const message = (err && err.message) || String(err)
+    sendEvent({ type: 'error', message: message })
+    return { ok: false, message: message }
+  } finally {
+    oauthPendingFlows.delete(providerId)
+    for (const [requestId, pending] of oauthPendingPrompts) {
+      if (pending.sender === sender) {
+        oauthPendingPrompts.delete(requestId)
+        pending.reject(new Error('Login flow ended'))
+      }
+    }
+  }
+})
+
+ipc.on('agent-provider-login-cancel', function (e, data) {
+  const providerId = data && data.provider
+  const flow = oauthPendingFlows.get(providerId)
+  if (flow) {
+    oauthPendingFlows.delete(providerId)
+    flow.abort()
+  }
+})
+
+ipc.handle('agent-provider-logout', async function (e, data) {
+  const providerId = data && data.provider
+  if (!providerId) return { ok: false, message: 'No provider specified.' }
+  try {
+    const modelRuntime = await createAgentModelRuntime()
+    await modelRuntime.logout(providerId)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, message: (err && err.message) || String(err) }
   }
 })
 
@@ -1129,14 +1278,15 @@ ipc.handle('agent-fetch-models', async function () {
     return modelCatalogCache
   }
   try {
-    const sdk = await loadPiSdk()
-    const modelRuntime = await sdk.ModelRuntime.create()
-    /* runtime api keys are not persisted to auth.json - the keys stored in
-    the central DB have to be installed on this runtime before asking for the
-    catalog, otherwise getAvailable() reports no providers */
-    await installProviderKeys(modelRuntime)
+    /* createAgentModelRuntime also installs the stored keys and registers
+    the omp replicas so getAvailable() sees every configured provider */
+    const modelRuntime = await createAgentModelRuntime()
     const available = (await modelRuntime.getAvailable()) || []
+    /* api-key providers drop out of getAvailable() on their own when disabled
+    (no key installed); OAuth credentials live in auth.json so disabled
+    providers are filtered here instead */
     const models = available
+      .filter(function (m) { return !isProviderDisabled(m.provider) })
       .map(function (m) {
         return {
           id: m.id,

@@ -825,6 +825,21 @@ body.dark-mode .pro-button-primary {
   margin-top: 18px;
 }
 
+/* OAuth sign-in section inside the provider dialog */
+.pro-oauth-device {
+  font-family: monospace;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--ps-border, #ccc);
+  border-radius: 6px;
+  word-break: break-all;
+}
+.pro-oauth-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 640px) {

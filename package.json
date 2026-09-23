@@ -27,7 +27,16 @@
       "performance",
       "IntersectionObserver",
       "Node",
-      "Event"
+      "Event",
+      "AbortController",
+      "URL",
+      "URLSearchParams",
+      "Buffer",
+      "setTimeout",
+      "clearTimeout",
+      "setInterval",
+      "clearInterval",
+      "Promise"
     ]
   },
   "dependencies": {

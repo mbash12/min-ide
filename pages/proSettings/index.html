@@ -186,6 +186,17 @@
           <label class="pro-field-label" for="provider-add-key" data-string="proSettingsKeyHeading"></label>
           <input type="password" id="provider-add-key" class="pro-input" autocomplete="off" spellcheck="false" />
         </div>
+        <div id="provider-oauth-section" class="pro-dialog-field" hidden>
+          <button id="provider-oauth-signin" class="pro-button" type="button"></button>
+          <p id="provider-oauth-status" class="pro-description" hidden></p>
+          <div id="provider-oauth-device" class="pro-oauth-device" hidden></div>
+          <div id="provider-oauth-prompt" class="pro-dialog-field" hidden>
+            <label id="provider-oauth-prompt-label" class="pro-field-label"></label>
+            <input id="provider-oauth-prompt-input" class="pro-input" autocomplete="off" spellcheck="false" />
+            <div id="provider-oauth-prompt-options" class="pro-oauth-options" hidden></div>
+            <button id="provider-oauth-prompt-submit" class="pro-button" type="button" data-string="docsSave"></button>
+          </div>
+        </div>
         <p id="provider-add-error" class="pro-test-result fail" hidden></p>
         <div class="pro-actions-row pro-dialog-actions">
           <button id="provider-add-cancel" class="pro-button" data-string="profileClearCancel"></button>

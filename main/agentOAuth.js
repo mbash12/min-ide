@@ -1,0 +1,847 @@
+/* global openTabInWindow, net */
+/* OMP provider replicas: ports of oh-my-pi's OAuth provider flows
+(https://github.com/can1357/oh-my-pi, pi-catalog auth/*.kdl + pi-ai
+registry/oauth/*.ts) onto the pi SDK extension API the installed SDK exposes
+(ProviderConfigInput.oauth / OAuthLoginCallbacks). Min keeps its own pi SDK
+runtime; this module only adds provider definitions and their login flows.
+
+Wire coverage: the replicated providers use proprietary chat transports
+(Devin's devin-agent over Connect/protobuf, Cursor's aiserver over HTTP/2,
+Google's Code Assist API, GitLab Duo's agent wire, Z.AI's zcode endpoint).
+They register auth-only for now — sign-in stores a working credential in the
+SDK's auth.json; models appear once the matching stream implementation is
+ported into ProviderConfigInput.streamSimple/models.
+
+OAuth network calls use plain fetch + node:http so everything runs in the
+Electron main process. Requires are file-local because the concatenated main
+bundle shares one scope. */
+
+const oauthNodeCrypto = require('crypto')
+const oauthNodeHttp = require('http')
+
+/* Electron's net.fetch rides the Chromium network stack (honors the app's
+configured proxy); plain fetch is the fallback for the node test harness */
+const oauthFetch = (typeof net !== 'undefined' && net && net.fetch) ? function (...args) { return net.fetch(...args) } : fetch
+
+/* ------------------------------------------------------------------ */
+/* small helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+function oauthB64Url (buf) {
+  return Buffer.from(buf).toString('base64url')
+}
+
+function oauthGeneratePKCE () {
+  const verifier = oauthB64Url(oauthNodeCrypto.randomBytes(96))
+  const challenge = oauthB64Url(oauthNodeCrypto.createHash('sha256').update(verifier).digest())
+  return { verifier: verifier, challenge: challenge }
+}
+
+function oauthDecodeB64 (value) {
+  return Buffer.from(value, 'base64').toString('utf8')
+}
+
+function oauthDotGet (obj, pathExpr) {
+  if (!pathExpr) return undefined
+  return String(pathExpr).split('.').reduce(function (acc, key) {
+    if (acc == null || typeof acc !== 'object') return undefined
+    return acc[key]
+  }, obj)
+}
+
+function oauthJwtExpiryMs (token, skewMs) {
+  try {
+    const parts = String(token).split('.')
+    if (parts.length !== 3) return undefined
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+    if (payload && typeof payload.exp === 'number') {
+      return payload.exp * 1000 - (skewMs || 0)
+    }
+  } catch (e) {}
+  return undefined
+}
+
+function oauthSleep (ms, signal) {
+  return new Promise(function (resolve, reject) {
+    if (signal && signal.aborted) {
+      reject(new Error('Login cancelled'))
+      return
+    }
+    const timer = setTimeout(function () {
+      if (signal) signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    function onAbort () {
+      clearTimeout(timer)
+      reject(new Error('Login cancelled'))
+    }
+    if (signal) signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function oauthThrowIfAborted (signal) {
+  if (signal && signal.aborted) throw new Error('Login cancelled')
+}
+
+/* filled query template: "code {code} verifier {code_verifier}" style;
+unknown placeholders resolve to the empty string (omp's template() semantic) */
+function oauthFillTemplate (str, values) {
+  return String(str).replace(/\{(\w+)\}/g, function (m, name) {
+    return values[name] !== undefined ? String(values[name]) : ''
+  })
+}
+
+/* ------------------------------------------------------------------ */
+/* loopback callback server                                            */
+/* ------------------------------------------------------------------ */
+
+const OAUTH_SUCCESS_HTML = '<!doctype html><html><body style="font-family:system-ui;text-align:center;padding-top:4em"><h2>Sign-in complete</h2><p>You can close this tab and return to Min.</p></body></html>'
+const OAUTH_ERROR_HTML = '<!doctype html><html><body style="font-family:system-ui;text-align:center;padding-top:4em"><h2>Sign-in failed</h2><p>Return to Min and try again.</p></body></html>'
+
+/* Listens on the spec'd loopback port until the provider redirects the user's
+browser back with ?code&state. Resolves {code,state}; rejects on timeout,
+abort, or bind failure. `server` is exposed so callers can stop it early. */
+function oauthStartCallbackServer (spec, signal) {
+  return new Promise(function (resolve, reject) {
+    let settled = false
+    const server = oauthNodeHttp.createServer(function (req, res) {
+      let url
+      try {
+        url = new URL(req.url, 'http://' + (spec.hostname || '127.0.0.1'))
+      } catch (e) {
+        res.statusCode = 400
+        res.end(OAUTH_ERROR_HTML)
+        return
+      }
+      if (url.pathname !== spec.path) {
+        res.statusCode = 404
+        res.end(OAUTH_ERROR_HTML)
+        return
+      }
+      const code = url.searchParams.get('code')
+      const error = url.searchParams.get('error')
+      res.setHeader('Content-Type', 'text/html')
+      if (error || !code) {
+        res.statusCode = 400
+        res.end(OAUTH_ERROR_HTML)
+        finish(new Error('OAuth callback error: ' + (error || 'missing code')))
+        return
+      }
+      res.end(OAUTH_SUCCESS_HTML)
+      finish(null, { code: code, state: url.searchParams.get('state') || undefined })
+    })
+
+    function finish (err, value) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (signal) signal.removeEventListener('abort', onAbort)
+      try { server.close() } catch (e) {}
+      if (err) reject(err)
+      else resolve(value)
+    }
+
+    function onAbort () {
+      finish(new Error('Login cancelled'))
+    }
+
+    const timer = setTimeout(function () {
+      finish(new Error('OAuth callback timed out'))
+    }, spec.timeoutMs || 5 * 60 * 1000)
+
+    server.on('error', function (err) {
+      finish(err)
+    })
+    if (signal) signal.addEventListener('abort', onAbort, { once: true })
+
+    server.listen(spec.port, spec.hostname || '127.0.0.1')
+  })
+}
+
+/* ------------------------------------------------------------------ */
+/* generic oauth-code flow (port of omp's auth/*.kdl login "oauth-code") */
+/* ------------------------------------------------------------------ */
+
+/* Accepts a pasted redirect URL, "code#state", query string, or bare code —
+same shape pi's own codex flow accepts. */
+function oauthParseAuthorizationInput (input) {
+  const value = String(input || '').trim()
+  if (!value) return {}
+  try {
+    const url = new URL(value)
+    return {
+      code: url.searchParams.get('code') || undefined,
+      state: url.searchParams.get('state') || undefined
+    }
+  } catch (e) {}
+  if (value.indexOf('#') !== -1) {
+    const parts = value.split('#')
+    return { code: parts[0], state: parts[1] }
+  }
+  if (value.indexOf('code=') !== -1) {
+    const params = new URLSearchParams(value)
+    return {
+      code: params.get('code') || undefined,
+      state: params.get('state') || undefined
+    }
+  }
+  return { code: value }
+}
+
+/* one token-style POST. When tokenSpec.standard is kept (default), the
+grant's baseline params merge first and the rule's declared params override —
+mirrors omp's postTokenRequest. */
+async function oauthTokenRequest (tokenSpec, fields, signal, standardParams) {
+  let body
+  const headers = Object.assign({}, tokenSpec.headers)
+  const params = {}
+  if (tokenSpec.standard !== false) {
+    Object.keys(standardParams || {}).forEach(function (key) {
+      if (standardParams[key] !== undefined) params[key] = standardParams[key]
+    })
+  }
+  Object.keys(tokenSpec.params || {}).forEach(function (key) {
+    params[key] = oauthFillTemplate(tokenSpec.params[key], fields)
+  })
+  if (tokenSpec.body === 'json') {
+    headers['Content-Type'] = 'application/json'
+    body = JSON.stringify(params)
+  } else {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded'
+    body = new URLSearchParams(params).toString()
+  }
+  const response = await oauthFetch(tokenSpec.url, { method: 'POST', headers: headers, body: body, signal: signal })
+  if (!response.ok) {
+    const text = await response.text().catch(function () { return '' })
+    throw new Error('OAuth token request failed (' + response.status + '): ' + (text || response.statusText))
+  }
+  return response.json()
+}
+
+/* spec.credential maps token JSON onto {access, refresh, expires, ...extra}:
+   access/refresh are dot paths into the response; expires describes how the
+   lifetime is reported (seconds-from-now, seconds-from-field, jwt claim, or
+   never); userinfo can fetch the account email afterwards. */
+async function oauthExtractCredentials (spec, tokenJson, signal) {
+  const cred = spec.credential || {}
+  const access = oauthDotGet(tokenJson, cred.access || 'access_token')
+  if (!access) throw new Error('OAuth response missing access token')
+  const refresh = oauthDotGet(tokenJson, cred.refresh || 'refresh_token') || access
+  const expiresSpec = cred.expires || { mode: 'seconds', path: 'expires_in' }
+  let expires = Date.now() + 365 * 24 * 3600 * 1000
+  if (expiresSpec.mode === 'seconds') {
+    const secs = Number(oauthDotGet(tokenJson, expiresSpec.path || 'expires_in'))
+    const from = expiresSpec.from ? Number(oauthDotGet(tokenJson, expiresSpec.from)) * 1000 : Date.now()
+    if (isFinite(secs)) expires = from + secs * 1000 - (expiresSpec.skewMs || 0)
+  } else if (expiresSpec.mode === 'jwt') {
+    expires = oauthJwtExpiryMs(access, expiresSpec.skewMs) || (Date.now() + (expiresSpec.fallbackMs || 365 * 24 * 3600 * 1000))
+  }
+  const credentials = { access: access, refresh: refresh, expires: expires }
+  Object.keys(cred.extra || {}).forEach(function (key) {
+    const val = oauthDotGet(tokenJson, cred.extra[key])
+    if (val !== undefined) credentials[key] = val
+  })
+
+  if (spec.userinfo) {
+    try {
+      const res = await oauthFetch(spec.userinfo.url, { headers: { Authorization: 'Bearer ' + access }, signal: signal })
+      if (res.ok) {
+        const info = await res.json()
+        if (spec.userinfo.email && info[spec.userinfo.email]) credentials.email = info[spec.userinfo.email]
+        if (spec.userinfo.accountId && info[spec.userinfo.accountId]) credentials.accountId = info[spec.userinfo.accountId]
+      }
+    } catch (e) {}
+  }
+  return credentials
+}
+
+/* Runs one full authorize -> callback/manual-code -> token-exchange flow.
+   callbacks follow the SDK's OAuthLoginCallbacks surface (onAuth, onPrompt,
+   onManualCodeInput, onProgress, onSelect, signal). */
+async function oauthRunCodeFlow (spec, callbacks) {
+  const signal = callbacks && callbacks.signal
+  oauthThrowIfAborted(signal)
+
+  const redirectUri = spec.callback.redirectUri ||
+    'http://' + (spec.callback.hostname || '127.0.0.1') + ':' + spec.callback.port + (spec.callback.path || '/callback')
+
+  const values = {
+    redirect_uri: redirectUri,
+    client_id: spec.clientId,
+    code_verifier: '',
+    code_challenge: '',
+    state: ''
+  }
+  let verifier = null
+  if (spec.pkce) {
+    const pair = oauthGeneratePKCE()
+    verifier = pair.verifier
+    values.code_verifier = pair.verifier
+    values.code_challenge = pair.challenge
+  }
+  const state = spec.state === 'uuid' ? oauthNodeCrypto.randomUUID() : oauthB64Url(oauthNodeCrypto.randomBytes(16))
+  values.state = state
+
+  const authUrl = new URL(spec.authorizeUrl)
+  authUrl.searchParams.set('client_id', spec.clientId)
+  authUrl.searchParams.set('redirect_uri', redirectUri)
+  authUrl.searchParams.set('response_type', 'code')
+  authUrl.searchParams.set('state', state)
+  if (spec.scopes && spec.scopes.length) authUrl.searchParams.set('scope', spec.scopes.join(' '))
+  if (spec.pkce) {
+    authUrl.searchParams.set('code_challenge', values.code_challenge)
+    authUrl.searchParams.set('code_challenge_method', 'S256')
+  }
+  Object.keys(spec.authorizeParams || {}).forEach(function (key) {
+    authUrl.searchParams.set(key, spec.authorizeParams[key])
+  })
+
+  /* waits for either the loopback redirect or the user pasting the final
+  redirect URL/code — whichever resolves first. Manual paste also covers
+  remote sessions and custom-scheme redirects (zai's zcode://). A channel
+  that fails early (port taken, prompt cancelled) doesn't kill the other. */
+  const channels = []
+  if (!spec.callback.manualOnly) {
+    const callbackPromise = oauthStartCallbackServer({
+      port: spec.callback.port,
+      hostname: spec.callback.hostname,
+      path: spec.callback.path,
+      timeoutMs: spec.callback.timeoutMs
+    }, signal)
+    /* a late rejection after the other channel won would otherwise surface
+    as an unhandled rejection */
+    callbackPromise.catch(function () {})
+    channels.push(callbackPromise.then(function (result) { return { result: result } }))
+  }
+  if (callbacks && callbacks.onManualCodeInput) {
+    const manualPromise = Promise.resolve()
+      .then(function () { return callbacks.onManualCodeInput() })
+    manualPromise.catch(function () {})
+    channels.push(manualPromise.then(function (input) { return { input: input } }))
+  }
+
+  if (callbacks && callbacks.onAuth) {
+    callbacks.onAuth({ url: authUrl.toString(), instructions: spec.instructions })
+  }
+
+  if (!channels.length) throw new Error('No OAuth completion channel available')
+
+  let code = null
+  let codeState = null
+  let first
+  try {
+    first = await Promise.any(channels)
+  } catch (aggregate) {
+    const reasons = (aggregate && aggregate.errors) || []
+    throw reasons[0] || new Error('OAuth flow failed')
+  }
+  if (first.result) {
+    code = first.result.code
+    codeState = first.result.state
+  } else {
+    const parsed = oauthParseAuthorizationInput(first.input)
+    code = parsed.code
+    codeState = parsed.state
+  }
+
+  if (!code) throw new Error('OAuth flow produced no authorization code')
+  if (codeState && state && codeState !== state) throw new Error('OAuth state mismatch')
+  oauthThrowIfAborted(signal)
+
+  /* providers may echo `code#state`; the fragment wins over callback state
+  (omp's exchangeToken does the same split) */
+  let exchangeCode = code
+  let exchangeState = codeState
+  const fragment = code.indexOf('#')
+  if (fragment >= 0) {
+    exchangeCode = code.slice(0, fragment)
+    exchangeState = code.slice(fragment + 1) || codeState
+  }
+
+  const tokenFields = Object.assign({}, values, {
+    code: exchangeCode,
+    state: exchangeState,
+    client_secret: spec.clientSecret
+  })
+  const tokenJson = await oauthTokenRequest(spec.token, tokenFields, signal, {
+    grant_type: 'authorization_code',
+    client_id: spec.clientId,
+    client_secret: spec.clientSecret,
+    code: exchangeCode,
+    redirect_uri: redirectUri,
+    code_verifier: verifier || undefined
+  })
+  return oauthExtractCredentials(spec, tokenJson, signal)
+}
+
+/* Standard refresh_token grant for providers that keep "refresh" enabled in
+their KDL; providers with refresh "none" re-login instead. */
+function oauthRefreshSpec (spec) {
+  if (!spec.refresh) return null
+  return {
+    url: (spec.refresh.url || spec.token.url),
+    body: spec.refresh.body || spec.token.body,
+    headers: spec.token.headers,
+    standard: spec.refresh.standard,
+    params: spec.refresh.params || {}
+  }
+}
+
+async function oauthRunRefresh (spec, credentials, signal) {
+  const refreshSpec = oauthRefreshSpec(spec)
+  if (!refreshSpec) {
+    /* non-refreshable credentials (devin's long-lived token, zai's never-
+    expiring minted key): hand the stored credential back unchanged */
+    return credentials
+  }
+  const json = await oauthTokenRequest(refreshSpec, { refresh_token: credentials.refresh, client_secret: spec.clientSecret }, signal, {
+    grant_type: 'refresh_token',
+    client_id: spec.clientId,
+    client_secret: spec.clientSecret,
+    refresh_token: credentials.refresh
+  })
+  const renewed = await oauthExtractCredentials(spec, json, signal)
+  /* keep prior fields the refreshed payload may have dropped (projectId,
+  enterprise urls, account ids) */
+  return Object.assign({}, credentials, renewed)
+}
+
+/* ------------------------------------------------------------------ */
+/* cursor: PKCE deep-link + polling flow (port of omp registry/oauth/   */
+/* cursor.ts — no loopback server; cursor.com polls by uuid+verifier)   */
+/* ------------------------------------------------------------------ */
+
+const CURSOR_LOGIN_URL = 'https://cursor.com/loginDeepControl'
+const CURSOR_POLL_URL = 'https://api2.cursor.sh/auth/poll'
+const CURSOR_REFRESH_URL = 'https://api2.cursor.sh/auth/exchange_user_api_key'
+const CURSOR_POLL_MAX_ATTEMPTS = 150
+const CURSOR_POLL_BASE_DELAY = 1000
+const CURSOR_POLL_MAX_DELAY = 10000
+const CURSOR_POLL_BACKOFF = 1.2
+
+function oauthCursorTokenExpiry (token) {
+  return oauthJwtExpiryMs(token, 5 * 60 * 1000) || (Date.now() + 3600 * 1000)
+}
+
+async function oauthCursorLogin (callbacks) {
+  const signal = callbacks && callbacks.signal
+  const pair = oauthGeneratePKCE()
+  const uuid = oauthNodeCrypto.randomUUID()
+  const loginUrl = CURSOR_LOGIN_URL + '?' + new URLSearchParams({
+    challenge: pair.challenge,
+    uuid: uuid,
+    mode: 'login',
+    redirectTarget: 'cli'
+  }).toString()
+
+  if (callbacks && callbacks.onAuth) callbacks.onAuth({ url: loginUrl })
+  if (callbacks && callbacks.onProgress) callbacks.onProgress('Waiting for browser authentication...')
+
+  let delay = CURSOR_POLL_BASE_DELAY
+  let consecutiveErrors = 0
+  for (let attempt = 0; attempt < CURSOR_POLL_MAX_ATTEMPTS; attempt++) {
+    await oauthSleep(delay, signal)
+    oauthThrowIfAborted(signal)
+    let response
+    try {
+      response = await oauthFetch(CURSOR_POLL_URL + '?uuid=' + uuid + '&verifier=' + pair.verifier, { signal: signal })
+    } catch (err) {
+      consecutiveErrors++
+      if (consecutiveErrors >= 3) throw new Error('Too many consecutive errors during Cursor auth polling')
+      continue
+    }
+    if (response.status === 404) {
+      consecutiveErrors = 0
+      delay = Math.min(delay * CURSOR_POLL_BACKOFF, CURSOR_POLL_MAX_DELAY)
+      continue
+    }
+    if (response.ok) {
+      const data = await response.json()
+      return {
+        access: data.accessToken,
+        refresh: data.refreshToken,
+        expires: oauthCursorTokenExpiry(data.accessToken)
+      }
+    }
+    throw new Error('Cursor auth poll failed: ' + response.status)
+  }
+  throw new Error('Cursor authentication polling timeout')
+}
+
+async function oauthCursorRefresh (credentials, signal) {
+  const response = await oauthFetch(CURSOR_REFRESH_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + credentials.refresh,
+      'Content-Type': 'application/json'
+    },
+    body: '{}',
+    signal: signal
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(function () { return '' })
+    throw new Error('Cursor token refresh failed: ' + (text || response.status))
+  }
+  const data = await response.json()
+  return {
+    access: data.accessToken,
+    refresh: data.refreshToken || credentials.refresh,
+    expires: oauthCursorTokenExpiry(data.accessToken)
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* google code-assist project hook (port of omp's after-exchange hooks) */
+/* ------------------------------------------------------------------ */
+
+async function oauthGoogleCloudCodeProject (accessToken, endpoint, signal) {
+  const headers = {
+    Authorization: 'Bearer ' + accessToken,
+    'Content-Type': 'application/json'
+  }
+  const load = await oauthFetch(endpoint + '/v1internal:loadCodeAssist', {
+    method: 'POST',
+    headers: headers,
+    body: JSON.stringify({ metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' } }),
+    signal: signal
+  })
+  if (!load.ok) throw new Error('loadCodeAssist failed (' + load.status + ')')
+  let info = await load.json()
+  let projectId = info.cloudaicompanionProject
+  if (!projectId) {
+    /* account not onboarded yet: start onboarding and poll until the project
+    appears (omp does the same, up to 5 minutes) */
+    const onboard = await oauthFetch(endpoint + '/v1internal:onboardUser', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({ tierId: 'free-tier', metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' } }),
+      signal: signal
+    })
+    if (!onboard.ok) throw new Error('onboardUser failed (' + onboard.status + ')')
+    let operation = await onboard.json()
+    const deadline = Date.now() + 5 * 60 * 1000
+    while (operation && operation.done !== true && Date.now() < deadline) {
+      await oauthSleep(5000, signal)
+      const poll = await oauthFetch(endpoint + '/v1internal/' + operation.name, { headers: headers, signal: signal })
+      if (poll.ok) operation = await poll.json()
+      else break
+    }
+    const refreshed = await oauthFetch(endpoint + '/v1internal:loadCodeAssist', { method: 'POST', headers: headers, body: JSON.stringify({ metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' } }), signal: signal })
+    if (refreshed.ok) info = await refreshed.json()
+    projectId = info.cloudaicompanionProject
+  }
+  return projectId || null
+}
+
+/* ------------------------------------------------------------------ */
+/* provider replica specs (translated from omp auth/*.kdl)              */
+/* ------------------------------------------------------------------ */
+
+const OMP_OAUTH_CODE_SPECS = {
+  devin: {
+    name: 'Devin',
+    authorizeUrl: 'https://app.devin.ai/auth/cli/continue',
+    pkce: true,
+    state: 'uuid',
+    authorizeParams: { prompt: 'select_account' },
+    instructions: 'Sign in to Devin in your browser.',
+    callback: { port: 59653, path: '/callback', hostname: '127.0.0.1' },
+    token: {
+      url: 'https://api.devin.ai/auth/cli/token',
+      body: 'json',
+      standard: false,
+      headers: { Accept: 'application/json' },
+      params: { code: '{code}', code_verifier: '{code_verifier}' }
+    },
+    credential: {
+      access: 'token',
+      refresh: 'token',
+      expires: { mode: 'jwt', fallbackMs: 365 * 24 * 3600 * 1000 },
+      extra: {}
+    },
+    refresh: null
+  },
+  'gitlab-duo': {
+    name: 'GitLab Duo',
+    envVars: { GITLAB_CLIENT_ID: 'clientId', GITLAB_REDIRECT_URI: 'redirectUri' },
+    clientId: 'da4edff2e6ebd2bc3208611e2768bc1c1dd7be791dc5ff26ca34ca9ee44f7d4b',
+    authorizeUrl: 'https://gitlab.com/oauth/authorize',
+    scopes: ['api'],
+    pkce: true,
+    instructions: 'Complete GitLab login in the browser. If GitLab responds with "The redirect URI included is not valid", register your own GitLab OAuth application and set GITLAB_CLIENT_ID + GITLAB_REDIRECT_URI.',
+    callback: { port: 8080, path: '/callback', hostname: 'localhost' },
+    token: { url: 'https://gitlab.com/oauth/token', body: 'form' },
+    credential: {
+      access: 'access_token',
+      refresh: 'refresh_token',
+      expires: { mode: 'seconds', path: 'expires_in', from: 'created_at', skewMs: 300000 }
+    },
+    refresh: {}
+  },
+  'google-gemini-cli': {
+    name: 'Google Cloud Code Assist (Gemini CLI)',
+    clientId: oauthDecodeB64(''),
+    clientSecret: oauthDecodeB64(''),
+    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    scopes: [
+      'https://www.googleapis.com/auth/cloud-platform',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile'
+    ],
+    authorizeParams: { access_type: 'offline', prompt: 'consent' },
+    instructions: 'Complete the sign-in in your browser.',
+    callback: { port: 8085, path: '/oauth2callback', hostname: '127.0.0.1' },
+    token: {
+      url: 'https://oauth2.googleapis.com/token',
+      body: 'form',
+      params: {
+        client_id: '{client_id}',
+        client_secret: oauthDecodeB64('')
+      }
+    },
+    credential: {
+      access: 'access_token',
+      refresh: 'refresh_token',
+      expires: { mode: 'seconds', path: 'expires_in', skewMs: 300000 }
+    },
+    userinfo: { url: 'https://www.googleapis.com/oauth2/v1/userinfo?alt=json', email: 'email' },
+    refresh: {},
+    afterExchange: function (credentials, signal) {
+      return oauthGoogleCloudCodeProject(credentials.access, 'https://cloudcode-pa.googleapis.com', signal)
+        .then(function (projectId) { if (projectId) credentials.projectId = projectId })
+        .catch(function () {})
+    }
+  },
+  'google-antigravity': {
+    name: 'Antigravity (Gemini 3, Claude, GPT-OSS)',
+    clientId: oauthDecodeB64(''),
+    clientSecret: oauthDecodeB64(''),
+    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    scopes: [
+      'https://www.googleapis.com/auth/cloud-platform',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/cclog',
+      'https://www.googleapis.com/auth/experimentsandconfigs'
+    ],
+    authorizeParams: { access_type: 'offline', prompt: 'consent' },
+    instructions: 'Complete the sign-in in your browser.',
+    callback: { port: 51121, path: '/oauth-callback', hostname: '127.0.0.1' },
+    token: {
+      url: 'https://oauth2.googleapis.com/token',
+      body: 'form',
+      params: {
+        client_id: '{client_id}',
+        client_secret: oauthDecodeB64('')
+      }
+    },
+    credential: {
+      access: 'access_token',
+      refresh: 'refresh_token',
+      expires: { mode: 'seconds', path: 'expires_in', skewMs: 300000 }
+    },
+    userinfo: { url: 'https://www.googleapis.com/oauth2/v1/userinfo?alt=json', email: 'email' },
+    refresh: {},
+    afterExchange: function (credentials, signal) {
+      return oauthGoogleCloudCodeProject(credentials.access, 'https://daily-cloudcode-pa.googleapis.com', signal)
+        .then(function (projectId) { if (projectId) credentials.projectId = projectId })
+        .catch(function () {})
+    }
+  },
+  'zai-coding-plan': {
+    name: 'Z.AI (GLM Coding Plan)',
+    envVars: { ZAI_OAUTH_CLIENT_ID: 'clientId', ZAI_OAUTH_REDIRECT_URI: 'redirectUri', ZAI_OAUTH_AUTHORIZE_URL: 'authorizeUrl', ZAI_OAUTH_TOKEN_URL: 'tokenUrl' },
+    clientId: 'client_P8X5CMWmlaRO9gyO-KSqtg',
+    authorizeUrl: 'https://chat.z.ai/api/oauth/authorize',
+    pkce: false,
+    instructions: 'Complete Z.ai login in the browser, then paste the final redirect URL or authorization code here.',
+    callback: { manualOnly: true, redirectUri: 'zcode://zai-auth/callback' },
+    token: {
+      url: 'https://zcode.z.ai/api/v1/oauth/token',
+      body: 'json',
+      standard: false,
+      params: { provider: 'zai', code: '{code}', redirect_uri: '{redirect_uri}', state: '{state}' }
+    },
+    credential: {
+      access: 'data.zai.access_token',
+      refresh: 'data.zai.access_token',
+      expires: { mode: 'never' },
+      extra: { email: 'data.user.email', accountId: 'data.user.id' }
+    },
+    refresh: null
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* replica registry -> ProviderConfigInput                              */
+/* ------------------------------------------------------------------ */
+
+function oauthCodeFlowFor (spec) {
+  return function (callbacks) {
+    return oauthRunCodeFlow(spec, callbacks).then(function (credentials) {
+      if (spec.afterExchange) {
+        return Promise.resolve(spec.afterExchange(credentials, callbacks && callbacks.signal))
+          .then(function () { return credentials })
+      }
+      return credentials
+    })
+  }
+}
+
+function oauthGetApiKey (credentials) {
+  return credentials.access
+}
+
+/* env overrides from the KDL (env="X" on fields): envVars maps the env var
+name to the spec field it overrides — applied before each login */
+function oauthApplyEnvOverrides (spec) {
+  const map = spec.envVars || {}
+  Object.keys(map).forEach(function (envName) {
+    const value = process.env[envName]
+    if (!value) return
+    const field = map[envName]
+    if (field === 'clientId') spec.clientId = value
+    else if (field === 'authorizeUrl') spec.authorizeUrl = value
+    else if (field === 'tokenUrl') spec.token.url = value
+    else if (field === 'redirectUri') spec.callback.redirectUri = value
+  })
+}
+
+/* all current replicas use proprietary wires, so they register auth-only
+(models: []); a provider gains chat support by adding streamSimple/models
+here once its transport is ported */
+const OMP_PROVIDER_CONFIGS = {
+  cursor: {
+    name: 'Cursor',
+    baseUrl: 'https://api2.cursor.sh',
+    oauth: {
+      name: 'Cursor',
+      isSubscription: true,
+      login: oauthCursorLogin,
+      refreshToken: oauthCursorRefresh,
+      getApiKey: oauthGetApiKey
+    },
+    models: []
+  },
+  devin: {
+    name: 'Devin',
+    baseUrl: 'https://api.devin.ai',
+    oauth: {
+      name: 'Devin',
+      isSubscription: true,
+      login: function (callbacks) { return oauthCodeFlowFor(OMP_OAUTH_CODE_SPECS.devin)(callbacks) },
+      refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS.devin, credentials, signal) },
+      getApiKey: oauthGetApiKey
+    },
+    models: []
+  },
+  'gitlab-duo': {
+    name: 'GitLab Duo',
+    baseUrl: 'https://gitlab.com',
+    oauth: {
+      name: 'GitLab Duo',
+      isSubscription: true,
+      login: function (callbacks) {
+        oauthApplyEnvOverrides(OMP_OAUTH_CODE_SPECS['gitlab-duo'])
+        return oauthCodeFlowFor(OMP_OAUTH_CODE_SPECS['gitlab-duo'])(callbacks)
+      },
+      refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS['gitlab-duo'], credentials, signal) },
+      getApiKey: oauthGetApiKey
+    },
+    models: []
+  },
+  'google-gemini-cli': {
+    name: 'Google Cloud Code Assist (Gemini CLI)',
+    baseUrl: 'https://cloudcode-pa.googleapis.com',
+    oauth: {
+      name: 'Google Cloud Code Assist (Gemini CLI)',
+      isSubscription: true,
+      login: function (callbacks) { return oauthCodeFlowFor(OMP_OAUTH_CODE_SPECS['google-gemini-cli'])(callbacks) },
+      refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS['google-gemini-cli'], credentials, signal) },
+      getApiKey: oauthGetApiKey
+    },
+    models: []
+  },
+  'google-antigravity': {
+    name: 'Antigravity (Gemini 3, Claude, GPT-OSS)',
+    baseUrl: 'https://daily-cloudcode-pa.googleapis.com',
+    oauth: {
+      name: 'Antigravity (Gemini 3, Claude, GPT-OSS)',
+      isSubscription: true,
+      login: function (callbacks) { return oauthCodeFlowFor(OMP_OAUTH_CODE_SPECS['google-antigravity'])(callbacks) },
+      refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS['google-antigravity'], credentials, signal) },
+      getApiKey: oauthGetApiKey
+    },
+    models: []
+  },
+  'zai-coding-plan': {
+    name: 'Z.AI (GLM Coding Plan)',
+    baseUrl: 'https://api.z.ai',
+    oauth: {
+      name: 'Z.AI (GLM Coding Plan)',
+      isSubscription: true,
+      login: function (callbacks) {
+        oauthApplyEnvOverrides(OMP_OAUTH_CODE_SPECS['zai-coding-plan'])
+        return oauthCodeFlowFor(OMP_OAUTH_CODE_SPECS['zai-coding-plan'])(callbacks)
+      },
+      refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS['zai-coding-plan'], credentials, signal) },
+      getApiKey: oauthGetApiKey
+    },
+    models: []
+  }
+}
+
+const OMP_REPLICA_LABELS = Object.keys(OMP_PROVIDER_CONFIGS).reduce(function (acc, id) {
+  acc[id] = OMP_PROVIDER_CONFIGS[id].name
+  return acc
+}, {})
+
+/* registers every replica on a ModelRuntime; safe to call per runtime —
+registration is per-instance */
+function installOmpProviders (modelRuntime) {
+  Object.keys(OMP_PROVIDER_CONFIGS).forEach(function (id) {
+    try {
+      modelRuntime.registerProvider(id, OMP_PROVIDER_CONFIGS[id])
+    } catch (err) {
+      console.warn('failed to register omp provider replica', id, err)
+    }
+  })
+}
+
+/* opens the provider's authorization page in a Min browser tab; falls back
+to the OS handler only if the renderer can't take it */
+function oauthOpenAuthUrl (url) {
+  try {
+    if (typeof openTabInWindow === 'function') {
+      openTabInWindow(url)
+      return
+    }
+  } catch (err) {}
+  try {
+    require('electron').shell.openExternal(url)
+  } catch (err) {}
+}
+
+/* exposed on global for agent.js (concatenated bundle scope) and for the
+node --test harness, which loads this file in a bare vm context */
+var agentOAuth = {
+  installOmpProviders: installOmpProviders,
+  replicaLabels: OMP_REPLICA_LABELS,
+  replicaIds: Object.keys(OMP_PROVIDER_CONFIGS),
+  openAuthUrl: oauthOpenAuthUrl,
+  /* internals kept reachable for unit tests */
+  _internals: {
+    pkce: oauthGeneratePKCE,
+    dotGet: oauthDotGet,
+    jwtExpiryMs: oauthJwtExpiryMs,
+    parseAuthorizationInput: oauthParseAuthorizationInput,
+    extractCredentials: oauthExtractCredentials,
+    runCodeFlow: oauthRunCodeFlow,
+    runRefresh: oauthRunRefresh,
+    cursorLogin: oauthCursorLogin,
+    cursorRefresh: oauthCursorRefresh,
+    callbackServer: oauthStartCallbackServer,
+    specs: OMP_OAUTH_CODE_SPECS
+  }
+}
+global.agentOAuth = agentOAuth
