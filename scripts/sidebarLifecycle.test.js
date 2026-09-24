@@ -264,6 +264,8 @@ test('file tree render reads the workspace root directory', async () => {
       if (name === 'sidebar/ui.js') return { createPanelHeader: () => treeElement() }
       if (name === 'sidebar/lifecycle/debouncedWriter.js') return createDebouncedWriter
       if (name === 'editorView.js') return { getFilePath: () => null }
+      if (name === 'chokidar') return { watch: () => ({ on () {}, close () {} }) }
+      if (name === 'path') return path
       throw new Error('Unexpected module: ' + name)
     }
   })

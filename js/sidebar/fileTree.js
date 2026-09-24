@@ -105,6 +105,7 @@ function syncWorkspaceScope (workspaceId) {
   if (workspaceChanged) persistStateSoon()
   currentWorkspaceId = nextWorkspaceId
   currentWorkspacePath = nextWorkspacePath
+  updateDirWatcher()
   expandedPaths.clear()
   lastOpenedFilePath = null
   cancelActiveEditor()
@@ -117,6 +118,136 @@ function syncWorkspaceScope (workspaceId) {
   } else {
     // Do not restore folders from the previous path under the same workspace.
     persistStateSoon()
+  }
+}
+
+/* ----- filesystem watching ----- */
+
+/* chokidar watches the workspace folder so external changes (git checkout,
+builds, other editors) refresh the visible tree without a manual reload.
+Like userscripts.js the module is required lazily - if it cannot load, the
+tree simply stays manual-refresh. */
+
+let dirWatcher = null
+const changedDirs = new Set() // directories whose listings need a reload
+let watcherFlushTimer = null
+
+/* events that alter a directory listing; content changes do not affect the
+tree and file saves happen constantly */
+const watchedEvents = { add: true, unlink: true, addDir: true, unlinkDir: true }
+
+function stopDirWatcher () {
+  if (dirWatcher) {
+    dirWatcher.close()
+    dirWatcher = null
+  }
+  if (watcherFlushTimer) {
+    clearTimeout(watcherFlushTimer)
+    watcherFlushTimer = null
+  }
+  changedDirs.clear()
+}
+
+/* converts a path reported by the watcher into the slash-joined form rows
+keep in dataset.path (workspacePath + '/' + relative segments). Returns null
+for paths outside the workspace. */
+function treePathFor (absPath) {
+  const path = require('path')
+  const rel = path.relative(currentWorkspacePath, absPath)
+  if (!rel) return currentWorkspacePath
+  if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return null
+  return currentWorkspacePath.replace(/[\\/]+$/, '') + '/' + rel.split(path.sep).join('/')
+}
+
+function onWatchEvent (event, changedPath, root) {
+  if (root !== currentWorkspacePath || !watchedEvents[event]) return
+  const treePath = treePathFor(changedPath)
+  if (!treePath) return
+  if (treePath === currentWorkspacePath) {
+    // the workspace folder itself was created or removed
+    render()
+    return
+  }
+  if (event === 'unlinkDir') {
+    // drop saved expansion for the removed directory and its descendants
+    const prefix = treePath + '/'
+    let pruned = false
+    expandedPaths.forEach(function (p) {
+      if (p === treePath || p.indexOf(prefix) === 0) {
+        expandedPaths.delete(p)
+        pruned = true
+      }
+    })
+    if (pruned) persistStateSoon()
+  }
+  const parent = treePathFor(require('path').dirname(changedPath))
+  if (parent) {
+    changedDirs.add(parent)
+    if (watcherFlushTimer) clearTimeout(watcherFlushTimer)
+    watcherFlushTimer = setTimeout(flushChangedDirs, 250)
+  }
+}
+
+function flushChangedDirs () {
+  watcherFlushTimer = null
+  /* the inline name editor lives inside a children container; emptying it
+  mid-typing would commit a partial name on blur. Poll until it closes. */
+  if (activeEditor) {
+    watcherFlushTimer = setTimeout(flushChangedDirs, 400)
+    return
+  }
+  const dirs = Array.from(changedDirs)
+  changedDirs.clear()
+  dirs.forEach(reloadDir)
+}
+
+/* reloads one expanded directory's listing in place. Rows for vanished
+entries disappear, new entries appear, and nested expansion restores itself
+from expandedPaths. Directories that are not loaded yet are skipped - their
+listing is read fresh the next time they expand. */
+function reloadDir (dirPath) {
+  if (!treeBody) return
+  const row = treeBody.querySelector('.file-tree-row[data-path="' + CSS.escape(dirPath) + '"]')
+  const children = row && row.nextElementSibling
+  if (!children || !children.classList.contains('file-tree-children')) return
+  if (children.dataset.loaded !== 'true' && children.dataset.loading !== 'true') return
+  children.dataset.loading = 'false'
+  children.dataset.loaded = 'false'
+  // invalidate a chunked render or IPC read still in flight for this container
+  children.dataset.loadGen = String((parseInt(children.dataset.loadGen) || 0) + 1)
+  empty(children)
+  loadChildren(dirPath, children, parseInt(children.dataset.depth) || 1, renderToken)
+}
+
+function updateDirWatcher () {
+  stopDirWatcher()
+  const root = currentWorkspacePath
+  if (!root) return
+  let chokidar
+  try {
+    chokidar = require('chokidar')
+  } catch (e) {
+    return
+  }
+  try {
+    dirWatcher = chokidar.watch(root, {
+      ignoreInitial: true,
+      followSymlinks: false,
+      disableGlobbing: true,
+      ignored: function (watchPath) {
+        if (watchPath === root) return false
+        const name = watchPath.split(/[\\/]/).pop()
+        // dependency and VCS folders flood the watcher with churn and file
+        // descriptors without producing anything the user needs to see
+        return name === '.git' || name === 'node_modules'
+      }
+    })
+    dirWatcher.on('all', function (event, changedPath) {
+      onWatchEvent(event, changedPath, root)
+    })
+    dirWatcher.on('error', function () {})
+  } catch (e) {
+    dirWatcher = null
   }
 }
 
@@ -214,8 +345,16 @@ row is shown instead. */
 function loadChildren (dirPath, children, depth, token) {
   if (children.dataset.loading === 'true' || children.dataset.loaded === 'true') return Promise.resolve()
   children.dataset.loading = 'true'
+  /* a container can be reloaded while a chunked render or IPC read for it is
+  still in flight; the generation marks the newest load so stale passes abort
+  instead of appending outdated rows */
+  const loadGen = String((parseInt(children.dataset.loadGen) || 0) + 1)
+  children.dataset.loadGen = loadGen
+  const isStale = function () {
+    return token !== renderToken || children.dataset.loadGen !== loadGen
+  }
   return ipc.invoke('readDirectory', dirPath).then(function (entries) {
-    if (token !== renderToken) return // the tree was re-rendered meanwhile
+    if (isStale()) return // the tree was re-rendered or the dir reloaded meanwhile
     children.dataset.loading = 'false'
     if (entries === null) {
       addErrorRow(l('folderReadError'))
@@ -228,7 +367,7 @@ function loadChildren (dirPath, children, depth, token) {
     nested expansion restore) is created together with each row. */
     let cursor = 0
     const renderChunk = function () {
-      if (token !== renderToken) return // a re-render invalidated this pass
+      if (isStale()) return // a re-render or reload invalidated this pass
       const end = Math.min(cursor + renderChunkSize, entries.length)
       for (let i = cursor; i < end; i++) {
         const entry = entries[i]
@@ -255,7 +394,7 @@ function loadChildren (dirPath, children, depth, token) {
     }
     renderChunk()
   }).catch(function () {
-    if (token === renderToken) {
+    if (!isStale()) {
       children.dataset.loading = 'false'
       addErrorRow(l('folderReadError'))
     }
@@ -296,7 +435,7 @@ function selectRow (row) {
   row.classList.add('selected')
 }
 function syncSelectionWithTab (tabId) {
-  if (!treeBody) return
+  if (!treeBody || !window.tabs) return
   const editorView = require('editorView.js')
   const filePath = editorView.getFilePath(tabId || tabs.getSelected())
   const selectedRow = treeBody.querySelector('.file-tree-row.selected')
@@ -664,6 +803,7 @@ const fileTree = {
     // bind to the current workspace and restore its saved tree state
     currentWorkspaceId = getWorkspaceId()
     currentWorkspacePath = getWorkspacePath() || null
+    updateDirWatcher()
     loadSavedState(currentWorkspaceId, currentWorkspacePath).then(function () {
       if (currentWorkspaceId === getWorkspaceId() && currentWorkspacePath === (getWorkspacePath() || null)) render()
     })
