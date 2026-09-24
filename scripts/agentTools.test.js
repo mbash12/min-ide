@@ -19,19 +19,215 @@ async function harness (t) {
     console,
     setTimeout,
     clearTimeout,
+    AbortSignal,
     app: { getPath: () => cwd },
     browserVisualPreview: descriptor => ({ content: { type: 'image', data: 'fixture', mimeType: 'image/png' }, info: Object.assign({}, descriptor, { previewToCSS: { offsetX: 10, offsetY: 20, scaleX: 0.5, scaleY: 0.5 } }) }),
-    ipc: { on () {} },
+    ipc: { on () {}, handle () {} },
     minFigmaEngine: { status: () => ({ context: { fileKey: 'file', nodeId: '1:2' }, bridge: { pluginConnected: true } }) },
     minFigmaBridge: { command: async (action, args) => { bridgeCalls.push({ action, args }); return { ok: true, payload: { id: '1:2', name: 'Card', type: 'FRAME', css: 'color: red;', fontJson: '[{"family":"Inter"}]', textExtract: 'Full text' } } } },
     minDocumentStore: { getForAI: (workspace, id) => id === 'private' ? { ok: false, error: 'Document not found or unavailable' } : { ok: true, document: { id: id, title: 'Test', markdown: 'abcdefghij' } } }
   })
+  context.minFigmaEngine.command = context.minFigmaBridge.command
   context.global = context
   for (const file of ['browserCommands', 'browserControl', 'toolResults', 'agentTools']) vm.runInContext(fs.readFileSync(path.join(__dirname, '../main/' + file + '.js'), 'utf8'), context)
   const { Type } = await typePromise
   const tools = context.createMinCustomTools(t => t, Type, cwd, 'task', 'workspace')
   return { context, cwd, tools, bridgeCalls, tool: name => tools.find(t => t.name === name), payload: result => JSON.parse(result.content[0].text) }
 }
+
+async function agentHarness (t) {
+  const h = await harness(t)
+  const sdk = await import('@earendil-works/pi-coding-agent')
+  const { Type } = await typePromise
+  const userData = path.join(h.cwd, 'min-data')
+  const workspace = path.join(h.cwd, 'workspace')
+  const home = path.join(h.cwd, 'home')
+  for (const dir of [userData, workspace, home]) fs.mkdirSync(dir)
+  const handlers = new Map()
+  const values = new Map()
+  const c = h.context
+  c.require = name => name === 'electron' ? { app: { getPath: () => userData } } : name === 'os' ? Object.assign({}, os, { homedir: () => home }) : require(name)
+  c.ipc.handle = (name, handler) => handlers.set(name, handler)
+  c.settings = { get: key => ({ agentProvider: 'openai', agentModel: 'gpt-4o-mini' })[key], listen () {} }
+  c.kvGet = (scope, key) => values.get(scope + ':' + key)
+  c.kvSet = (scope, key, value) => values.set(scope + ':' + key, value)
+  c.kvList = () => ({})
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../main/agent.js'), 'utf8'), c)
+  c.loadPiSdk = async () => sdk
+  c.loadTypebox = async () => Type
+  c.scheduleAgentPrefsSave = () => {}
+  const createModelRuntime = c.createAgentModelRuntime
+  c.createAgentModelRuntime = () => sdk.ModelRuntime.create({
+    authPath: path.join(userData, 'auth.json'),
+    modelsPath: null,
+    modelsStorePath: path.join(userData, 'models-store.json'),
+    refreshOnCreate: false
+  })
+  t.after(async () => {
+    for (const key of vm.runInContext('Array.from(agentSessions.keys())', c)) await c.destroySession(key)
+  })
+  const writeSkill = (dir, name) => {
+    const file = path.join(dir, name, 'SKILL.md')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '---\nname: ' + name + '\ndescription: Fixture for ' + name + '\n---\nUse this fixture.\n')
+    return file
+  }
+  return Object.assign(h, { sdk, workspace, userData, home, handlers, writeSkill, createModelRuntime })
+}
+
+test('manual model refresh forces discovery after adapters and credentials are installed', async t => {
+  const h = await agentHarness(t)
+  const order = []
+  const runtime = { refresh: async opts => { order.push('refresh'); assert.equal(opts.force, true); assert.equal(opts.allowNetwork, true); return { errors: new Map() } } }
+  h.context.loadPiSdk = async () => ({ ModelRuntime: { create: async opts => { assert.equal(opts.refreshOnCreate, false); return runtime } } })
+  h.context.agentOAuth = { installOmpProviders: async () => { order.push('adapters') } }
+  h.context.installProviderKeys = async () => { order.push('keys') }
+  assert.equal(await h.createModelRuntime({ force: true }), runtime)
+  assert.deepEqual(order, ['adapters', 'keys', 'refresh'])
+})
+
+test('model cache expires, manual refresh bypasses it, and partial outages retain previous models', async t => {
+  const h = await agentHarness(t)
+  const c = h.context
+  c.agentOAuth = { replicaLabels: {} }
+  let generation = 1
+  let calls = 0
+  let options
+  c.createAgentModelRuntime = async opts => {
+    calls++
+    options = opts
+    return {
+      getProviders: () => [{ id: 'openai' }, { id: 'cursor' }],
+      minCatalogRefresh: { errors: generation === 3 ? new Map([['cursor', new Error('offline')]]) : new Map() },
+      getAvailable: async id => [{ id: id === 'cursor' ? 'cursor-v1' : 'model-v' + generation, name: 'Model', provider: id }]
+    }
+  }
+  const first = await c.fetchAgentModels(false)
+  assert.equal(first.models.length, 2)
+  generation = 2
+  await c.fetchAgentModels(false)
+  assert.equal(calls, 1)
+  const forced = await c.fetchAgentModels(true)
+  assert.equal(options.force, true)
+  assert.ok(forced.models.some(m => m.id === 'model-v2'))
+  vm.runInContext('modelCatalogAt = Date.now() - 16 * 60 * 1000', c)
+  generation = 3
+  const partial = await c.fetchAgentModels(false)
+  assert.equal(calls, 3)
+  assert.equal(partial.models.length, 2, 'retained models must not be duplicated')
+  assert.ok(partial.models.some(m => m.id === 'cursor-v1'))
+  assert.ok(partial.models.some(m => m.id === 'model-v3'))
+  assert.deepEqual(Array.from(partial.warnings), ['cursor'])
+  c.createAgentModelRuntime = async () => { throw new Error('network unavailable') }
+  const sender = { isDestroyed: () => false, send () {}, once () {} }
+  const failed = await h.handlers.get('agent-refresh-models')({ sender })
+  assert.equal(failed.ok, false)
+  assert.equal(failed.models.length, 2)
+})
+
+test('a manual refresh during initial loading still performs forced discovery', async t => {
+  const h = await agentHarness(t)
+  h.context.agentOAuth = { replicaLabels: {} }
+  const calls = []
+  let release
+  h.context.createAgentModelRuntime = async options => {
+    calls.push(options.force)
+    if (!options.force) await new Promise(resolve => { release = resolve })
+    return { getProviders: () => [], getAvailable: async () => [] }
+  }
+  const initial = h.context.fetchAgentModels(false)
+  const refresh = h.context.fetchAgentModels(true)
+  const repeatedRefresh = h.context.fetchAgentModels(true)
+  release()
+  await Promise.all([initial, refresh, repeatedRefresh])
+  assert.deepEqual(calls, [false, true])
+})
+
+test('sessions and Settings share Min/workspace skills and expose every Min tool', async t => {
+  const h = await agentHarness(t)
+  const c = h.context
+  const dirs = c.getAgentSkillDirs(h.workspace)
+  const ownSkill = h.writeSkill(dirs.user, 'min-owned')
+  const workspaceSkill = h.writeSkill(dirs.project, 'workspace-only')
+  h.writeSkill(path.join(h.cwd, '.agents', 'skills'), 'orca-cli')
+  h.writeSkill(path.join(h.workspace, '.agents', 'skills'), 'other-agent')
+  const externalDir = path.join(h.cwd, 'external-skills')
+  h.writeSkill(externalDir, 'external-skill')
+  fs.writeFileSync(path.join(h.workspace, '.pi', 'settings.json'), JSON.stringify({ skills: [externalDir] }))
+
+  // Establish that the installed SDK would actually import these unrelated skills.
+  const settingsManager = h.sdk.SettingsManager.create(h.workspace, c.getAgentDataDir())
+  const defaultLoader = new h.sdk.DefaultResourceLoader({ cwd: h.workspace, agentDir: c.getAgentDataDir(), settingsManager })
+  await defaultLoader.reload()
+  assert.ok(defaultLoader.getSkills().skills.some(skill => skill.name === 'orca-cli'))
+
+  const entry = await c.ensureSession('test-task', h.workspace, { createNew: true }, 'workspace')
+  const session = entry.session
+  const catalog = await h.handlers.get('agent-list-tools')({}, { cwd: h.workspace })
+  assert.equal(catalog.ok, true)
+  assert.deepEqual(Array.from(catalog.skills, skill => skill.path).sort(), [ownSkill, workspaceSkill].sort())
+  assert.equal(catalog.skills.find(skill => skill.name === 'min-owned').scope, 'user')
+  assert.equal(catalog.skills.find(skill => skill.name === 'workspace-only').scope, 'project')
+  assert.deepEqual(session.resourceLoader.getSkills().skills.map(skill => skill.filePath).sort(), [ownSkill, workspaceSkill].sort())
+  const expectedTools = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'browser', 'playbook', 'docs', 'design'].sort()
+  assert.deepEqual(session.getActiveToolNames().sort(), expectedTools)
+  assert.deepEqual(Array.from(catalog.builtin.concat(catalog.custom), tool => tool.name).sort(), expectedTools)
+  assert.match(session.agent.state.systemPrompt, /inside Min/)
+  assert.match(session.agent.state.systemPrompt, /Build list.*spec-list/)
+  assert.doesNotMatch(session.agent.state.systemPrompt, /orca-cli|other-agent|external-skill/)
+  assert.match(session.getToolDefinition('design').description, /Build list/)
+  assert.ok(session.getToolDefinition('design').parameters.properties.action.anyOf.some(option => option.const === 'spec-list'))
+  await session.reload()
+  assert.deepEqual(session.resourceLoader.getSkills().skills.map(skill => skill.filePath).sort(), [ownSkill, workspaceSkill].sort())
+  assert.deepEqual(session.getActiveToolNames().sort(), expectedTools)
+  assert.doesNotMatch(session.agent.state.systemPrompt, /orca-cli|other-agent|external-skill/)
+})
+
+test('a missing workspace never becomes the home skills directory', async t => {
+  const h = await agentHarness(t)
+  const ownSkill = h.writeSkill(h.context.getAgentSkillDirs(null).user, 'min-owned')
+  h.writeSkill(path.join(h.home, '.pi', 'skills'), 'home-skill')
+  for (const cwd of [null, path.join(h.cwd, 'missing-workspace')]) {
+    const loader = await h.context.createAgentResourceLoader(h.sdk, cwd, h.sdk.SettingsManager.inMemory())
+    const catalog = await h.handlers.get('agent-list-tools')({}, { cwd })
+    assert.equal(catalog.skillDirs.project, null)
+    assert.deepEqual(loader.getSkills().skills.map(skill => skill.filePath), [ownSkill])
+    assert.deepEqual(Array.from(catalog.skills, skill => skill.path), [ownSkill])
+  }
+})
+
+test('custom tool load failures surface in chat setup and Settings instead of losing tools silently', async t => {
+  const h = await agentHarness(t)
+  let sessionsCreated = 0
+  h.context.loadPiSdk = async () => Object.assign({}, h.sdk, { createAgentSession: async () => { sessionsCreated++ } })
+  h.context.loadTypebox = async () => { throw new Error('schema dependency unavailable') }
+  await assert.rejects(h.context.ensureSession('test-task', h.workspace, { createNew: true }, 'workspace'), /Min agent tools could not be loaded: schema dependency unavailable/)
+  assert.equal(sessionsCreated, 0)
+  const catalog = await h.handlers.get('agent-list-tools')({}, { cwd: h.workspace })
+  assert.equal(catalog.ok, false)
+  assert.match(catalog.message, /Min agent tools could not be loaded: schema dependency unavailable/)
+})
+
+test('Build list is read from the workspace store without a Figma connection', async t => {
+  const h = await harness(t)
+  const c = h.context
+  const stored = new Map()
+  c.kvGet = (scope, key) => stored.get(scope + ':' + key)
+  c.kvSet = (scope, key, value) => stored.set(scope + ':' + key, value)
+  c.minFigmaEngine.status = () => ({ running: false, context: null, bridge: null })
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../main/designSpec.js'), 'utf8'), c)
+  c.minDesignSpec.add(h.cwd, { name: 'Landing page', kind: 'page' })
+  c.minDesignSpec.add(h.cwd + '-other', { name: 'Another workspace', kind: 'page' })
+  const figma = h.tool('design')
+  const result = h.payload(await figma.execute('build-list', { action: 'spec-list' }))
+  assert.equal(result.entries.length, 1)
+  assert.equal(result.entries[0].name, 'Landing page')
+  assert.equal(result.entries[0].status, 'todo')
+  assert.equal(result.entries[0].variants.length, 2)
+  assert.equal(h.bridgeCalls.length, 0)
+  const help = h.payload(await figma.execute('help', { action: 'help' }))
+  assert.ok(help.examples.some(example => example.action === 'spec-list'))
+})
 
 test('catalog budget excludes repeated step schemas; action help stays precise and usable offline', async t => {
   const h = await harness(t)
@@ -45,7 +241,7 @@ test('catalog budget excludes repeated step schemas; action help stays precise a
   assert.equal(help.example.condition, 'text')
   assert.ok(!Object.hasOwn(help.parameters, 'files'))
   assert.equal(h.payload(await browser.execute('help-batch', { action: 'help', topic: 'batch' })).example.steps.length, 3)
-  assert.equal(h.payload(await h.tool('figma').execute('help', { action: 'help' })).examples[0].action, 'export')
+  assert.equal(h.payload(await h.tool('design').execute('help', { action: 'help' })).examples[0].action, 'export')
   assert.equal(h.bridgeCalls.length, 0)
   console.log('Tool catalog characters: ' + size + ' (baseline 61157); ' + Math.round((1 - size / 61157) * 100) + '% reduction')
 })
@@ -152,7 +348,7 @@ test('diagnostics prioritize errors and report pages avoid duplicate scenario tr
 
 test('Figma fields and document pages expose exact requested data, preserving private-document denial', async t => {
   const h = await harness(t)
-  const figma = h.tool('figma')
+  const figma = h.tool('design')
   const fonts = h.payload(await figma.execute('fonts', { action: 'node-data', fields: 'fonts' }))
   assert.equal(fonts.fonts[0].family, 'Inter')
   assert.equal(fonts.css, undefined)

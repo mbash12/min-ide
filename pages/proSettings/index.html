@@ -43,6 +43,19 @@
 
         <section class="pro-section">
           <div class="pro-section-header">
+            <span class="pro-section-title" data-string="proSettingsAiUpdates"></span>
+          </div>
+          <p class="pro-description" data-string="proSettingsAiUpdatesDescription"></p>
+          <div class="pro-actions-row">
+            <button id="models-refresh" class="pro-button" data-string="proSettingsRefreshModels"></button>
+            <button id="components-check" class="pro-button" data-string="proSettingsCheckComponents"></button>
+            <button id="components-update" class="pro-button" data-string="proSettingsUpdateComponents" hidden></button>
+          </div>
+          <p id="ai-update-status" class="pro-description" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="pro-section">
+          <div class="pro-section-header">
             <span class="pro-section-title" data-string="proSettingsCommitHeading"></span>
           </div>
           <p class="pro-description" data-string="proSettingsCommitDescription"></p>
@@ -185,6 +198,17 @@
         <div class="pro-dialog-field">
           <label class="pro-field-label" for="provider-add-key" data-string="proSettingsKeyHeading"></label>
           <input type="password" id="provider-add-key" class="pro-input" autocomplete="off" spellcheck="false" />
+        </div>
+        <div id="provider-oauth-section" class="pro-dialog-field" hidden>
+          <button id="provider-oauth-signin" class="pro-button" type="button"></button>
+          <p id="provider-oauth-status" class="pro-description" hidden></p>
+          <div id="provider-oauth-device" class="pro-oauth-device" hidden></div>
+          <div id="provider-oauth-prompt" class="pro-dialog-field" hidden>
+            <label id="provider-oauth-prompt-label" class="pro-field-label"></label>
+            <input id="provider-oauth-prompt-input" class="pro-input" autocomplete="off" spellcheck="false" />
+            <div id="provider-oauth-prompt-options" class="pro-oauth-options" hidden></div>
+            <button id="provider-oauth-prompt-submit" class="pro-button" type="button" data-string="docsSave"></button>
+          </div>
         </div>
         <p id="provider-add-error" class="pro-test-result fail" hidden></p>
         <div class="pro-actions-row pro-dialog-actions">

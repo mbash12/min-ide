@@ -53,6 +53,44 @@ window.addEventListener('message', function (e) {
     })
   }
 
+  var updateChannels = {
+    agentRefreshModels: 'agent-refresh-models',
+    agentComponentStatus: 'agent-component-status',
+    agentCheckUpdates: 'agent-check-updates',
+    agentUpdateComponents: 'agent-update-components'
+  }
+  if (e.data && Object.prototype.hasOwnProperty.call(updateChannels, e.data.message)) {
+    var message = e.data.message
+    ipc.invoke(updateChannels[message]).then(function (result) {
+      window.postMessage({ message: message + 'Result', result: result }, window.location.toString())
+    }).catch(function (err) {
+      window.postMessage({ message: message + 'Result', result: { ok: false, message: err.message } }, window.location.toString())
+    })
+  }
+
+  /* OAuth provider sign-in: login/logout are invokes; progress, device codes
+  and prompt requests are pushed back as 'agentAuthEvent' postMessages; the
+  page answers prompts via 'agentAuthRespond' */
+  if (e.data && e.data.message === 'agentProviderLogin') {
+    ipc.invoke('agent-provider-login', { provider: e.data.provider }).then(function (result) {
+      window.postMessage({ message: 'agentProviderLoginResult', provider: e.data.provider, result: result }, window.location.toString())
+    })
+  }
+
+  if (e.data && e.data.message === 'agentProviderLoginCancel') {
+    ipc.send('agent-provider-login-cancel', { provider: e.data.provider })
+  }
+
+  if (e.data && e.data.message === 'agentProviderLogout') {
+    ipc.invoke('agent-provider-logout', { provider: e.data.provider }).then(function (result) {
+      window.postMessage({ message: 'agentProviderLogoutResult', provider: e.data.provider, result: result }, window.location.toString())
+    })
+  }
+
+  if (e.data && e.data.message === 'agentAuthRespond') {
+    ipc.send('agent-auth-respond', { requestId: e.data.requestId, value: e.data.value, cancelled: e.data.cancelled })
+  }
+
   if (e.data && e.data.message === 'figmaEngine') {
     var allowed = ['status', 'start', 'stop', 'setVisible', 'revealLogin', 'hide']
     if (allowed.indexOf(e.data.action) === -1) return
@@ -92,6 +130,12 @@ window.addEventListener('message', function (e) {
     }).catch(function (err) {
       window.postMessage({ message: 'dbInvokeResult', callId: callId, error: err ? err.message : 'DB Error' }, window.location.toString())
     })
+  }
+})
+
+ipc.on('agent-auth-event', function (e, data) {
+  if (window.location.toString().startsWith('min://')) {
+    window.postMessage({ message: 'agentAuthEvent', event: data }, window.location.toString())
   }
 })
 

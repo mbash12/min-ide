@@ -289,7 +289,9 @@ function maskKey (key) {
 
 function setProviderKey (id, key) {
   providerKeys[id] = key
-  dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'ApiKey', value: key || null })
+  dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'ApiKey', value: key || null }, function () {
+    refreshCommitModels()
+  })
   /* keep the legacy settings mirror for openrouter so the catalog cache
   invalidation listener keeps firing */
   if (id === 'openrouter') {
@@ -305,20 +307,38 @@ function setProviderKey (id, key) {
 /* disabling keeps the key stored - it only hides the provider from the agent
 runtime (no env key, no auth.json entry, models drop out of pickers) */
 function setProviderEnabled (id, enabled) {
+  /* refresh the model selects only after the write lands - the main-side
+  catalog is invalidated by the kv write, so an earlier fetch could still
+  return the stale list */
   if (enabled) {
     delete providerDisabled[id]
-    dbInvoke('db:kvDelete', { scope: 'provider_config', key: id + 'Disabled' })
+    dbInvoke('db:kvDelete', { scope: 'provider_config', key: id + 'Disabled' }, function () {
+      refreshCommitModels()
+    })
   } else {
     providerDisabled[id] = true
-    dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'Disabled', value: true })
+    dbInvoke('db:kvSet', { scope: 'provider_config', key: id + 'Disabled', value: true }, function () {
+      refreshCommitModels()
+    })
   }
   renderProviders()
+}
+
+/* providers with a stored OAuth credential live in the SDK's auth.json, not
+in provider_config — merge them into the same list view */
+function oauthSignedInProviders () {
+  return knownProviders
+    .filter(function (p) { return p.authType === 'oauth' })
+    .map(function (p) { return p.id })
 }
 
 function renderProviders () {
   providersList.textContent = ''
 
   var configured = Object.keys(providerKeys).filter(function (id) { return !!providerKeys[id] })
+  oauthSignedInProviders().forEach(function (id) {
+    if (configured.indexOf(id) === -1) configured.push(id)
+  })
 
   if (!configured.length) {
     var empty = document.createElement('p')
@@ -329,6 +349,7 @@ function renderProviders () {
 
   configured.forEach(function (id) {
     var disabled = !!providerDisabled[id]
+    var oauthProvider = oauthSignedInProviders().indexOf(id) !== -1 && !providerKeys[id]
 
     var row = document.createElement('div')
     row.className = 'pro-provider-row' + (disabled ? ' disabled' : '')
@@ -345,7 +366,7 @@ function renderProviders () {
 
     var masked = document.createElement('span')
     masked.className = 'pro-provider-key'
-    masked.textContent = maskKey(providerKeys[id])
+    masked.textContent = oauthProvider ? 'OAuth' : maskKey(providerKeys[id])
 
     var spacer = document.createElement('span')
     spacer.className = 'pro-provider-spacer'
@@ -402,8 +423,16 @@ function renderProviders () {
     })
 
     removeBtn.addEventListener('click', function () {
-      setProviderKey(id, null)
-      renderProviders()
+      if (oauthProvider) {
+        /* OAuth credentials live in the SDK's auth.json - sign out there */
+        agentCall('agentProviderLogout', { provider: id }, function () {
+          refreshKnownProviders()
+          refreshCommitModels()
+        })
+      } else {
+        setProviderKey(id, null)
+        renderProviders()
+      }
     })
 
     row.appendChild(avatar)
@@ -412,8 +441,10 @@ function renderProviders () {
     row.appendChild(spacer)
     row.appendChild(status)
     row.appendChild(toggle)
-    row.appendChild(testBtn)
-    row.appendChild(editBtn)
+    if (!oauthProvider) {
+      row.appendChild(testBtn)
+      row.appendChild(editBtn)
+    }
     row.appendChild(removeBtn)
     providersList.appendChild(row)
   })
@@ -436,6 +467,171 @@ function updateAddLink () {
   addLink.href = link || '#'
   addLink.textContent = link ? link.replace('https://', '') : ''
   addLink.style.visibility = link ? 'visible' : 'hidden'
+}
+
+/* ---- OAuth sign-in inside the provider dialog ----
+   providers that support OAuth get a "Sign in" button next to the API-key
+   field; the flow runs in the main process and streams auth events back via
+   the settingsPreload 'agentAuthEvent' relay */
+var oauthSection = document.getElementById('provider-oauth-section')
+var oauthSigninBtn = document.getElementById('provider-oauth-signin')
+var oauthStatus = document.getElementById('provider-oauth-status')
+var oauthDevice = document.getElementById('provider-oauth-device')
+var oauthPromptWrap = document.getElementById('provider-oauth-prompt')
+var oauthPromptLabel = document.getElementById('provider-oauth-prompt-label')
+var oauthPromptInput = document.getElementById('provider-oauth-prompt-input')
+var oauthPromptOptions = document.getElementById('provider-oauth-prompt-options')
+var oauthPromptSubmit = document.getElementById('provider-oauth-prompt-submit')
+var oauthFlowProvider = null
+var oauthActiveRequestId = null
+
+function selectedProviderInfo () {
+  return knownProviders.find(function (p) { return p.id === addSelect.value }) || null
+}
+
+function setOauthStatus (text, isError) {
+  oauthStatus.hidden = !text
+  oauthStatus.textContent = text || ''
+  oauthStatus.style.color = isError ? 'var(--error-color, #c00)' : ''
+}
+
+function hideOauthPrompt () {
+  oauthPromptWrap.hidden = true
+  oauthPromptOptions.hidden = true
+  oauthPromptOptions.textContent = ''
+  oauthPromptInput.value = ''
+  oauthActiveRequestId = null
+}
+
+function showOauthPrompt (requestId, prompt) {
+  oauthActiveRequestId = requestId
+  oauthPromptWrap.hidden = false
+  oauthPromptLabel.textContent = prompt.message || l('proSettingsOauthEnterValue')
+  oauthPromptOptions.textContent = ''
+  oauthPromptOptions.hidden = true
+  if (prompt.type === 'select' && prompt.options && prompt.options.length) {
+    /* select prompts render as a row of option buttons; clicking one is the
+    answer (no separate submit) */
+    oauthPromptInput.hidden = true
+    oauthPromptSubmit.hidden = true
+    oauthPromptOptions.hidden = false
+    prompt.options.forEach(function (opt) {
+      var btn = document.createElement('button')
+      btn.className = 'pro-button'
+      btn.type = 'button'
+      btn.textContent = opt.label || opt.id
+      btn.addEventListener('click', function () { answerOauthPrompt(opt.id) })
+      oauthPromptOptions.appendChild(btn)
+    })
+  } else {
+    oauthPromptInput.hidden = false
+    oauthPromptSubmit.hidden = false
+    oauthPromptInput.type = prompt.type === 'secret' ? 'password' : 'text'
+    oauthPromptInput.placeholder = prompt.placeholder || ''
+    oauthPromptInput.value = ''
+    oauthPromptInput.focus()
+  }
+}
+
+function answerOauthPrompt (value) {
+  if (!oauthActiveRequestId) return
+  var requestId = oauthActiveRequestId
+  hideOauthPrompt()
+  window.postMessage({ message: 'agentAuthRespond', requestId: requestId, value: value }, window.location.toString())
+}
+
+function startOauthFlow () {
+  var provider = selectedProviderInfo()
+  if (!provider) return
+  oauthFlowProvider = provider.id
+  oauthSigninBtn.disabled = true
+  addSelect.disabled = true
+  addConfirm.disabled = true
+  hideOauthPrompt()
+  oauthDevice.hidden = true
+  oauthDevice.textContent = ''
+  setOauthStatus(l('proSettingsOauthStarting'))
+  window.postMessage({ message: 'agentProviderLogin', provider: provider.id }, window.location.toString())
+}
+
+function endOauthFlow (message, isError) {
+  oauthFlowProvider = null
+  oauthSigninBtn.disabled = false
+  addSelect.disabled = !editProviderId
+  addConfirm.disabled = false
+  hideOauthPrompt()
+  if (message) setOauthStatus(message, isError)
+}
+
+function updateOauthSection () {
+  var provider = selectedProviderInfo()
+  var supportsOauth = !!(provider && provider.oauth)
+  oauthSection.hidden = !supportsOauth
+  /* oauth-only providers (no apiKey auth) have nothing to type - hide the
+  key field and the add-key confirm */
+  var oauthOnly = supportsOauth && !provider.apiKey
+  addKey.parentNode.hidden = oauthOnly && !editProviderId
+  addConfirm.hidden = oauthOnly && !editProviderId
+  if (supportsOauth && !oauthFlowProvider) {
+    oauthSigninBtn.textContent = l('proSettingsOauthSignIn').replace('%s', provider.label || 'provider')
+    setOauthStatus('')
+  }
+}
+
+window.addEventListener('message', function (e) {
+  if (!e.origin.startsWith('min://') || !e.data) return
+  if (e.data.message === 'agentAuthEvent' && e.data.event) {
+    var payload = e.data.event
+    if (payload.provider !== oauthFlowProvider) return
+    if (payload.type === 'prompt' && payload.prompt) {
+      showOauthPrompt(payload.requestId, payload.prompt)
+      return
+    }
+    if (payload.type === 'event' && payload.event) {
+      var ev = payload.event
+      if (ev.type === 'auth_url') {
+        setOauthStatus(ev.instructions || l('proSettingsOauthOpenedTab'))
+      } else if (ev.type === 'device_code') {
+        oauthDevice.hidden = false
+        oauthDevice.textContent = l('proSettingsOauthDeviceCode').replace('%s', ev.userCode).replace('%s', ev.verificationUri)
+      } else if (ev.type === 'progress' || ev.type === 'info') {
+        setOauthStatus(ev.message || '')
+      }
+      return
+    }
+    if (payload.type === 'done') {
+      endOauthFlow(l('proSettingsOauthSignedIn'), false)
+      closeAddDialog()
+      refreshKnownProviders()
+      refreshCommitModels()
+      return
+    }
+    if (payload.type === 'error') {
+      endOauthFlow(payload.message || l('proSettingsOauthFailed'), true)
+      return
+    }
+  }
+  if (e.data.message === 'agentProviderLoginResult' && e.data.provider === oauthFlowProvider) {
+    /* the invoke resolved without a done event (shouldn't normally happen) */
+    if (e.data.result && !e.data.result.ok && oauthFlowProvider) {
+      endOauthFlow(e.data.result.message || l('proSettingsOauthFailed'), true)
+    }
+  }
+})
+
+oauthSigninBtn.addEventListener('click', startOauthFlow)
+oauthPromptSubmit.addEventListener('click', function () { answerOauthPrompt(oauthPromptInput.value) })
+oauthPromptInput.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') answerOauthPrompt(oauthPromptInput.value)
+})
+
+/* re-probe providers (authType flags change after OAuth login/logout) and
+re-render the list */
+function refreshKnownProviders () {
+  agentCall('agentListProviders', {}, function (providers) {
+    knownProviders = providers || []
+    renderProviders()
+  })
 }
 
 function openAddDialog (editId) {
@@ -470,11 +666,17 @@ function openAddDialog (editId) {
   addKey.value = editProviderId ? (providerKeys[editProviderId] || '') : ''
   addError.hidden = true
   updateAddLink()
+  updateOauthSection()
   addOverlay.hidden = false
   addKey.focus()
 }
 
 function closeAddDialog () {
+  /* closing mid-flow aborts the sign-in in the main process */
+  if (oauthFlowProvider) {
+    window.postMessage({ message: 'agentProviderLoginCancel', provider: oauthFlowProvider }, window.location.toString())
+    endOauthFlow()
+  }
   editProviderId = null
   addOverlay.hidden = true
 }
@@ -496,7 +698,10 @@ function confirmAddProvider () {
 
 document.getElementById('provider-add-open').addEventListener('click', function () { openAddDialog() })
 document.getElementById('provider-add-cancel').addEventListener('click', closeAddDialog)
-addSelect.addEventListener('change', updateAddLink)
+addSelect.addEventListener('change', function () {
+  updateAddLink()
+  updateOauthSection()
+})
 addConfirm.addEventListener('click', confirmAddProvider)
 addKey.addEventListener('input', function () { addError.hidden = true })
 addKey.addEventListener('keydown', function (e) {
@@ -531,28 +736,96 @@ agentCall('agentListProviders', {}, function (providers) {
   })
 })
 
+/* OAuth-signed-in providers are flagged via authType on the provider probe;
+refresh when the providers tab becomes visible again isn't needed - the list
+re-renders from the same data. */
+
 /* commit message model: 'provider/model' stored in ai_config.commitModel.
 Empty option follows the agent's own provider+model. */
 var commitModelSelect = document.getElementById('commit-model')
 var commitModelSearch = makeSearchableSelect(commitModelSelect)
 
-agentCall('agentFetchModels', {}, function (models) {
-  commitModelSelect.textContent = ''
-  var defaultOpt = document.createElement('option')
-  defaultOpt.value = ''
-  defaultOpt.textContent = l('proSettingsCommitModelDefault')
-  commitModelSelect.appendChild(defaultOpt)
-  ;(models || []).forEach(function (m) {
-    var opt = document.createElement('option')
-    opt.value = m.provider + '/' + m.id
-    opt.textContent = m.providerLabel + ' / ' + m.name
-    commitModelSelect.appendChild(opt)
+/* the model list follows provider config (keys, enable/disable, OAuth
+sign-in/out) - refetched after every mutation so a disabled provider's
+models disappear immediately */
+function refreshCommitModels () {
+  agentCall('agentFetchModels', {}, function (models) {
+    commitModelSelect.textContent = ''
+    var defaultOpt = document.createElement('option')
+    defaultOpt.value = ''
+    defaultOpt.textContent = l('proSettingsCommitModelDefault')
+    commitModelSelect.appendChild(defaultOpt)
+    ;(models || []).forEach(function (m) {
+      var opt = document.createElement('option')
+      opt.value = m.provider + '/' + m.id
+      opt.textContent = m.providerLabel + ' / ' + m.name
+      commitModelSelect.appendChild(opt)
+    })
+    dbInvoke('db:kvGet', { scope: 'ai_config', key: 'commitModel' }, function (value) {
+      commitModelSelect.value = value || ''
+      commitModelSearch.sync()
+    })
   })
-  dbInvoke('db:kvGet', { scope: 'ai_config', key: 'commitModel' }, function (value) {
-    commitModelSelect.value = value || ''
-    commitModelSearch.sync()
+}
+refreshCommitModels()
+
+var modelsRefreshButton = document.getElementById('models-refresh')
+var componentsCheckButton = document.getElementById('components-check')
+var componentsUpdateButton = document.getElementById('components-update')
+var aiUpdateStatus = document.getElementById('ai-update-status')
+
+function setAiUpdateBusy (busy) {
+  modelsRefreshButton.disabled = busy
+  componentsCheckButton.disabled = busy
+  componentsUpdateButton.disabled = busy
+}
+
+function renderComponentUpdate (result) {
+  if (!result || !result.ok) {
+    aiUpdateStatus.textContent = (result && result.message) || l('proSettingsAiUpdateFailed')
+    return
+  }
+  componentsUpdateButton.hidden = !result.available
+  aiUpdateStatus.textContent = result.available
+    ? l('proSettingsComponentAvailable').replace('%s', result.latest)
+    : l('proSettingsComponentCurrent').replace('%s', result.current || '—')
+}
+
+modelsRefreshButton.addEventListener('click', function () {
+  setAiUpdateBusy(true)
+  aiUpdateStatus.textContent = l('proSettingsRefreshingModels')
+  agentCall('agentRefreshModels', {}, function (result) {
+    setAiUpdateBusy(false)
+    if (!result || !result.ok) {
+      aiUpdateStatus.textContent = (result && result.message) || l('proSettingsAiUpdateFailed')
+      return
+    }
+    aiUpdateStatus.textContent = l('proSettingsModelsUpdated').replace('%s', String((result.models || []).length))
+    if (result.warnings && result.warnings.length) aiUpdateStatus.textContent += ' ' + l('proSettingsModelsRetained').replace('%s', result.warnings.join(', '))
+    refreshCommitModels()
   })
 })
+
+componentsCheckButton.addEventListener('click', function () {
+  setAiUpdateBusy(true)
+  aiUpdateStatus.textContent = l('proSettingsCheckingComponents')
+  agentCall('agentCheckUpdates', {}, function (result) {
+    setAiUpdateBusy(false)
+    renderComponentUpdate(result)
+  })
+})
+
+componentsUpdateButton.addEventListener('click', function () {
+  setAiUpdateBusy(true)
+  aiUpdateStatus.textContent = l('proSettingsUpdatingComponents')
+  agentCall('agentUpdateComponents', {}, function (result) {
+    setAiUpdateBusy(false)
+    renderComponentUpdate(result)
+    if (result && result.updated) refreshCommitModels()
+  })
+})
+
+agentCall('agentComponentStatus', {}, renderComponentUpdate)
 
 commitModelSelect.addEventListener('change', function () {
   dbInvoke('db:kvSet', { scope: 'ai_config', key: 'commitModel', value: commitModelSelect.value || null })

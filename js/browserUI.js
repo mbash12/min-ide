@@ -690,7 +690,7 @@ tasks.on('tab-updated', function (id, key) {
   }
 })
 
-webviews.bindEvent('did-create-popup', function (tabId, popupId, initialURL) {
+webviews.bindEvent('did-create-popup', function (tabId, popupId, initialURL, openInForeground) {
   var popupTab = tabs.add({
     // in most cases, initialURL will be overwritten once the popup loads, but if the URL is a downloaded file, it will remain the same
     url: initialURL,
@@ -698,7 +698,9 @@ webviews.bindEvent('did-create-popup', function (tabId, popupId, initialURL) {
   })
   tabBar.addTab(popupTab)
   webviews.add(popupTab, popupId)
-  switchToTab(popupTab)
+  if (openInForeground !== false) {
+    switchToTab(popupTab)
+  }
 })
 
 webviews.bindEvent('new-tab', function (tabId, url, openInForeground) {

@@ -7,7 +7,7 @@
  * also a supported status surface. Every UI call below is guarded: a runtime
  * without UI support must never be able to kill the link. */
 
-const PLUGIN_VERSION = '8'
+const PLUGIN_VERSION = '9'
 // NOTE: raw IP (127.0.0.1) makes the wasm sandbox's URL parser throw
 // "must be valid url" — keep the hostname form.
 const BRIDGE_HTTP = 'http://localhost:44178'
@@ -476,16 +476,21 @@ async function switchToPage(page) {
   else figma.currentPage = page
 }
 
-function stage(label, promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`export ${label} timed out after ${Math.round(ms / 1000)}s`)),
-        ms,
-      ),
-    ),
-  ])
+async function stage(label, promise, ms) {
+  let timer
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`export ${label} timed out after ${Math.round(ms / 1000)}s`)),
+          ms,
+        )
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 async function getNode(nodeId) {
@@ -596,7 +601,10 @@ function commandIdentity(cmd) {
 }
 
 async function runBridgeCommand(cmd, viaWs) {
+  let replied = false
   const reply = (ok, payload, error) => {
+    if (replied) return
+    replied = true
     const msg = { type: 'result', ...commandIdentity(cmd), id: cmd.id, ok, payload, error, transport: transport() }
     let sent = false
     if (viaWs && wsOpen && pluginUi) {
@@ -627,6 +635,7 @@ async function runBridgeCommand(cmd, viaWs) {
   // Exports legitimately take longer (page switch + render + upload) — give
   // them room while keeping a hard cap so the chain always advances.
   const limitMs = cmd.action === 'export' ? 115000 : 50000
+  let timer
   try {
     // A hung Figma API call (exportAsync on a huge node, a wedged page load)
     // would otherwise stall the serialized command chain forever — every
@@ -634,15 +643,17 @@ async function runBridgeCommand(cmd, viaWs) {
     // so the chain always advances and the caller gets a real error.
     await Promise.race([
       dispatchBridgeCommand(cmd, reply),
-      new Promise((_, reject) =>
-        setTimeout(
+      new Promise((_, reject) => {
+        timer = setTimeout(
           () => reject(new Error(`"${cmd.action}" exceeded ${Math.round(limitMs / 1000)}s inside the plugin — the node may be too large or the file is busy`)),
           limitMs,
-        ),
-      ),
+        )
+      }),
     ])
   } catch (e) {
     reply(false, null, e && e.message ? e.message : String(e))
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -714,11 +725,17 @@ async function dispatchBridgeCommand(cmd, reply) {
       // Over-limit rasters hang exportAsync instead of erroring on some
       // engines — clamp the scale and report the effective value back.
       const MAX_EXPORT_PX = 16000
-      let scale = cmd.scale ?? 2
+      const MAX_EXPORT_AREA = 64 * 1024 * 1024
+      let scale = Number(cmd.scale ?? 2)
+      if (!Number.isFinite(scale) || scale <= 0) throw new Error('Export scale must be a positive number')
       if (format !== 'SVG') {
         const maxSide = Math.max(width, height)
-        if (maxSide > 0 && maxSide * scale > MAX_EXPORT_PX) {
-          scale = Math.max(0.5, Math.floor((MAX_EXPORT_PX / maxSide) * 100) / 100)
+        const limit = Math.min(
+          maxSide > 0 ? MAX_EXPORT_PX / maxSide : scale,
+          width * height > 0 ? Math.sqrt(MAX_EXPORT_AREA / (width * height)) : scale,
+        )
+        if (scale > limit) {
+          scale = limit
           postStatus(currentState(), `→ export: scale clamped to ${scale}× (${width}×${height})`)
         }
       }
@@ -759,7 +776,6 @@ async function dispatchBridgeCommand(cmd, reply) {
               width: Math.round(width * (format === 'SVG' ? 1 : scale)),
               height: Math.round(height * (format === 'SVG' ? 1 : scale)),
             },
-            pngBase64: format === 'PNG' ? figma.base64Encode(bytes) : undefined,
             dataBase64: figma.base64Encode(bytes),
           }),
         }),

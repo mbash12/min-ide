@@ -3,7 +3,7 @@ plans to build in this workspace. Each entry carries named variants (desktop,
 mobile, or any custom state) pinned to a Figma node id and a target viewport.
 
 Persisted in the KV store scoped by workspace path — nothing extra shows up
-in the file tree. Consumed by the Design sidebar and the figma agent tool. */
+in the file tree. Consumed by the Design sidebar and the Design agent tool. */
 /* global ipc, kvGet, kvSet */
 
 var DESIGN_SPEC_SCOPE = 'design_spec'
@@ -171,17 +171,17 @@ frame heights differ per node and presets are only guesses. Runs in the
 background; failures are ignored (dims sync again on export). */
 function designSpecFetchVariantDims (workspacePath, entryId, variantId) {
   try {
-    var bridge = global.minFigmaBridge
     var engineApi = global.minFigmaEngine
-    if (!bridge || !bridge.command || !engineApi || !engineApi.status) return
+    if (!engineApi || !engineApi.command || !engineApi.status) return
     var engine = engineApi.status()
     if (!engine || !engine.bridge || !engine.bridge.pluginConnected) return
     var doc = designSpecDoc(workspacePath)
     var entry = designSpecFindEntry(doc, entryId)
     var variant = entry && designSpecFindVariant(entry, variantId)
     if (!variant || !variant.nodeId) return
-    var fileKey = entry.fileKey || (engine.context && engine.context.fileKey)
-    bridge.command('node-info', { nodeId: variant.nodeId, fileKey: fileKey }).then(function (result) {
+    engineApi.command('node-info', {
+      nodeId: variant.nodeId, fileKey: entry.fileKey || undefined, figmaUrl: entry.figmaUrl, workspacePath: workspacePath
+    }).then(function (result) {
       var payload = result && result.payload
       if (!result || result.ok === false || !payload || !payload.width || !payload.height) return
       var latest = designSpecDoc(workspacePath)

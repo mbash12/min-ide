@@ -186,7 +186,7 @@ index 7710177..56730af
 diff --git a/src/main/Ui/MainTab.ts b/src/main/Ui/MainTab.ts
 old mode 100644
 new mode 100755
-index d81135c..e7113c1
+index d81135c..5de17e0
 --- a/src/main/Ui/MainTab.ts
 +++ b/src/main/Ui/MainTab.ts
 @@ -8,6 +8,7 @@ import {
@@ -211,19 +211,20 @@ index d81135c..e7113c1
  } from "Utils/Common";
  import { storage } from "Main/Storage";
  import { logger } from "Main/Logger";
-+import { prepareEngineWebContents } from "Main/engineMode";
++import { isMinFigmaEngine, prepareEngineWebContents } from "Main/engineMode";
 
  export default class MainTab {
    private _userId: string;
-@@ -37,6 +40,7 @@ export default class MainTab {
+@@ -37,6 +40,8 @@ export default class MainTab {
        nodeIntegration: false,
        webgl: true,
        contextIsolation: false,
 +      backgroundThrottling: false,
++      offscreen: isMinFigmaEngine(),
        zoomFactor: 1,
        preload: isDev ? preloadMainScriptPathDev : preloadMainScriptPathProd,
      },
-@@ -80,6 +84,9 @@ export default class MainTab {
+@@ -80,6 +85,9 @@ export default class MainTab {
 
      this.view = new WebContentsView(this.options);
      this.id = this.view.webContents.id;
@@ -233,7 +234,7 @@ index d81135c..e7113c1
 
      this.loadUrl(url);
 
-@@ -91,20 +98,106 @@ export default class MainTab {
+@@ -91,20 +99,106 @@ export default class MainTab {
    public updateScale(scale: number) {
      this.view.webContents.setZoomFactor(scale);
    }
@@ -344,7 +345,7 @@ index d81135c..e7113c1
 
        if (url === currentUrl) {
          event.preventDefault();
-@@ -114,7 +207,10 @@ export default class MainTab {
+@@ -114,7 +208,10 @@ export default class MainTab {
        const from = parseURL(currentUrl);
        const to = parseURL(url);
 
@@ -356,7 +357,7 @@ index d81135c..e7113c1
          event.preventDefault();
          return;
        }
-@@ -135,6 +231,10 @@ export default class MainTab {
+@@ -135,6 +232,10 @@ export default class MainTab {
        return;
      }
      if (isFigmaBoardLink(url) || isFigmaDesignLink(url)) {
@@ -367,7 +368,7 @@ index d81135c..e7113c1
        app.emit("openUrlInNewTab", url);
        event.preventDefault();
        return;
-@@ -144,7 +244,12 @@ export default class MainTab {
+@@ -144,7 +245,12 @@ export default class MainTab {
      const { url } = details;
      logger.debug("newWindow, url: ", url);
 
@@ -381,7 +382,7 @@ index d81135c..e7113c1
 
      if (isFileBrowserUrl(url)) {
        window.close();
-@@ -153,6 +258,10 @@ export default class MainTab {
+@@ -153,6 +259,10 @@ export default class MainTab {
      }
 
      if (isFigmaRunUrl(url)) {
@@ -392,7 +393,7 @@ index d81135c..e7113c1
        if (isFigmaBoardLink(url) || isFigmaDesignLink(url)) {
          window.destroy();
        }
-@@ -172,6 +281,10 @@ export default class MainTab {
+@@ -172,6 +282,10 @@ export default class MainTab {
        `[MainTab] window.open url="${url}" frameName="${details.frameName}" disposition="${details.disposition}" features="${details.features}"`,
      );
 
@@ -403,7 +404,7 @@ index d81135c..e7113c1
      if (url.startsWith("https://accounts.google.com/") && /start_google_sso/.test(url)) {
        return { action: "allow" as const };
      }
-@@ -201,6 +314,8 @@ export default class MainTab {
+@@ -201,6 +315,8 @@ export default class MainTab {
      // eslint-disable-next-line @typescript-eslint/no-explicit-any
      (this.view.webContents as any).on("will-navigate", this.onMainWindowWillNavigate.bind(this));
      // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -415,7 +416,7 @@ index d81135c..e7113c1
 diff --git a/src/main/Ui/Tab.ts b/src/main/Ui/Tab.ts
 old mode 100644
 new mode 100755
-index 0a87bb5..705bd3f
+index 0a87bb5..7502ada
 --- a/src/main/Ui/Tab.ts
 +++ b/src/main/Ui/Tab.ts
 @@ -14,7 +14,8 @@ import { preloadScriptPathDev, preloadScriptPathProd } from "Utils/Main";
@@ -432,15 +433,18 @@ index 0a87bb5..705bd3f
  import { NEW_FILE_TAB_TITLE } from "Const";
  import { dialogs } from "Main/Dialogs";
  import { logger } from "Main/Logger";
-+import { prepareEngineWebContents } from "Main/engineMode";
++import { isMinFigmaEngine, prepareEngineWebContents } from "Main/engineMode";
 
  /** Thumbnail width in device pixels: the card is 280 CSS px wide, so this stays crisp at 2×. */
  const THUMBNAIL_WIDTH = 560;
-@@ -131,11 +133,15 @@ export default class Tab {
+@@ -131,11 +133,18 @@ export default class Tab {
          nodeIntegration: false,
          webgl: true,
          contextIsolation: false,
 +        backgroundThrottling: false,
++        // A hidden native surface can suspend Figma's renderer/worker frames
++        // even with throttling disabled. Offscreen owns an independent surface.
++        offscreen: isMinFigmaEngine(),
          zoomFactor: 1,
          preload: isDev ? preloadScriptPathDev : preloadScriptPathProd,
        },
@@ -452,7 +456,7 @@ index 0a87bb5..705bd3f
 
      app.emit("requestBoundsForTabView", this.windowId);
    }
-@@ -143,6 +149,30 @@ export default class Tab {
+@@ -143,6 +152,30 @@ export default class Tab {
    public updateScale(scale: number) {
      this.view.webContents.setZoomFactor(scale);
    }
@@ -483,7 +487,7 @@ index 0a87bb5..705bd3f
    private onDomReady(_event: Event) {}
    private onDidNavigateInPage(_event: Event, newUrl: string, isMainFrame: boolean) {
      if (!isMainFrame) return;
-@@ -159,9 +189,7 @@ export default class Tab {
+@@ -159,9 +192,7 @@ export default class Tab {
      if (!event.sender || event.sender.isDestroyed()) return;
      const currentUrl = event.sender.getURL();
 
@@ -494,7 +498,7 @@ index 0a87bb5..705bd3f
 
      if (newUrl === currentUrl) {
        event.preventDefault();
-@@ -184,7 +212,7 @@ export default class Tab {
+@@ -184,7 +215,7 @@ export default class Tab {
      const from = parseURL(currentUrl);
      const to = parseURL(newUrl);
 
@@ -503,7 +507,7 @@ index 0a87bb5..705bd3f
        event.preventDefault();
        return;
      }
-@@ -202,11 +230,17 @@ export default class Tab {
+@@ -202,11 +233,17 @@ export default class Tab {
      const url = details.url;
      logger.debug("newWindow, url: ", url);
 
@@ -522,7 +526,7 @@ index 0a87bb5..705bd3f
        app.emit("openUrlInNewTab", url);
        return;
      }
-@@ -280,6 +314,10 @@ export default class Tab {
+@@ -280,6 +317,10 @@ export default class Tab {
        `[Tab ${this.id}] window.open url="${url}" frameName="${details.frameName}" disposition="${details.disposition}" features="${details.features}"`,
      );
 
@@ -533,7 +537,7 @@ index 0a87bb5..705bd3f
      if (isFigmaRunUrl(url)) {
        app.emit("openUrlInNewTab", url);
        return { action: "deny" as const };
-@@ -299,6 +337,7 @@ export default class Tab {
+@@ -299,6 +340,7 @@ export default class Tab {
      (this.view.webContents as any).setWindowOpenHandler(this.windowOpenHandler.bind(this));
      // eslint-disable-next-line @typescript-eslint/no-explicit-any
      (this.view.webContents as any).on("will-navigate", this.onMainWindowWillNavigate.bind(this));

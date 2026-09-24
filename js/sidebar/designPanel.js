@@ -300,7 +300,7 @@ async function runCommand (action, extra, kind) {
   lastResult = null
   const parsed = activeParsed()
   try {
-    const result = await ipc.invoke('figmaBridge:command', action, Object.assign({
+    const result = await designCommand(action, Object.assign({
       nodeId: nodeId,
       fileKey: parsed && parsed.fileKey
     }, extra || {}))
@@ -314,6 +314,17 @@ async function runCommand (action, extra, kind) {
     lastError = err.message || String(err)
   }
   setBusy(false)
+}
+
+function designCommand (action, params) {
+  const ws = workspaceInfo()
+  const tab = selectedTab()
+  const parsed = activeParsed()
+  return ipc.invoke('figmaEngine:command', action, Object.assign({
+    workspaceId: ws.workspaceId,
+    workspacePath: ws.workspacePath,
+    sourceTabId: parsed && parsed.isFigmaFile && tab ? tab.id : undefined
+  }, params))
 }
 
 let exportModalOpen = false
@@ -399,7 +410,7 @@ async function confirmExport () {
       workspacePath: ws.workspacePath,
       dir: exportDir
     })
-    const result = await ipc.invoke('figmaBridge:command', 'export', {
+    const result = await designCommand('export', {
       nodeId: nodeId,
       fileKey: parsed && parsed.fileKey,
       format: exportFormat,
@@ -879,9 +890,6 @@ async function removeVariant (entry, variant, button, workspacePath) {
 async function ensureVariantImage (entry, variant) {
   if (variant.image) return { path: variant.image, cssWidth: variant.cssWidth }
   if (!variant.nodeId) return { error: t('designVariantNoNode', 'Variant has no Figma node — edit the node id first') }
-  if (!connectedToSelected() || !pluginReady()) {
-    return { error: t('designNeedConnect', 'Connect Figma first to export the design') }
-  }
   exportingFor = entry.id + '|' + variant.id
   render(true)
   try {
@@ -893,10 +901,10 @@ async function ensureVariantImage (entry, variant) {
 }
 
 async function exportVariantImage (entry, variant) {
-  const parsed = activeParsed()
-  const result = await ipc.invoke('figmaBridge:command', 'export', {
+  const result = await designCommand('export', {
     nodeId: variant.nodeId,
-    fileKey: parsed && parsed.fileKey,
+    fileKey: entry.fileKey || undefined,
+    figmaUrl: entry.figmaUrl || undefined,
     format: 'PNG',
     scale: 2,
     fileName: entry.name + '-' + variant.label
@@ -963,8 +971,7 @@ async function refreshVariantImage (entry, variant) {
   setBusy(true)
   lastError = null
   try {
-    variant.image = null
-    const image = await ensureVariantImage(entry, variant)
+    const image = await exportVariantImage(entry, variant)
     if (image.error) lastError = image.error
     await refreshSpec()
   } catch (err) {
@@ -979,7 +986,7 @@ async function openImportModal () {
   lastError = null
   try {
     const parsed = activeParsed()
-    const result = await ipc.invoke('figmaBridge:command', 'list-frames', {
+    const result = await designCommand('list-frames', {
       fileKey: parsed && parsed.fileKey
     })
     const payload = result && result.payload

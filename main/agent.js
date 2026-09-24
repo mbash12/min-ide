@@ -1,4 +1,4 @@
-/* global fs, ipc, net, settings, minAgentTools */
+/* global fs, ipc, net, settings, minAgentTools, agentOAuth */
 /* AI sidebar agent: runs a pi SDK (https://pi.dev) AgentSession in the main
 process and streams its events to the renderer over IPC. The renderer's chat
 UI lives in js/sidebar/agentPanel.js.
@@ -16,6 +16,10 @@ share one scope in the concatenated bundle) */
 let sdkPromise = null // memoized dynamic import of the ESM-only pi SDK
 let typeboxPromise = null // TypeBox lives under the pi SDK and is ESM-only
 let modelCatalogCache = null // cached model list (from the pi SDK catalog) for the picker
+let modelCatalogAt = 0
+let modelCatalogLoading = null
+let modelCatalogRevision = 0
+let agentRuntimeRevision = 0
 /* one session per task, keyed by task id, so switching tasks keeps each
 task's own conversation and context. */
 const agentSessions = new Map() // sessionKey -> { sessionKey, taskId, cwd, apiKey, modelId, provider, session, unsubscribe, modelRuntime, resolvedModel }
@@ -64,7 +68,7 @@ const PROVIDER_LABELS = {
   'xiaomi-token-plan-ams': 'Xiaomi MiMo (AMS)',
   'xiaomi-token-plan-sgp': 'Xiaomi MiMo (SGP)'
 }
-const KNOWN_PROVIDERS = Object.keys(PROVIDER_LABELS)
+
 /* built-in pi tools every session gets; also listed by the Pro Settings
 "Tools" tab, so keep both reads off the same list */
 const AGENT_BUILTIN_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']
@@ -80,6 +84,65 @@ const AGENT_BUILTIN_TOOL_FACTORIES = {
 }
 const agentSenders = new Set() // webContents that should receive agent events
 
+function getAgentDataDir () {
+  return require('path').join(require('electron').app.getPath('userData'), 'pi-agent')
+}
+
+function getAgentSkillDirs (cwd) {
+  const pathMod = require('path')
+  return {
+    user: pathMod.join(getAgentDataDir(), 'skills'),
+    project: cwd && fs.existsSync(cwd) && fs.statSync(cwd).isDirectory()
+      ? pathMod.join(cwd, '.pi', 'skills')
+      : null
+  }
+}
+
+/* Share the exact skill sources between sessions and the Tools directory.
+ * The SDK's default resource loader also discovers ~/.agents/skills and
+ * ancestor .agents directories, independently of PI_CODING_AGENT_DIR. Those
+ * belong to other apps; only Min-owned and workspace skills are loaded here. */
+function loadAgentSkills (sdk, cwd) {
+  const dirs = getAgentSkillDirs(cwd)
+  return sdk.loadSkills({
+    cwd: getEffectiveCwd(cwd),
+    agentDir: getAgentDataDir(),
+    skillPaths: Object.values(dirs).filter(function (dir) { return dir && fs.existsSync(dir) }),
+    includeDefaults: false
+  })
+}
+
+async function createAgentResourceLoader (sdk, cwd, settingsManager) {
+  const loader = new sdk.DefaultResourceLoader({
+    cwd: getEffectiveCwd(cwd),
+    agentDir: getAgentDataDir(),
+    settingsManager: settingsManager,
+    // Min supplies its own tools; do not auto-register SDK extensions.
+    noExtensions: true,
+    noSkills: true,
+    skillsOverride: function () { return loadAgentSkills(sdk, cwd) },
+    appendSystemPromptOverride: function (base) {
+      return base.concat([
+        'You are the AI assistant inside Min. Use the tools and skills supplied in this session for this workspace.',
+        'Use the same feature names as Min: Browser (browser), Playbook (playbook), Docs (docs), and Design (design, including Figma and the Build list).',
+        'When asked what is in the Build list (design spec / daftar build), call design with {"action":"spec-list"} before answering. It reads saved entries from the workspace database and works without a Figma connection.',
+        'Describe available capabilities from the current tool definitions and skills, even if earlier chat messages listed different ones.'
+      ].join('\n'))
+    }
+  })
+  await loader.reload()
+  return loader
+}
+
+async function loadMinCustomTools (sdk, cwd, taskId, workspaceId) {
+  try {
+    const Type = await loadTypebox()
+    return minAgentTools.create(sdk.defineTool, Type, cwd || null, taskId, workspaceId)
+  } catch (err) {
+    throw new Error('Min agent tools could not be loaded: ' + ((err && err.message) || String(err)))
+  }
+}
+
 function loadPiSdk () {
   if (!sdkPromise) {
     /* Keep Min's data separate from any pi CLI installed on this machine. The
@@ -88,9 +151,7 @@ function loadPiSdk () {
     Min's own userData makes Min a self-contained app that never reads or writes
     the laptop's ~/.pi. */
     try {
-      const electronApp = require('electron').app
-      const userData = electronApp.getPath('userData')
-      const agentDataDir = require('path').join(userData, 'pi-agent')
+      const agentDataDir = getAgentDataDir()
       process.env.PI_CODING_AGENT_DIR = agentDataDir
       process.env.PI_CODING_AGENT_SESSION_DIR = require('path').join(agentDataDir, 'sessions')
       process.env.PI_PACKAGE_DIR = require('path').join(agentDataDir, 'packages')
@@ -451,17 +512,58 @@ async function installProviderKeys (modelRuntime) {
   return keys
 }
 
+function getAgentAuthFilePath () {
+  try {
+    return require('path').join(require('electron').app.getPath('userData'), 'pi-agent', 'auth.json')
+  } catch (err) {
+    return null
+  }
+}
+
+/* reads the SDK's auth.json once; used to flag which providers already have
+stored credentials (api_key entries are synced from provider_config, oauth
+entries are written by agent-provider-login) */
+function readAgentAuthFile () {
+  const authPath = getAgentAuthFilePath()
+  if (!authPath || !fs.existsSync(authPath)) return {}
+  try {
+    return JSON.parse(fs.readFileSync(authPath, 'utf8')) || {}
+  } catch (err) {
+    return {}
+  }
+}
+
+/* every ModelRuntime gets the same treatment: replicated omp OAuth providers
+registered, then Min's stored provider_config keys installed as runtime keys */
+async function createAgentModelRuntime (options) {
+  options = options || {}
+  const sdk = await loadPiSdk()
+  // Install credentials and OMP adapters before the single catalog refresh.
+  const modelRuntime = await sdk.ModelRuntime.create({
+    refreshOnCreate: false
+  })
+  try {
+    await agentOAuth.installOmpProviders(modelRuntime)
+  } catch (err) {
+    console.warn('failed to install omp provider replicas', err)
+  }
+  await installProviderKeys(modelRuntime)
+  modelRuntime.minCatalogRefresh = await modelRuntime.refresh({
+    allowNetwork: true,
+    force: !!options.force,
+    signal: AbortSignal.timeout(12000)
+  })
+  return modelRuntime
+}
+
 /* mirrors provider_config api keys into the SDK's own auth.json so
 credentials are resolved natively (auth file takes priority over env vars);
 OAuth and other non-api-key entries are preserved untouched */
 function syncProviderAuthFile () {
   try {
-    const agentDataDir = require('path').join(require('electron').app.getPath('userData'), 'pi-agent')
-    const authPath = require('path').join(agentDataDir, 'auth.json')
-    let auth = {}
-    try {
-      auth = JSON.parse(fs.readFileSync(authPath, 'utf-8'))
-    } catch (e) {}
+    const authPath = getAgentAuthFilePath()
+    if (!authPath) return
+    const auth = readAgentAuthFile()
     const keys = getAllProviderKeys()
     // drop api_key entries for providers no longer configured, keep the rest
     Object.keys(auth).forEach(function (provider) {
@@ -475,7 +577,7 @@ function syncProviderAuthFile () {
         auth[provider] = { type: 'api_key', key: keys[provider] }
       }
     })
-    fs.mkdirSync(agentDataDir, { recursive: true })
+    fs.mkdirSync(require('path').dirname(authPath), { recursive: true })
     require('write-file-atomic').sync(authPath, JSON.stringify(auth, null, 2), { mode: 0o600 })
   } catch (err) {
     console.warn('failed to sync provider auth.json', err)
@@ -483,7 +585,16 @@ function syncProviderAuthFile () {
 }
 
 function invalidateModelCatalog () {
-  modelCatalogCache = null
+  modelCatalogAt = 0
+  modelCatalogRevision++
+  broadcastAgentEvent({ type: 'models_changed' })
+}
+
+// Called by ompUpdates.js in the concatenated main bundle.
+function onAgentComponentsUpdated () { // eslint-disable-line no-unused-vars
+  agentOAuth.invalidateBundle()
+  agentRuntimeRevision++
+  invalidateModelCatalog()
 }
 
 /* called by dbService whenever provider_config changes */
@@ -711,7 +822,7 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
 
   const existing = agentSessions.get(sessionKey)
   const livePath = getLiveSessionFile(existing)
-  const sameConfig = !!(existing && existing.apiKey === apiKey && existing.modelId === modelId && existing.provider === provider && existing.cwd === effectiveCwd)
+  const sameConfig = !!(existing && existing.apiKey === apiKey && existing.modelId === modelId && existing.provider === provider && existing.cwd === effectiveCwd && (existing.runtimeRevision === agentRuntimeRevision || existing.session.isStreaming))
   if (
     !options.createNew &&
     sameConfig &&
@@ -725,10 +836,15 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
   if (resolved.invalid) return null
   if (resolved.none) return null
 
+  const customTools = await loadMinCustomTools(sdk, cwd, clientTaskId, toolWorkspaceId)
+  const agentDir = getAgentDataDir()
+  const settingsManager = sdk.SettingsManager.create(effectiveCwd, agentDir)
+  const resourceLoader = await createAgentResourceLoader(sdk, cwd, settingsManager)
+
   await destroySession(sessionKey)
 
-  const modelRuntime = await sdk.ModelRuntime.create()
-  await installProviderKeys(modelRuntime)
+  const runtimeRevision = agentRuntimeRevision
+  const modelRuntime = await createAgentModelRuntime()
 
   let model = null
   const resolvedProvider = provider
@@ -749,19 +865,13 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
     sessionManager = sdk.SessionManager.create(effectiveCwd, sessionDir || undefined)
   }
 
-  const builtinTools = AGENT_BUILTIN_TOOLS
-  let customTools = []
-  try {
-    const Type = await loadTypebox()
-    customTools = minAgentTools.create(sdk.defineTool, Type, cwd || null, clientTaskId, toolWorkspaceId)
-  } catch (err) {
-    console.warn('Min agent custom tools failed to load', err)
-  }
-
   const createOptions = {
     cwd: effectiveCwd,
-    tools: builtinTools.concat(minAgentTools.names(customTools)),
+    agentDir: agentDir,
+    tools: AGENT_BUILTIN_TOOLS.concat(minAgentTools.names(customTools)),
     customTools: customTools,
+    settingsManager: settingsManager,
+    resourceLoader: resourceLoader,
     sessionManager: sessionManager,
     modelRuntime: modelRuntime
   }
@@ -779,6 +889,7 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId) {
     session: session,
     modelRuntime: modelRuntime,
     resolvedModel: model ? (model.provider + '/' + model.id) : null,
+    runtimeRevision: runtimeRevision,
     unsubscribe: session.subscribe(function (event) {
       if (event.type === 'compaction_start') {
         broadcastAgentEvent({ type: 'compaction_start' }, sessionKey, clientTaskId)
@@ -1014,8 +1125,7 @@ ipc.handle('agent-test-key', async function (e, data) {
   /* generic check for the other providers: install the key on a throwaway
   runtime and see whether the SDK accepts it (models become available) */
   try {
-    const sdk = await loadPiSdk()
-    const modelRuntime = await sdk.ModelRuntime.create()
+    const modelRuntime = await createAgentModelRuntime()
     await modelRuntime.setRuntimeApiKey(provider, key)
     const models = await modelRuntime.getAvailable(provider)
     if (models && models.length) {
@@ -1027,33 +1137,155 @@ ipc.handle('agent-test-key', async function (e, data) {
   }
 })
 
-/* the providers the installed SDK actually knows, for the Pro Settings
-"add provider" picker - probed live so it tracks the SDK version */
+/* the providers the runtime actually knows - builtin SDK providers plus the
+registered omp replicas - probed live so the Pro Settings "add provider"
+picker tracks the SDK version and the replica list */
 ipc.handle('agent-list-providers', async function () {
   try {
-    const sdk = await loadPiSdk()
-    const modelRuntime = await sdk.ModelRuntime.create()
-    return KNOWN_PROVIDERS
-      .map(function (id) {
+    const modelRuntime = await createAgentModelRuntime()
+    const stored = readAgentAuthFile()
+    return modelRuntime.getProviders()
+      .map(function (p) {
+        const credential = stored[p.id]
         return {
-          id: id,
-          label: PROVIDER_LABELS[id] || id,
-          models: modelRuntime.getModels(id).length,
-          known: !!modelRuntime.getProvider(id)
+          id: p.id,
+          label: PROVIDER_LABELS[p.id] || agentOAuth.replicaLabels[p.id] || p.name || p.id,
+          models: p.getModels().length,
+          apiKey: !!(p.auth && p.auth.apiKey),
+          oauth: !!(p.auth && p.auth.oauth),
+          authType: credential ? credential.type : null,
+          replica: agentOAuth.replicaIds.indexOf(p.id) !== -1,
+          disabled: isProviderDisabled(p.id)
         }
       })
-      .filter(function (p) { return p.known })
+      .sort(function (a, b) { return a.label.localeCompare(b.label) })
   } catch (err) {
     return []
   }
 })
 
+/* ------------------------------------------------------------------ */
+/* OAuth provider login (builtin SDK flows + omp replicas)              */
+/* ------------------------------------------------------------------ */
+
+const oauthPendingFlows = new Map() // providerId -> AbortController
+const oauthPendingPrompts = new Map() // requestId -> {resolve, reject, sender}
+let oauthPromptSeq = 0
+
+ipc.on('agent-auth-respond', function (e, data) {
+  const pending = oauthPendingPrompts.get(data && data.requestId)
+  if (!pending) return
+  oauthPendingPrompts.delete(data.requestId)
+  if (data && data.cancelled) {
+    pending.reject(new Error('Login cancelled'))
+  } else {
+    pending.resolve(data && data.value !== undefined ? data.value : '')
+  }
+})
+
+/* renderer push: events + prompt requests go to the webContents that started
+the login (the settings webview relays them to its page via postMessage) */
+function oauthSendToSender (sender, payload) {
+  try {
+    if (sender && !sender.isDestroyed()) sender.send('agent-auth-event', payload)
+  } catch (err) {}
+}
+
+ipc.handle('agent-provider-login', async function (e, data) {
+  const providerId = data && data.provider
+  if (!providerId) return { ok: false, message: 'No provider specified.' }
+  if (oauthPendingFlows.has(providerId)) {
+    return { ok: false, message: 'A sign-in is already running for this provider.' }
+  }
+  let modelRuntime
+  try {
+    modelRuntime = await createAgentModelRuntime()
+  } catch (err) {
+    return { ok: false, message: (err && err.message) || String(err) }
+  }
+  const provider = modelRuntime.getProvider(providerId)
+  if (!provider) return { ok: false, message: 'Unknown provider: ' + providerId }
+
+  const abort = new AbortController()
+  oauthPendingFlows.set(providerId, abort)
+  const sender = e.sender
+  const sendEvent = function (payload) {
+    oauthSendToSender(sender, Object.assign({ provider: providerId }, payload))
+  }
+
+  const interaction = {
+    signal: abort.signal,
+    notify: function (event) {
+      /* auth_url events open the provider's sign-in page in a Min tab so the
+      whole flow stays inside the browser the user is already in */
+      if (event && event.type === 'auth_url' && event.url) {
+        agentOAuth.openAuthUrl(event.url)
+      }
+      sendEvent({ type: 'event', event: event })
+    },
+    prompt: function (prompt) {
+      return new Promise(function (resolve, reject) {
+        const requestId = 'auth-' + (++oauthPromptSeq)
+        oauthPendingPrompts.set(requestId, { resolve: resolve, reject: reject, sender: sender })
+        abort.signal.addEventListener('abort', function () {
+          if (oauthPendingPrompts.delete(requestId)) reject(new Error('Login cancelled'))
+        }, { once: true })
+        sendEvent({ type: 'prompt', requestId: requestId, prompt: prompt })
+      })
+    }
+  }
+
+  try {
+    await modelRuntime.login(providerId, 'oauth', interaction)
+    sendEvent({ type: 'done' })
+    /* auth.json changed - a provider that just signed in may expose new
+    models, so the cached catalog is stale now */
+    invalidateModelCatalog()
+    /* credential stays in the main process (auth.json) - only the outcome
+    crosses IPC, never tokens */
+    return { ok: true }
+  } catch (err) {
+    const message = (err && err.message) || String(err)
+    sendEvent({ type: 'error', message: message })
+    return { ok: false, message: message }
+  } finally {
+    oauthPendingFlows.delete(providerId)
+    for (const [requestId, pending] of oauthPendingPrompts) {
+      if (pending.sender === sender) {
+        oauthPendingPrompts.delete(requestId)
+        pending.reject(new Error('Login flow ended'))
+      }
+    }
+  }
+})
+
+ipc.on('agent-provider-login-cancel', function (e, data) {
+  const providerId = data && data.provider
+  const flow = oauthPendingFlows.get(providerId)
+  if (flow) {
+    oauthPendingFlows.delete(providerId)
+    flow.abort()
+  }
+})
+
+ipc.handle('agent-provider-logout', async function (e, data) {
+  const providerId = data && data.provider
+  if (!providerId) return { ok: false, message: 'No provider specified.' }
+  try {
+    const modelRuntime = await createAgentModelRuntime()
+    await modelRuntime.logout(providerId)
+    invalidateModelCatalog()
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, message: (err && err.message) || String(err) }
+  }
+})
+
 /* Pro Settings "Tools" tab: everything a session can use. Builtin tool
 descriptions are probed from the SDK's own tool factories so they track the
-installed version; skills come from the same directories a session scans
-(global <userData>/pi-agent/skills plus <cwd>/.pi/skills). */
+installed version; skills use the same explicit Min/workspace sources as
+sessions (<userData>/pi-agent/skills plus <cwd>/.pi/skills). */
 ipc.handle('agent-list-tools', async function (e, data) {
-  const pathMod = require('path')
   const effectiveCwd = getEffectiveCwd(data && data.cwd)
   const result = {
     ok: true,
@@ -1083,8 +1315,7 @@ ipc.handle('agent-list-tools', async function (e, data) {
   })
 
   try {
-    const Type = await loadTypebox()
-    const customTools = minAgentTools.create(sdk.defineTool, Type, effectiveCwd, null, null)
+    const customTools = await loadMinCustomTools(sdk, data && data.cwd, null, null)
     const actionMap = minAgentTools.actions || {}
     result.custom = customTools.map(function (tool) {
       return {
@@ -1094,69 +1325,111 @@ ipc.handle('agent-list-tools', async function (e, data) {
         actions: actionMap[tool.name] || []
       }
     })
-  } catch (err) {}
 
-  try {
-    const agentDir = pathMod.join(require('electron').app.getPath('userData'), 'pi-agent')
-    result.skillDirs = {
-      user: pathMod.join(agentDir, 'skills'),
-      project: pathMod.join(effectiveCwd, '.pi', 'skills')
-    }
-    if (typeof sdk.loadSkills === 'function') {
-      const loaded = sdk.loadSkills({
-        cwd: effectiveCwd,
-        agentDir: agentDir,
-        skillPaths: [],
-        includeDefaults: true
-      })
-      result.skills = (loaded.skills || []).map(function (skill) {
-        return {
-          name: skill.name,
-          description: skill.description || '',
-          path: skill.filePath,
-          scope: (skill.sourceInfo && skill.sourceInfo.scope) || null,
-          disabled: !!skill.disableModelInvocation
-        }
-      })
-    }
-  } catch (err) {}
+    result.skillDirs = getAgentSkillDirs(data && data.cwd)
+    const loaded = loadAgentSkills(sdk, data && data.cwd)
+    result.skills = (loaded.skills || []).map(function (skill) {
+      return {
+        name: skill.name,
+        description: skill.description || '',
+        path: skill.filePath,
+        scope: (skill.sourceInfo && skill.sourceInfo.scope) || null,
+        disabled: !!skill.disableModelInvocation
+      }
+    })
+  } catch (err) {
+    result.ok = false
+    result.message = (err && err.message) || String(err)
+  }
 
   return result
 })
 
-ipc.handle('agent-fetch-models', async function () {
-  if (modelCatalogCache) {
-    return modelCatalogCache
+function fetchAgentModels (force) {
+  if (!force && modelCatalogCache && Date.now() - modelCatalogAt < 15 * 60 * 1000) {
+    return Promise.resolve({ models: modelCatalogCache, warnings: [] })
   }
-  try {
-    const sdk = await loadPiSdk()
-    const modelRuntime = await sdk.ModelRuntime.create()
-    /* runtime api keys are not persisted to auth.json - the keys stored in
-    the central DB have to be installed on this runtime before asking for the
-    catalog, otherwise getAvailable() reports no providers */
-    await installProviderKeys(modelRuntime)
-    const available = (await modelRuntime.getAvailable()) || []
+  if (modelCatalogLoading) {
+    if ((force && !modelCatalogLoading.force) || modelCatalogLoading.revision !== modelCatalogRevision) {
+      return modelCatalogLoading.promise.catch(function () {}).then(function () { return fetchAgentModels(force) })
+    }
+    return modelCatalogLoading.promise
+  }
+  const revision = modelCatalogRevision
+  const loading = { force: force, revision: revision, promise: null }
+  loading.promise = (async function () {
+    /* createAgentModelRuntime also installs the stored keys and registers
+    the omp replicas so getAvailable() sees every configured provider */
+    const modelRuntime = await createAgentModelRuntime({ force: !!force })
+    /* the no-argument getAvailable() resolves every provider in one
+    Promise.all - a single provider that throws (an expired oauth credential
+    whose refresh endpoint is unreachable, a broken custom wire) would empty
+    the whole catalog, so probe providers independently and keep the ones
+    that answer */
+    const providers = modelRuntime.getProviders() || []
+    const settled = await Promise.allSettled(providers.map(function (p) {
+      return modelRuntime.getAvailable(p.id)
+    }))
+    const available = []
+    const warnings = []
+    const retained = []
+    const refresh = modelRuntime.minCatalogRefresh || {}
+    const failedProviders = new Set(refresh.errors ? Array.from(refresh.errors.keys()) : [])
+    if (refresh.aborted) warnings.push('Network timeout')
+    settled.forEach(function (entry, index) {
+      if (entry.status === 'fulfilled' && entry.value) {
+        available.push.apply(available, entry.value)
+      }
+      const provider = providers[index].id
+      if (entry.status === 'rejected' || failedProviders.has(provider)) {
+        warnings.push(PROVIDER_LABELS[provider] || agentOAuth.replicaLabels[provider] || provider)
+        retained.push.apply(retained, (modelCatalogCache || []).filter(function (model) { return model.provider === provider && !isProviderDisabled(provider) }))
+      }
+    })
+    /* api-key providers drop out of getAvailable() on their own when disabled
+    (no key installed); OAuth credentials live in auth.json so disabled
+    providers are filtered here instead */
     const models = available
+      .filter(function (m) { return !isProviderDisabled(m.provider) })
       .map(function (m) {
         return {
           id: m.id,
           name: m.name || m.id,
           provider: m.provider,
-          providerLabel: PROVIDER_LABELS[m.provider] || m.provider,
+          providerLabel: PROVIDER_LABELS[m.provider] || agentOAuth.replicaLabels[m.provider] || m.provider,
           contextWindow: m.contextWindow || null
         }
       })
-    models.sort(function (a, b) { return (a.provider + '/' + a.id).localeCompare(b.provider + '/' + a.id) })
+    const discovered = new Set(models.map(function (m) { return m.provider + '/' + m.id }))
+    models.push.apply(models, retained.filter(function (m) { return !discovered.has(m.provider + '/' + m.id) }))
+    models.sort(function (a, b) { return (a.provider + '/' + a.id).localeCompare(b.provider + '/' + b.id) })
     modelCatalogCache = models
+    modelCatalogAt = revision === modelCatalogRevision && !warnings.length ? Date.now() : 0
+    return { models: models, warnings: warnings }
+  })().finally(function () { if (modelCatalogLoading === loading) modelCatalogLoading = null })
+  modelCatalogLoading = loading
+  return loading.promise
+}
+
+ipc.handle('agent-fetch-models', async function (e) {
+  registerSender(e.sender)
+  try { return (await fetchAgentModels(false)).models } catch (err) { return modelCatalogCache || [] }
+})
+
+ipc.handle('agent-refresh-models', async function (e) {
+  registerSender(e.sender)
+  try {
+    const result = await fetchAgentModels(true)
+    broadcastAgentEvent({ type: 'models_changed' })
+    return Object.assign({ ok: true }, result)
   } catch (err) {
-    modelCatalogCache = []
+    return { ok: false, models: modelCatalogCache || [], message: err.message || String(err) }
   }
-  return modelCatalogCache
 })
 
 /* a changed provider key means a different catalog - refetch on demand */
 settings.listen('openrouterApiKey', function () {
-  modelCatalogCache = null
+  invalidateModelCatalog()
 })
 
 ipc.handle('agent-get-state', async function (e, data) {

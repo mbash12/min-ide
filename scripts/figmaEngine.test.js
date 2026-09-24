@@ -125,6 +125,66 @@ test('missing login directs the user to the Min tab without a show RPC', async (
   assert.match(result.error, /Min tab/)
 })
 
+test('saved URLs connect on demand and keep exports serialized across file switches', async () => {
+  const { context, bridge } = engineHarness()
+  const calls = []
+  let finishFirst
+  context.figmaEngineEnsureStarted = async () => {}
+  context.figmaEngineRpc = async () => ({ ok: true })
+  context.figmaEngineConnectInner = async opts => {
+    calls.push('connect:' + opts.url)
+    bridge.fileKey = context.figmaParseUrl(opts.url).fileKey
+    bridge.pluginConnected = true
+    return { ok: true }
+  }
+  context.minFigmaBridge.command = async (action, params) => {
+    calls.push('export:' + params.fileKey + ':' + params.nodeId)
+    if (params.fileKey === 'first') await new Promise(resolve => { finishFirst = resolve })
+    return { ok: true }
+  }
+  const first = context.figmaEngineCommand('export', { figmaUrl: 'https://www.figma.com/design/first?node-id=1-2' })
+  const second = context.figmaEngineCommand('export', { figmaUrl: 'https://www.figma.com/design/second?node-id=3-4' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls, ['connect:https://www.figma.com/design/first?node-id=1-2', 'export:first:1:2'])
+  finishFirst()
+  assert.equal((await first).ok, true)
+  assert.equal((await second).ok, true)
+  assert.deepEqual(calls.slice(2), ['connect:https://www.figma.com/design/second?node-id=3-4', 'export:second:3:4'])
+})
+
+test('a stalled export reloads its renderer once, while invalid nodes are not retried', async () => {
+  const { context, bridge } = engineHarness()
+  bridge.fileKey = 'target'
+  bridge.pluginConnected = true
+  const calls = []
+  context.figmaEngineEnsureStarted = async () => {}
+  context.figmaEngineRpc = async method => { calls.push(method); return { ok: true } }
+  context.figmaEngineConnectInner = async () => { calls.push('connect'); return { ok: true } }
+  let commands = 0
+  context.minFigmaBridge.command = async () => {
+    commands++
+    return commands === 1 ? { ok: false, error: 'export render timed out after 90s' } : { ok: true }
+  }
+  assert.equal((await context.figmaEngineCommand('export', { fileKey: 'target' })).ok, true)
+  assert.equal(commands, 2)
+  assert.deepEqual(calls, ['ensureRuntime', 'ensureRuntime', 'reloadFile', 'connect'])
+  calls.length = 0
+  context.minFigmaBridge.command = async () => ({ ok: false, error: 'Node 9:9 was not found in this file' })
+  const result = await context.figmaEngineCommand('export', { fileKey: 'target', nodeId: '9:9' })
+  assert.equal(result.ok, false)
+  assert.deepEqual(calls, ['ensureRuntime'])
+})
+
+test('ambiguous workspace context cannot silently export another workspace file', async () => {
+  const { context } = engineHarness()
+  context.figmaEngineContext = { fileKey: 'other', workspaceId: 'other' }
+  const result = await context.figmaEngineCommand('export', { workspaceId: 'this' })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /this workspace/)
+  const mismatch = await context.figmaEngineCommand('export', { fileKey: 'a', figmaUrl: 'https://www.figma.com/design/b' })
+  assert.match(mismatch.error, /different files/)
+})
+
 test('hidden plugin UI executes commands over WebSocket and falls back to HTTP', async () => {
   const messages = []
   const requests = []
@@ -172,6 +232,16 @@ test('hidden plugin UI executes commands over WebSocket and falls back to HTTP',
   assert.equal(body.fileKey, 'target')
   assert.equal(body.nodeId, frame.id)
   assert.equal(Buffer.from(body.dataBase64, 'base64').toString(), 'rendered PNG')
+  assert.equal(body.pngBase64, undefined, 'avoid duplicating large PNG uploads')
+  frame.width = 100000
+  frame.height = 50000
+  let rasterScale
+  frame.exportAsync = async options => { rasterScale = options.constraint.value; return Buffer.from('PNG') }
+  await context.runBridgeCommand({ id: 'huge', action: 'export', nodeId: frame.id, scale: 2 }, false)
+  assert.ok(frame.width * rasterScale <= 16000)
+  assert.ok(frame.width * frame.height * rasterScale ** 2 <= 64 * 1024 * 1024 + 1)
+  frame.width = 100
+  frame.height = 80
 
   // Messy grouping: an overflowing text layer is nested under an unrelated
   // group. Geometry, visibility, export scale, and clipping decide candidates.
@@ -244,7 +314,7 @@ async function bridgeHarness (t) {
     t.after(() => socket.terminate())
     return socket
   }
-  return { context, connect }
+  return { context, connect, port }
 }
 
 test('commands queued during HTTP to WebSocket handoff are delivered once', async t => {
@@ -282,4 +352,40 @@ test('commands that timed out cannot run later when a plugin connects', async t 
   await once(socket, 'open')
   assert.equal(context.minFigmaBridge.status().pendingCommands, 0)
   assert.equal(context.minFigmaBridge.status().jobs[0].state, 'error')
+})
+
+test('HTTP polling is file-specific and expired uploads cannot create files', async t => {
+  const { context, port } = await bridgeHarness(t)
+  const headers = { 'x-min-figma-bridge': 'min-figma-bridge-local', 'content-type': 'application/json' }
+  const pending = context.minFigmaBridge.command('rescan', { fileKey: 'target' })
+  const base = 'http://127.0.0.1:' + port
+  const wrong = await fetch(base + '/command/poll?fileKey=other', { headers })
+  const wrongBody = await wrong.json()
+  assert.equal(wrongBody.command, null)
+  assert.equal(context.minFigmaBridge.status().queueDepth, 1)
+  const right = await fetch(base + '/command/poll?fileKey=target', { headers })
+  const command = (await right.json()).command
+  assert.equal(command.fileKey, 'target')
+  await fetch(base + '/command/result', { method: 'POST', headers, body: JSON.stringify({ id: command.id, ok: true }) })
+  assert.equal((await pending).ok, true)
+  const late = await fetch(base + '/export', { method: 'POST', headers, body: JSON.stringify({ id: command.id, dataBase64: 'c3RhbGU=' }) })
+  assert.equal(late.status, 409)
+})
+
+test('switching files discards the old heartbeat and anonymous socket', async t => {
+  const { context, connect } = await bridgeHarness(t)
+  const old = connect()
+  await once(old, 'open')
+  context.minFigmaBridge.setFileKey('old')
+  assert.equal(context.minFigmaBridge.status().pluginConnected, true)
+  context.minFigmaBridge.resetPlugin()
+  assert.equal(context.minFigmaBridge.status().pluginConnected, false)
+  assert.equal(context.minFigmaBridge.status().fileKey, null)
+  assert.equal(context.minFigmaBridge.status().lastSeen, null)
+  const result = context.minFigmaBridge.command('node-data', { fileKey: 'next' })
+  const next = connect('next')
+  const [data] = await once(next, 'message')
+  const command = JSON.parse(data)
+  next.send(JSON.stringify({ type: 'result', id: command.id, ok: true }))
+  assert.equal((await result).ok, true)
 })

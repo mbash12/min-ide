@@ -18,6 +18,7 @@ var figmaEngineContext = null
 var figmaEngineStarting = null
 var figmaEngineStopping = null
 var figmaEngineConnecting = null
+var figmaEngineOperations = Promise.resolve()
 var figmaEngineControlReady = false
 var figmaEngineWindowVisible = false
 var figmaEnginePhase = 'stopped'
@@ -397,7 +398,7 @@ async function figmaEngineEnsureStarted () {
     }
     await figmaEngineSpawn()
     var engine = await figmaEngineWaitReady()
-    if (!engine.backgroundRuntime) {
+    if (!engine.backgroundRuntime || !engine.offscreenRendering) {
       throw new Error('Rebuild the Figma engine with the background runtime patches (vendor/figma-linux-next: bun run build).')
     }
     figmaEngineControlReady = true
@@ -554,19 +555,80 @@ async function figmaEngineWaitPlugin (fileKey, timeoutMs) {
   }
 }
 
+function figmaEngineEnqueue (operation) {
+  var run = figmaEngineOperations.catch(function () {}).then(operation)
+  figmaEngineOperations = run.catch(function () {})
+  return run
+}
+
 function figmaEngineConnect (opts) {
-  // Serialize connect pipelines: a second Connect click or the auto-resume
-  // after login redeem must not race an in-flight connect — both mutate the
-  // shared context/phase and would interleave engine RPCs.
-  var previous = figmaEngineConnecting || Promise.resolve()
-  var run = previous
-    .catch(function () {})
-    .then(function () { return figmaEngineConnectInner(opts) })
+  // File switches and plugin commands share one lane. A second export must
+  // not spend its timeout waiting behind the first inside the plugin.
+  var run = figmaEngineEnqueue(function () { return figmaEngineConnectInner(opts) })
     .finally(function () {
       if (figmaEngineConnecting === run) figmaEngineConnecting = null
     })
   figmaEngineConnecting = run
   return run
+}
+
+function figmaEngineCommand (action, params) {
+  params = Object.assign({}, params)
+  var context = figmaEngineContext || {}
+  var source = figmaParseUrl(params.figmaUrl || '')
+  var fileKey = params.fileKey || source.fileKey || context.fileKey
+  if (!fileKey || !/^[A-Za-z0-9]+$/.test(fileKey)) {
+    return Promise.resolve({ ok: false, error: 'Choose a Figma file in Design or save its URL in the Build list first.' })
+  }
+  var differentWorkspace = (params.workspaceId && context.workspaceId && params.workspaceId !== context.workspaceId) ||
+    (params.workspacePath && context.workspacePath && path.resolve(params.workspacePath) !== path.resolve(context.workspacePath))
+  if (differentWorkspace && !params.fileKey && !source.fileKey) {
+    return Promise.resolve({ ok: false, error: 'Connect a Figma file for this workspace in Design first.' })
+  }
+  if (source.fileKey && source.fileKey !== fileKey) {
+    return Promise.resolve({ ok: false, error: 'The Figma URL and file key refer to different files.' })
+  }
+  var target = {
+    url: source.fileKey ? source.url : (context.fileKey === fileKey ? context.url : 'https://www.figma.com/design/' + fileKey),
+    tabId: params.sourceTabId || (context.fileKey === fileKey ? context.tabId : null),
+    workspaceId: params.workspaceId || context.workspaceId,
+    workspacePath: params.workspacePath || context.workspacePath
+  }
+  params.fileKey = fileKey
+  if (!params.nodeId) params.nodeId = source.nodeId || (context.fileKey === fileKey ? context.nodeId : undefined)
+  if (!params.exportDir) params.exportDir = figmaEngineGetExportPrefs(target.workspacePath).effective || undefined
+  return figmaEngineEnqueue(async function () {
+    try {
+      for (var attempt = 0; attempt < 2; attempt++) {
+        await figmaEngineEnsureStarted()
+        var runtime = await figmaEngineRpc('ensureRuntime', { fileKey: fileKey }).catch(function () { return null })
+        if (!runtime || !runtime.ok || !figmaEnginePluginReady(fileKey) || attempt > 0) {
+          if (attempt > 0) {
+            // A timed-out exportAsync cannot be cancelled inside the plugin.
+            // Reload its renderer before retrying so the old VM cannot race it.
+            var reloaded = await figmaEngineRpc('reloadFile', { fileKey: fileKey })
+            if (!reloaded || (!reloaded.ok && !reloaded.missing)) throw new Error((reloaded && reloaded.error) || 'Could not restart the Figma renderer')
+          }
+          var connected = await figmaEngineConnectInner(target)
+          if (!connected || !connected.ok) return connected
+        }
+        try {
+          var result = await minFigmaBridge.command(action, params)
+          if (!result || result.ok !== false || !figmaEngineRetryableError(result.error)) return result
+          if (attempt > 0) return result
+        } catch (err) {
+          if (attempt > 0 || !figmaEngineRetryableError(err.message)) throw err
+        }
+        figmaEngineEmitPhase('loading-tab', { fileKey: fileKey })
+      }
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) }
+    }
+  })
+}
+
+function figmaEngineRetryableError (message) {
+  return /socket closed|plugin reloaded|plugin timed out|export (render|page switch|node lookup) timed out|exceeded \d+s inside the plugin/i.test(String(message || ''))
 }
 
 async function figmaEngineConnectInner (opts) {
@@ -628,6 +690,7 @@ async function figmaEngineConnectInner (opts) {
     }
   }
 
+  var previousFileKey = minFigmaBridge.status().fileKey
   figmaEngineEmitPhase('opening-tab', { fileKey: parsed.fileKey })
   await figmaEngineRpc('openUrl', { url: parsed.url })
   try {
@@ -649,6 +712,7 @@ async function figmaEngineConnectInner (opts) {
   }
   figmaEngineEmitPhase('loading-tab', { fileKey: parsed.fileKey })
   await figmaEngineWaitFile(parsed)
+  if (previousFileKey && previousFileKey !== parsed.fileKey) minFigmaBridge.resetPlugin()
   figmaEngineEmitPhase('loading-plugin', { fileKey: parsed.fileKey })
   var plugin = await figmaEngineWaitPlugin(parsed.fileKey)
 
@@ -820,7 +884,9 @@ function figmaEngineSyncTabUrl (tabId, url) {
       figmaEngineContext.ready = false
       figmaEngineContext.pluginOk = false
       figmaEngineEmitPhase('loading-plugin', { fileKey: figmaEngineContext.fileKey })
-      figmaEngineWaitPlugin(figmaEngineContext.fileKey).then(function (plugin) {
+      var expectedFileKey = figmaEngineContext.fileKey
+      figmaEngineEnqueue(function () { return figmaEngineWaitPlugin(expectedFileKey) }).then(function (plugin) {
+        if (!figmaEngineContext || figmaEngineContext.fileKey !== expectedFileKey) return
         if (!figmaEngineContext || !figmaEnginePluginReady(figmaEngineContext.fileKey)) return
         figmaEngineContext.syncing = false
         figmaEngineContext.ready = !!(plugin && plugin.ok)
@@ -834,37 +900,11 @@ function figmaEngineSyncTabUrl (tabId, url) {
 
 function figmaEngineSyncEngineFile (parsed) {
   var tabId = figmaEngineContext && figmaEngineContext.tabId
-  figmaEngineRpc('openUrl', { url: parsed.url }).catch(function () {})
-  figmaEngineEmitPhase('loading-tab', { fileKey: parsed.fileKey })
-  figmaEngineWaitFile(parsed).then(function () {
-    if (!figmaEngineContext ||
-        String(figmaEngineContext.tabId) !== String(tabId) ||
-        figmaEngineContext.fileKey !== parsed.fileKey ||
-        figmaEngineContext.syncing === false) {
-      return
-    }
-    figmaEngineEmitPhase('loading-plugin', { fileKey: parsed.fileKey })
-    return figmaEngineWaitPlugin(parsed.fileKey).then(function (plugin) {
-      if (!figmaEngineContext ||
-          String(figmaEngineContext.tabId) !== String(tabId) ||
-          figmaEngineContext.fileKey !== parsed.fileKey ||
-          figmaEngineContext.syncing === false) {
-        return
-      }
-      if (plugin && plugin.ok && minFigmaBridge.status().fileKey === parsed.fileKey) {
-        figmaEngineContext.syncing = false
-        figmaEngineContext.ready = true
-        figmaEngineContext.pluginOk = true
-        figmaEngineEmitPhase('connected', { fileKey: parsed.fileKey })
-      } else {
-        figmaEngineContext.syncing = false
-        figmaEngineContext.ready = false
-        figmaEngineContext.pluginOk = false
-        figmaEngineEmitPhase('error', {
-          error: plugin && plugin.error ? plugin.error : 'plugin did not connect'
-        })
-      }
-    })
+  return figmaEngineConnect({
+    url: parsed.url,
+    tabId: tabId,
+    workspaceId: figmaEngineContext && figmaEngineContext.workspaceId,
+    workspacePath: figmaEngineContext && figmaEngineContext.workspacePath
   }).catch(function (err) {
     if (!figmaEngineContext ||
         String(figmaEngineContext.tabId) !== String(tabId) ||
@@ -1008,6 +1048,10 @@ ipc.handle('figmaEngine:connect', async function (e, opts) {
   }
 })
 
+ipc.handle('figmaEngine:command', function (e, action, params) {
+  return figmaEngineCommand(action, params)
+})
+
 ipc.handle('figmaEngine:connectActive', async function () {
   try {
     return await figmaEngineConnectActive()
@@ -1090,6 +1134,7 @@ var minFigmaEngine = {
   parseUrl: figmaParseUrl,
   status: figmaEnginePublicStatus,
   connect: figmaEngineConnect,
+  command: figmaEngineCommand,
   disconnect: figmaEngineDisconnect,
   redeemAuth: figmaEngineRedeemAuth,
   context: function () { return figmaEngineContext },
