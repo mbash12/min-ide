@@ -1,0 +1,250 @@
+/* === Git panel: VSCode-like composition refinements === */
+
+/* Top title + action bar (like VSCode Source Control title) */
+.git-title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 6px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+body.dark-mode .git-title-bar {
+  border-bottom-color: rgba(255,255,255,0.06);
+}
+.git-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.9;
+  flex: 1;
+}
+.git-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.git-title-actions .git-icon-button {
+  width: 22px;
+  height: 22px;
+  font-size: 16px !important;
+}
+
+/* Repo / Branches section */
+.git-repo-section .git-branch-list {
+  max-height: 160px;
+  overflow-y: auto;
+}
+.git-branch-item {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px 0 20px;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.git-branch-item:hover {
+  background: rgba(0,0,0,0.06);
+}
+body.dark-mode .git-branch-item:hover {
+  background: rgba(255,255,255,0.08);
+}
+.git-branch-item.current {
+  background: rgba(14,99,156,0.12);
+  font-weight: 600;
+}
+body.dark-mode .git-branch-item.current {
+  background: rgba(14,99,156,0.25);
+}
+.git-branch-item .codicon-git-branch {
+  font-size: 14px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.git-branch-item.current .codicon-git-branch {
+  color: #0e639c;
+  opacity: 1;
+}
+.git-branch-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.git-branch-meta {
+  font-size: 11px;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+.git-branch-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.git-branch-item:hover .git-branch-actions {
+  opacity: 1;
+}
+.git-branch-action-btn {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  font-size: 12px !important;
+  padding: 0;
+}
+.git-branch-action-btn:hover {
+  opacity: 1;
+  background: rgba(128,128,128,0.2);
+}
+
+/* Graph section */
+.git-graph {
+  padding: 0;
+  font-family: 'Cascadia Code', 'Fira Code', 'Droid Sans Mono', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow: hidden;
+}
+.git-graph-container {
+  max-height: 200px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+}
+.git-graph-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 8px 0 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.git-graph-row:hover {
+  background: rgba(0,0,0,0.06);
+}
+body.dark-mode .git-graph-row:hover {
+  background: rgba(255,255,255,0.08);
+}
+.git-graph-row.expanded {
+  background: rgba(0,0,0,0.07);
+}
+body.dark-mode .git-graph-row.expanded {
+  background: rgba(255,255,255,0.1);
+}
+.git-graph-lane {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  min-width: 16px;
+  height: 20px;
+  line-height: 0;
+}
+.git-graph-lane-svg {
+  flex-shrink: 0;
+  display: block;
+}
+.git-graph-hash {
+  font-size: 11px;
+  opacity: 0.5;
+  flex-shrink: 0;
+  width: 52px;
+}
+.git-graph-refs {
+  opacity: 0.6;
+  margin-left: 6px;
+  font-size: 10px;
+}
+.git-graph-message {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.git-graph-author {
+  font-size: 11px;
+  opacity: 0.5;
+  flex-shrink: 0;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-graph-date {
+  font-size: 10px;
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+.git-graph-empty {
+  padding: 8px 12px;
+  font-size: 11px;
+  opacity: 0.5;
+  font-style: italic;
+}
+
+/* commit detail + diff viewer (expanded graph row) */
+.git-graph-detail {
+  padding: 4px 10px 6px 16px;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+  background: rgba(0,0,0,0.02);
+}
+body.dark-mode .git-graph-detail {
+  border-bottom-color: rgba(255,255,255,0.05);
+  background: rgba(255,255,255,0.02);
+}
+.git-graph-detail-message {
+  font-size: 12px;
+  margin-top: 2px;
+  word-break: break-word;
+}
+/* files touched by a commit, listed inside its expanded graph row */
+.git-commit-files {
+  margin-top: 6px;
+}
+.git-commit-files-empty {
+  padding: 4px 0;
+  opacity: 0.5;
+  font-style: italic;
+  font-size: 11px;
+}
+
+/* Harmonized typography across sidebar */
+.sidebar-panel {
+  font-size: 13px;
+  line-height: 1.4;
+}
+.sidebar-panel .file-tree-label,
+.sidebar-panel .git-branch-name,
+.sidebar-panel .git-file-label {
+  font-size: 13px;
+  line-height: 1.4;
+}
+.git-commit-input {
+  font-size: 13px;
+}
+.git-section-header {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.git-root-label,
+.git-sync-info,
+.git-branch-meta,
+.git-graph-date {
+  font-size: 11px;
+}

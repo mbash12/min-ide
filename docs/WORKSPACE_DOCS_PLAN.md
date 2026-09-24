@@ -84,7 +84,7 @@ The first version should be reliable and pleasant for personal use, without coll
   - replace the `httptester` tab identifier with `docs`;
   - keep Docs available for folderless workspaces, since storage is keyed by workspace ID rather than workspace path.
 - Rename localization from `sidebarHttpTester` to `sidebarDocs` and add strings for empty, create, rename, delete, save, and error states.
-- Add focused Docs styles to `css/sidebar.css` or a small `css/docs.css` included by the existing page.
+- Add focused Docs styles to `css/sidebar/contentPanels.css`, included by the browser stylesheet build.
 
 ### 2. Add workspace-scoped document persistence
 

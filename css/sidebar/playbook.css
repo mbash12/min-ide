@@ -1,0 +1,143 @@
+/* Playbook panel */
+
+#sidebar-panel-playbook {
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+#sidebar-panel-playbook.active {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.playbook-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.playbook-row {
+  padding: 8px 8px 8px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+}
+body.dark-mode .playbook-row {
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+.playbook-row:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+.playbook-row.running {
+  background: rgba(14, 99, 156, 0.08);
+}
+.playbook-row.error .playbook-meta {
+  color: #f85149;
+}
+.playbook-row-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.playbook-row-main > .codicon {
+  margin-top: 2px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.playbook-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.playbook-name {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playbook-meta,
+.playbook-progress {
+  font-size: 11px;
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.playbook-progress {
+  opacity: 0.85;
+}
+.playbook-repeat {
+  width: 38px;
+  padding: 2px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 3px;
+  font-size: 11px;
+}
+.playbook-result {
+  display: block;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.playbook-result.passed { color: #26834a; }
+.playbook-result.failed { color: #c42b1c; }
+body.dark-mode .playbook-result.passed { color: #73c991; }
+body.dark-mode .playbook-result.failed { color: #f48771; }
+.playbook-result:hover { text-decoration: underline; }
+.playbook-row:focus-within .playbook-row-actions { opacity: 1; }
+.playbook-row-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  opacity: 0;
+}
+.playbook-row:hover .playbook-row-actions,
+.playbook-row.running .playbook-row-actions {
+  opacity: 1;
+}
+.playbook-detail {
+  margin: 6px 0 2px 22px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.08);
+  font-size: 14px;
+  line-height: 1.45;
+  opacity: 0.85;
+}
+.playbook-step {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playbook-step.active {
+  font-weight: 600;
+  opacity: 1;
+}
+
+/* activity bar badge (like VSCode's SCM count) */
+.activity-bar-tab { position: relative; }
+.activity-bar-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: #007acc;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  box-sizing: border-box;
+  pointer-events: none;
+}

@@ -245,7 +245,7 @@ Real PTY.
 - Persistence lintas restart: cwd ikut di URL tab, shell **baru** di-spawn di cwd terakhir (`main/terminal.js:41-61`) — sesuai "tidak perlu resume process".
 
 ### Sidebar (§18)
-Activity bar + panel, bisa di-hide total (`js/sidebar.js:138-144`, `css/sidebar.css:19-20`). Panel **mendorong** konten, bukan overlay (`js/sidebar.js:99-123` → `webviews.adjustMargin`). Hanya satu panel aktif. State persisten per workspace dan activity terakhir kembali saat di-show ulang (`js/sidebar.js:178-221`).
+Activity bar + panel, bisa di-hide total (`js/sidebar.js:138-144`, `css/sidebar/layout.css:19-20`). Panel **mendorong** konten, bukan overlay (`js/sidebar.js:99-123` → `webviews.adjustMargin`). Hanya satu panel aktif. State persisten per workspace dan activity terakhir kembali saat di-show ulang (`js/sidebar.js:178-221`).
 
 ### Cross-workspace browser control isolation (§26)
 **Benar-benar ditegakkan**, bukan sekadar niat:

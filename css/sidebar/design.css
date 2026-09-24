@@ -1,0 +1,333 @@
+/* Design panel */
+
+#sidebar-panel-design {
+  position: relative;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+#sidebar-panel-design.active {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.design-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 10px 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.design-header {
+  gap: 8px;
+}
+.design-header .file-tree-title {
+  flex: 0 0 auto;
+}
+.design-status {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 9px;
+  border: 1px solid rgba(127, 127, 127, 0.18);
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.06);
+}
+.design-status-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.design-ind {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.design-ind .codicon {
+  font-size: 13px;
+  opacity: 0.85;
+}
+.design-ind.state-off .codicon {
+  opacity: 0.35;
+}
+.design-ind-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(127, 127, 127, 0.5);
+}
+.design-ind.state-on .design-ind-dot { background: #3fb950; }
+.design-ind.state-warn .design-ind-dot { background: #d29922; }
+.design-ind.state-busy .design-ind-dot { background: #58a6ff; }
+.design-status-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-status-file {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.design-status-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.55;
+}
+.design-status-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.75;
+}
+.design-status-node {
+  flex-shrink: 1;
+  min-width: 0;
+  font-family: monospace;
+  font-size: 10px;
+  opacity: 0.55;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-status-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.design-connect-btn {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 8px;
+  margin-right: 2px;
+  border-radius: 4px;
+  border: 1px solid #0e639c;
+  background: #0e639c;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.design-connect-btn:hover {
+  background: #1177bb;
+  border-color: #1177bb;
+}
+.design-connect-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.design-header .git-icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.design-header .git-icon-button:disabled:hover {
+  opacity: 0.35;
+  background: transparent;
+}
+.design-error {
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.08);
+}
+.design-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+  padding: 0 2px 4px;
+}
+.design-result-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+.design-result-tab {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.55;
+}
+.design-result-tab:hover { opacity: 0.85; }
+.design-result-tab.active {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.16);
+  font-weight: 600;
+}
+.design-output {
+  margin: 0;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+  background: rgba(127, 127, 127, 0.08);
+  border-radius: 4px;
+}
+
+/* Export modal — stays inside the sidebar so it never covers the webview. */
+.design-modal-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 48px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.design-modal {
+  width: min(92%, 320px);
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--color-bg, #1e1f22);
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.design-modal-title {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.design-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.design-modal-head .design-modal-title {
+  flex: 1;
+}
+.design-result-modal {
+  width: min(96%, 420px);
+  max-height: 80%;
+}
+.design-modal-output {
+  margin: 0;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.2);
+  background: rgba(0, 0, 0, 0.2);
+  overflow: auto;
+  flex: 1;
+  min-height: 120px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.design-modal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.design-modal-label {
+  flex: none;
+  width: 52px;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.design-modal-select {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: var(--color-bg, #1e1f22);
+  color: inherit;
+}
+
+.design-modal-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: var(--color-bg, #1e1f22);
+  color: inherit;
+}
+
+.design-modal-browse {
+  flex: none;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: rgba(127, 127, 127, 0.12);
+  color: inherit;
+  cursor: pointer;
+}
+
+.design-modal-browse:hover {
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.design-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.design-modal-btn {
+  font-size: 11px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: rgba(127, 127, 127, 0.12);
+  color: inherit;
+  cursor: pointer;
+}
+
+.design-modal-btn:hover {
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.design-modal-btn.primary {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.design-modal-btn.primary:hover {
+  background: #2f6fe0;
+}
+
+.design-modal-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

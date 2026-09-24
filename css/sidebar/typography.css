@@ -1,0 +1,131 @@
+#sidebar .sidebar-panel,
+.agent-popover {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+#sidebar .sidebar-panel-placeholder,
+#sidebar .file-tree-row,
+#sidebar .file-tree-edit-input,
+#sidebar .file-tree-search-input,
+#sidebar .git-branch-row,
+#sidebar .git-file-row,
+#sidebar .git-branch-item,
+#sidebar .git-branch-name,
+#sidebar .git-commit-input,
+#sidebar .playbook-name,
+#sidebar .playbook-detail,
+#sidebar .playbook-step,
+#sidebar .agent-history-search,
+#sidebar .agent-message,
+#sidebar .agent-message-user,
+#sidebar .agent-message-user *,
+#sidebar .agent-input,
+#sidebar .agent-popover-search,
+#sidebar .agent-popover-item,
+#sidebar .agent-popover-item-name,
+#sidebar .agent-slash-item,
+#sidebar .agent-slash-item span,
+#sidebar .agent-context-compact,
+#sidebar .design-status-label {
+  font-size: 14px;
+}
+
+#sidebar .file-tree-title,
+#sidebar .design-section-label,
+#sidebar .design-result-tab,
+#sidebar .design-modal-title,
+#sidebar .sidebar-prompt-modal .modal-title {
+  font-size: 13px;
+}
+
+#sidebar .sidebar-prompt-modal .ws-modal-field input,
+#sidebar .file-tree-empty,
+#sidebar .file-tree-error,
+#sidebar #app-prompt-ok,
+#sidebar #app-prompt-cancel,
+#sidebar .git-commit-button,
+#sidebar .git-action-button,
+#sidebar .design-connect-btn,
+#sidebar .design-error,
+#sidebar .design-modal-select,
+#sidebar .design-modal-input,
+#sidebar .design-modal-browse,
+#sidebar .design-modal-btn,
+#sidebar .agent-history-empty,
+#sidebar .agent-work-row,
+#sidebar .agent-work-row span,
+#sidebar .agent-work-toggle,
+#sidebar .agent-work-toggle span,
+#sidebar .agent-thinking,
+#sidebar .agent-error-line,
+#sidebar .agent-slash-note,
+.agent-popover-empty {
+  font-size: 13px;
+}
+
+#sidebar .sidebar-prompt-modal .ws-modal-field label,
+#sidebar .git-sync-info,
+#sidebar .git-root-label,
+#sidebar .git-branch-meta,
+#sidebar .git-status-badge,
+#sidebar .git-graph,
+#sidebar .git-graph-hash,
+#sidebar .git-graph-refs,
+#sidebar .git-graph-author,
+#sidebar .git-graph-date,
+#sidebar .git-section-empty,
+#sidebar .git-graph-empty,
+#sidebar .git-commit-files-empty,
+#sidebar .playbook-meta,
+#sidebar .playbook-progress,
+#sidebar .design-status-file,
+#sidebar .design-output,
+#sidebar .design-modal-label,
+#sidebar .agent-history-item-meta,
+#sidebar .agent-history-item-meta *,
+.agent-context-pop-stats,
+.agent-context-pop-stats *,
+.agent-popover-item-sub,
+#sidebar .agent-slash-item-hint {
+  font-size: 12px;
+}
+
+#sidebar .agent-history-item-title,
+#sidebar .agent-history-item-title *,
+#sidebar .agent-md,
+#sidebar .agent-md * {
+  font-size: 14px;
+}
+#sidebar .agent-md h1 { font-size: 18px; }
+#sidebar .agent-md h2 { font-size: 16px; }
+#sidebar .agent-md h3 { font-size: 15px; }
+#sidebar .agent-md h4,
+#sidebar .agent-md h5,
+#sidebar .agent-md h6 { font-size: 14px; }
+#sidebar .agent-md :not(pre) > code,
+#sidebar .agent-md pre,
+#sidebar .agent-md pre code,
+#sidebar .agent-md th,
+#sidebar .agent-md td { font-size: 13px !important; }
+#sidebar .agent-md-code-lang { font-size: 12px !important; }
+#sidebar .agent-pill,
+#sidebar .agent-pill-label,
+#sidebar .agent-context-pop-title,
+#sidebar .agent-context-pop-title * {
+  font-size: 14px;
+}
+#sidebar .agent-slash-item .codicon { font-size: 15px !important; }
+
+.agent-popover-search,
+.agent-popover-item,
+.agent-popover-item-name,
+.agent-context-compact,
+.agent-context-pop-title,
+.agent-context-pop-title * {
+  font-size: 14px;
+}
+.agent-popover-thinking .agent-popover-item,
+.agent-popover-thinking .agent-popover-item * {
+  font-size: 14px;
+}
