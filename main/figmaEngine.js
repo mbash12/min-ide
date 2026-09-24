@@ -17,6 +17,7 @@ var figmaEngineChild = null
 var figmaEngineContext = null
 var figmaEngineStarting = null
 var figmaEngineStopping = null
+var figmaEngineLifecycleGeneration = 0
 var figmaEngineConnecting = null
 var figmaEngineOperations = Promise.resolve()
 var figmaEngineControlReady = false
@@ -342,6 +343,7 @@ function figmaEngineSpawn () {
 }
 
 function figmaEngineStopNow () {
+  figmaEngineLifecycleGeneration++
   var child = figmaEngineChild
   figmaEngineChild = null
   figmaEngineControlReady = false
@@ -352,6 +354,7 @@ function figmaEngineStopNow () {
 }
 
 function figmaEngineStop () {
+  figmaEngineLifecycleGeneration++
   figmaEngineControlReady = false
   figmaEngineContext = null
   figmaEngineWindowVisible = false
@@ -386,25 +389,37 @@ function figmaEngineStop () {
 async function figmaEngineEnsureStarted () {
   if (figmaEngineChild && !figmaEngineChild.killed && figmaEngineControlReady) return Promise.resolve()
   if (figmaEngineStarting) return figmaEngineStarting
+  var lifecycleGeneration = figmaEngineLifecycleGeneration
+  function assertLifecycleCurrent () {
+    if (lifecycleGeneration !== figmaEngineLifecycleGeneration) {
+      throw new Error('Figma engine startup cancelled')
+    }
+  }
   figmaEngineStarting = (async function () {
     figmaEngineEmitPhase('loading-engine', {})
     if (figmaEngineStopping) await figmaEngineStopping
     await minFigmaBridge.start()
+    assertLifecycleCurrent()
     if (!figmaEngineChild) {
       // A stale engine from a crashed Min session may still hold the control
       // port. A new spawn would die with EADDRINUSE and the panel would see a
       // fake "stopped". Clear the port owner before spawning.
       await figmaEngineClearStaleEngine()
+      assertLifecycleCurrent()
     }
     await figmaEngineSpawn()
+    assertLifecycleCurrent()
     var engine = await figmaEngineWaitReady()
+    assertLifecycleCurrent()
     if (!engine.backgroundRuntime || !engine.offscreenRendering) {
       throw new Error('Rebuild the Figma engine with the background runtime patches (vendor/figma-linux-next: bun run build).')
     }
     figmaEngineControlReady = true
     if (!figmaEngineContext) figmaEngineEmitPhase('engine-ready', {})
   })().catch(function (err) {
-    figmaEngineEmitPhase('error', { error: err.message || String(err) })
+    if (lifecycleGeneration === figmaEngineLifecycleGeneration) {
+      figmaEngineEmitPhase('error', { error: err.message || String(err) })
+    }
     throw err
   }).finally(function () {
     figmaEngineStarting = null

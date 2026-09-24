@@ -2,8 +2,10 @@
 
 var viewMap = {} // id: view
 var viewStateMap = {} // id: view state
+const viewIdsByContents = new WeakMap()
 
 var temporaryPopupViews = {} // id: view
+const popupAdoptionTimers = new WeakMap()
 
 // rate limit on "open in app" requests
 var globalLaunchRequests = 0
@@ -89,9 +91,10 @@ function getDefaultViewWebPreferences () {
   )
 }
 
-function createView (existingViewId, id, webPreferences, boundsString, events, resource, rootPath, extra) {
+function createView (existingViewId, id, webPreferences, boundsString, events, resource, rootPath, extra, generation) {
   if (viewStateMap[id]) {
-    console.warn('Creating duplicate view')
+    // Delayed duplicate create messages must not leak the previous renderer.
+    return viewMap[id]
   }
 
   const viewPrefs = Object.assign({}, getDefaultViewWebPreferences(), webPreferences)
@@ -102,13 +105,20 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
     partition: viewPrefs.partition || null,
     resource: resource || null, // what an internal surface is showing, see getViewResource
     rootPath: rootPath || null,
-    extra: extra || null // per-surface extras (e.g. terminal scrollback for restore)
+    extra: extra || null, // per-surface extras (e.g. terminal scrollback for restore)
+    generation: generation
   }
 
   let view
   if (existingViewId) {
     view = temporaryPopupViews[existingViewId]
     delete temporaryPopupViews[existingViewId]
+    if (!view || view.webContents.isDestroyed()) {
+      delete viewStateMap[id]
+      return createView(null, id, webPreferences, boundsString, events, resource, rootPath, extra, generation)
+    }
+    clearTimeout(popupAdoptionTimers.get(view))
+    popupAdoptionTimers.delete(view)
 
     // the initial URL has already been loaded, so set the background color
     view.setBackgroundColor('#fff')
@@ -119,6 +129,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
 
   events.forEach(function (event) {
     view.webContents.on(event, function (e) {
+      if (viewMap[id] !== view) return
       var args = Array.prototype.slice.call(arguments).slice(1)
 
       const eventTarget = getWindowFromViewContents(view.webContents) || windows.getCurrent()
@@ -130,6 +141,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
 
       getWindowWebContents(eventTarget).send('view-event', {
         tabId: id,
+        generation: generation,
         event: event,
         args: args
       })
@@ -148,6 +160,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
   })
 
   view.webContents.setWindowOpenHandler(function (details) {
+    if (viewMap[id] !== view || view.webContents.isDestroyed()) return { action: 'deny' }
     if (details.url && consumeFigmaEngineAuthCallback(details.url)) {
       return {
         action: 'deny'
@@ -178,11 +191,21 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
 
         var popupId = Math.random().toString()
         temporaryPopupViews[popupId] = popupView
+        const adoptionTimer = setTimeout(function () {
+          popupAdoptionTimers.delete(popupView)
+          if (temporaryPopupViews[popupId] !== popupView) return
+          delete temporaryPopupViews[popupId]
+          if (!popupView.webContents.isDestroyed()) popupView.webContents.destroy()
+        }, 30000)
+        if (adoptionTimer.unref) adoptionTimer.unref()
+        popupAdoptionTimers.set(popupView, adoptionTimer)
 
         /* Popups that are closed before the renderer adopts them (or whose
         did-create-popup notification is lost) would otherwise leak their
         WebContentsView in the map forever. */
         popupView.webContents.once('destroyed', function () {
+          clearTimeout(popupAdoptionTimers.get(popupView))
+          popupAdoptionTimers.delete(popupView)
           if (temporaryPopupViews[popupId] === popupView) {
             delete temporaryPopupViews[popupId]
           }
@@ -190,11 +213,14 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
 
         const eventTarget = getWindowFromViewContents(view.webContents) || windows.getCurrent()
 
-        getWindowWebContents(eventTarget).send('view-event', {
-          tabId: id,
-          event: 'did-create-popup',
-          args: [popupId, details.url, settings.get('openTabsInForeground') || details.disposition !== 'background-tab']
-        })
+        if (eventTarget && viewMap[id] === view) {
+          getWindowWebContents(eventTarget).send('view-event', {
+            tabId: id,
+            generation: generation,
+            event: 'did-create-popup',
+            args: [popupId, details.url, settings.get('openTabsInForeground') || details.disposition !== 'background-tab']
+          })
+        }
 
         // For browser-initiated tabs (e.g. Ctrl+click), Electron may not supply
         // a WebContents or start its navigation when createWindow is provided.
@@ -216,6 +242,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
   })
 
   view.webContents.on('ipc-message', function (e, channel, data) {
+    if (viewMap[id] !== view) return
     var senderURL
     try {
       senderURL = e.senderFrame.url
@@ -234,6 +261,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
 
     getWindowWebContents(eventTarget).send('view-ipc', {
       id: id,
+      generation: generation,
       name: channel,
       data: data,
       frameId: e.frameId,
@@ -309,15 +337,18 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
   and an external one
   */
   view.webContents.on('did-start-navigation', function (event) {
+    if (viewMap[id] !== view || !viewStateMap[id]) return
     if (event.isMainFrame && !event.isSameDocument) {
       const hasJS = viewStateMap[id].hasJS
       const shouldHaveJS = (!(settings.get('filtering')?.contentTypes?.includes('script'))) || event.url.startsWith('min://')
       if (hasJS !== shouldHaveJS) {
         setTimeout(function () {
+          if (viewMap[id] !== view || view.webContents.isDestroyed()) return
           view.webContents.stop()
           const currentWindow = getWindowFromViewContents(view.webContents)
+          const currentResource = getViewResource(id)
           destroyView(id)
-          const newView = createView(existingViewId, id, Object.assign({}, webPreferences, { javascript: shouldHaveJS }), boundsString, events)
+          createView(null, id, Object.assign({}, webPreferences, { javascript: shouldHaveJS }), boundsString, events, currentResource.resource, currentResource.rootPath, currentResource.extra, generation)
           loadURLInView(id, event.url, currentWindow)
 
           if (currentWindow) {
@@ -332,6 +363,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events, r
   view.setBounds(JSON.parse(boundsString))
 
   viewMap[id] = view
+  viewIdsByContents.set(view.webContents, id)
 
   return view
 }
@@ -352,7 +384,9 @@ function destroyView (id) {
       state.splitPaneIds = null
     }
   })
-  viewMap[id].webContents.destroy()
+  const contents = viewMap[id].webContents
+  viewIdsByContents.delete(contents)
+  if (!contents.isDestroyed()) contents.destroy()
 
   delete viewMap[id]
   delete viewStateMap[id]
@@ -365,12 +399,15 @@ function destroyAllViews () {
 }
 
 function setView (id, senderContents) {
-  const win = windows.windowFromContents(senderContents).win
+  const owner = windows.windowFromContents(senderContents)
+  if (!owner || !viewMap[id] || !viewStateMap[id]) return
+  const win = owner.win
   const state = windows.getState(win)
+  publishViewGeneration(id, senderContents)
 
   // changing views can cause flickering, so we only want to call it if the view is actually changing
   // see https://github.com/minbrowser/min/issues/1966
-  if (state.selectedView !== viewMap[id]) {
+  if (state.selectedView !== id || (viewStateMap[id].loadedInitialURL && !win.getContentView().children.includes(viewMap[id]))) {
     if (state.splitPaneIds) {
       // split view: keep both panes attached, just switch which one is active
       if (viewStateMap[id].loadedInitialURL && !win.getContentView().children.includes(viewMap[id])) {
@@ -393,15 +430,19 @@ function setView (id, senderContents) {
 /* attaches two views side by side (split view) */
 
 function setSplitView (ids, bounds, activeId, senderContents) {
-  const win = windows.windowFromContents(senderContents).win
+  const owner = windows.windowFromContents(senderContents)
+  if (!owner) return
+  const win = owner.win
   const state = windows.getState(win)
 
-  // remove all prior views
-  win.getContentView().children.slice(1).forEach(child => win.getContentView().removeChildView(child))
+  const targetViews = ids.map(id => viewMap[id]).filter(Boolean)
+  const attached = win.getContentView().children.slice(1)
+  attached.filter(child => !targetViews.includes(child)).forEach(child => win.getContentView().removeChildView(child))
 
   ids.forEach(function (id, i) {
+    publishViewGeneration(id, senderContents)
     if (viewMap[id] && viewStateMap[id].loadedInitialURL) {
-      win.getContentView().addChildView(viewMap[id])
+      if (!attached.includes(viewMap[id])) win.getContentView().addChildView(viewMap[id])
       viewMap[id].setBounds(bounds[i])
     }
   })
@@ -413,8 +454,11 @@ function setSplitView (ids, bounds, activeId, senderContents) {
 /* detaches the inactive pane and returns to a single full-window view */
 
 function unsplitView (activeId, bounds, senderContents) {
-  const win = windows.windowFromContents(senderContents).win
+  const owner = windows.windowFromContents(senderContents)
+  if (!owner) return
+  const win = owner.win
   const state = windows.getState(win)
+  publishViewGeneration(activeId, senderContents)
 
   if (state.splitPaneIds) {
     state.splitPaneIds.forEach(function (id) {
@@ -428,6 +472,9 @@ function unsplitView (activeId, bounds, senderContents) {
   state.selectedView = activeId
   if (viewMap[activeId]) {
     viewMap[activeId].setBounds(bounds)
+    if (viewStateMap[activeId].loadedInitialURL && !win.getContentView().children.includes(viewMap[activeId])) {
+      win.getContentView().addChildView(viewMap[activeId])
+    }
   }
 }
 
@@ -450,7 +497,9 @@ function focusView (id) {
 }
 
 function hideCurrentView (senderContents) {
-  const win = windows.windowFromContents(senderContents).win
+  const owner = windows.windowFromContents(senderContents)
+  if (!owner) return
+  const win = owner.win
   const state = windows.getState(win)
   const currentId = state.selectedView
   if (currentId) {
@@ -469,16 +518,12 @@ function getView (id) {
 }
 
 function getTabIDFromWebContents (contents) {
-  for (var id in viewMap) {
-    if (viewMap[id].webContents === contents) {
-      return id
-    }
-  }
+  return viewIdsByContents.get(contents)
 }
 
 /* the id of the view whose webContents is `contents`, or null */
 function getViewIdForContents (contents) {
-  return Object.keys(viewMap).find(id => viewMap[id].webContents === contents) || null
+  return viewIdsByContents.get(contents) || null
 }
 
 /* What a view is showing. The fork's internal surfaces (editor, terminal,
@@ -501,8 +546,16 @@ function getWindowFromViewContents (webContents) {
   })
 }
 
+function publishViewGeneration (id, sender) {
+  const state = viewStateMap[id]
+  if (state && sender && typeof sender.send === 'function' && !sender.isDestroyed()) {
+    sender.send('view-generation', { id: id, generation: state.generation })
+  }
+}
+
 ipc.on('createView', function (e, args) {
-  createView(args.existingViewId, args.id, args.webPreferences, args.boundsString, args.events, args.resource, args.rootPath, args.extra)
+  createView(args.existingViewId, args.id, args.webPreferences, args.boundsString, args.events, args.resource, args.rootPath, args.extra, args.generation)
+  publishViewGeneration(args.id, e.sender)
 })
 
 /* the preload reads this synchronously, before the page's own scripts run */
@@ -567,7 +620,7 @@ the panes. */
 ipc.on('view-mouse-event', function (e, args) {
   const eventWindow = getWindowFromViewContents(e.sender)
   if (eventWindow) {
-    const viewId = Object.keys(viewMap).find(id => viewMap[id].webContents === e.sender)
+    const viewId = getViewIdForContents(e.sender)
     /* The page-relative coordinates in args shift while a drag resizes the
     views, so a listener that converts them back to window coordinates
     double-counts the movement. Report the cursor position inside the window
@@ -591,15 +644,17 @@ ipc.on('hideCurrentView', function (e) {
 })
 
 function loadURLInView (id, url, win) {
+  const view = viewMap[id]
+  if (!view || view.webContents.isDestroyed() || !viewStateMap[id]) return Promise.resolve()
   // wait until the first URL is loaded to set the background color so that new tabs can use a custom background
   if (!viewStateMap[id].loadedInitialURL) {
     // Give the site a chance to display something before setting the background, in case it has its own dark theme
-    viewMap[id].webContents.once('dom-ready', function () {
-      viewMap[id].setBackgroundColor('#fff')
+    view.webContents.once('dom-ready', function () {
+      if (viewMap[id] === view && !view.webContents.isDestroyed()) view.setBackgroundColor('#fff')
     })
     // If the view has no URL, it won't be attached yet
     if (win && (id === windows.getState(win).selectedView || (windows.getState(win).splitPaneIds && windows.getState(win).splitPaneIds.includes(id)))) {
-      win.getContentView().addChildView(viewMap[id])
+      if (!win.getContentView().children.includes(view)) win.getContentView().addChildView(view)
     }
   }
   const loading = viewMap[id].webContents.loadURL(url)
@@ -609,21 +664,32 @@ function loadURLInView (id, url, win) {
 
 ipc.on('loadURLInView', function (e, args) {
   const win = windows.windowFromContents(e.sender)?.win
-  loadURLInView(args.id, args.url, win)
+  // did-fail-load already reports navigation errors to the renderer.
+  loadURLInView(args.id, args.url, win).catch(function () {})
 })
 
 ipc.on('callViewMethod', function (e, data) {
   var error, result
+  function reply (error, result) {
+    if (!data.callId || e.sender.isDestroyed()) return
+    if (webContents && (!viewMap[data.id] || viewMap[data.id].webContents !== webContents)) {
+      error = new Error('View was replaced')
+      result = null
+    }
+    e.sender.send('async-call-result', { callId: data.callId, error: error, result: result })
+  }
   try {
     var webContents = viewMap[data.id].webContents
-    var methodOrProp = webContents[data.method]
+    const navigationMethods = ['canGoBack', 'canGoForward', 'goBack', 'goForward', 'goToOffset', 'canGoToOffset']
+    const receiver = navigationMethods.includes(data.method) && webContents.navigationHistory ? webContents.navigationHistory : webContents
+    var methodOrProp = receiver[data.method]
     if (methodOrProp instanceof Function) {
       // call function
-      result = methodOrProp.apply(webContents, data.args)
+      result = methodOrProp.apply(receiver, data.args)
     } else {
       // set property
       if (data.args && data.args.length > 0) {
-        webContents[data.method] = data.args[0]
+        receiver[data.method] = data.args[0]
       }
       // read property
       result = methodOrProp
@@ -633,17 +699,12 @@ ipc.on('callViewMethod', function (e, data) {
   }
   if (result instanceof Promise) {
     result.then(function (result) {
-      if (data.callId) {
-        e.sender.send('async-call-result', { callId: data.callId, error: null, result })
-      }
+      reply(null, result)
+    }, function (error) {
+      reply(error, null)
     })
-    result.catch(function (error) {
-      if (data.callId) {
-        e.sender.send('async-call-result', { callId: data.callId, error, result: null })
-      }
-    })
-  } else if (data.callId) {
-    e.sender.send('async-call-result', { callId: data.callId, error, result })
+  } else {
+    reply(error, result)
   }
 })
 
@@ -667,12 +728,14 @@ ipc.handle('getNavigationHistory', function (e, id) {
 
 ipc.on('saveViewCapture', function (e, data) {
   var view = viewMap[data.id]
-  if (!view) {
-    // view could have been destroyed
-  }
+  if (!view || view.webContents.isDestroyed()) return
 
   view.webContents.capturePage().then(function (image) {
+    if (viewMap[data.id] !== view || view.webContents.isDestroyed()) return
     view.webContents.downloadURL(image.toDataURL())
+  }).catch(function (error) {
+    // Closing a tab while capture is in flight cancels the download.
+    if (viewMap[data.id] === view && !view.webContents.isDestroyed()) console.warn('View capture failed:', error.message)
   })
 })
 

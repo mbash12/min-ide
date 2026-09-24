@@ -20,7 +20,7 @@ holds the content of the active tab.
 - Dragging the resizer on the panel's right edge changes the panel width.
 - When visible, the sidebar shifts the webviews (it never overlays them).
 - The sidebar state (visibility, active tab, panel width) is scoped to the
-  selected workspace and persisted in IndexedDB, so each workspace remembers
+  selected workspace and persisted in SQLite, so each workspace remembers
   its own layout across restarts.
 
 Files, Source Control, Playbook, AI, Design, Docs, and Notes are populated by
@@ -34,6 +34,9 @@ const sidebarMaxPanelWidth = 640
 /* tracked separately from the DOM: offsetWidth reads 0 while the sidebar or
 the panel is display:none, so it can't be used for persistence */
 let currentPanelWidth = 300
+const stateByWorkspace = new Map()
+let restoreRevision = 0
+let stateReady = false
 
 const sidebarEl = document.getElementById('sidebar')
 const toggleButton = document.getElementById('sidebar-toggle-button')
@@ -102,7 +105,10 @@ const sidebar = {
       sidebar.panelVisible = true
       sidebar.syncTabUI()
       sidebar.updateLayout()
-      sidebar.persistState()
+      // During a workspace switch this can run synchronously against the
+      // outgoing workspace's tab before the incoming layout has loaded. Keep
+      // the visual fallback, but let the incoming restore finish first.
+      if (stateReady) sidebar.persistState()
     }
     return activeHidden
   },
@@ -178,11 +184,13 @@ const sidebar = {
   },
 
   /* sets the panel width (clamped) and refreshes the layout */
-  setPanelWidth: function (width) {
-    currentPanelWidth = clampPanelWidth(width)
+  setPanelWidth: function (width, persist = true) {
+    const nextWidth = clampPanelWidth(width)
+    if (nextWidth === currentPanelWidth) return currentPanelWidth
+    currentPanelWidth = nextWidth
     applyPanelWidthToDom()
     sidebar.updateLayout()
-    sidebar.persistState()
+    if (persist) sidebar.persistState()
     return currentPanelWidth
   },
 
@@ -217,7 +225,11 @@ const sidebar = {
     if (!sidebar.currentWorkspaceId) {
       return
     }
-    uiStateDB.setSidebarState('workspace:' + sidebar.currentWorkspaceId, sidebar.getState())
+    const state = sidebar.getState()
+    restoreRevision++
+    stateReady = true
+    stateByWorkspace.set(sidebar.currentWorkspaceId, state)
+    uiStateDB.setSidebarState('workspace:' + sidebar.currentWorkspaceId, state)
   },
 
   /* switches the sidebar to the given workspace's persisted state */
@@ -226,10 +238,18 @@ const sidebar = {
       return
     }
     // save the outgoing workspace's state first
-    sidebar.persistState()
+    if (stateReady) sidebar.persistState()
     sidebar.currentWorkspaceId = workspaceId
-    const savedState = workspaceId ? await uiStateDB.getSidebarState('workspace:' + workspaceId) : null
+    stateReady = false
+    const revision = ++restoreRevision
+    const cached = stateByWorkspace.has(workspaceId)
+    const savedState = cached ? stateByWorkspace.get(workspaceId) : workspaceId ? await uiStateDB.getSidebarState('workspace:' + workspaceId) : null
+    // A -> B -> A switches and edits made during the read invalidate it too.
+    if (revision !== restoreRevision || sidebar.currentWorkspaceId !== workspaceId) return
+    stateReady = true
     sidebar.applyState(savedState)
+    stateByWorkspace.set(workspaceId, sidebar.getState())
+    sidebar.updatePathTabs()
   },
 
   /* keeps the .active classes and placeholder labels in sync with the state */
@@ -285,7 +305,7 @@ const sidebar = {
 
     function applyPanelWidth (windowX) {
       if (!sidebarDragState) return
-      sidebar.setPanelWidth(windowX - sidebarDragState.startBarWidth)
+      sidebar.setPanelWidth(windowX - sidebarDragState.startBarWidth, false)
     }
 
     function startSidebarDrag (e) {
@@ -308,6 +328,7 @@ const sidebar = {
         document.removeEventListener('mouseup', onMouseUp)
         document.body.classList.remove('is-resizing-sidebar')
         sidebarDragState = null
+        sidebar.persistState()
       }
 
       document.addEventListener('mousemove', onMouseMove)
@@ -365,20 +386,20 @@ const sidebar = {
     const bindInitialState = function () {
       const selected = workspaces.getSelected()
       if (selected) {
-        const id = selected.id
-        sidebar.currentWorkspaceId = id
-        uiStateDB.getSidebarState('workspace:' + id).then(function (state) {
-          // only apply if the workspace hasn't switched while loading
-          if (sidebar.currentWorkspaceId === id) {
-            sidebar.applyState(state)
-            sidebar.updatePathTabs()
-          }
-        })
+        sidebar.switchToWorkspace(selected.id)
       } else {
         // no workspace yet: hide path-dependent tabs
         sidebar.updatePathTabs()
       }
     }
+    workspaces.on('workspace-destroyed', id => {
+      stateByWorkspace.delete(id)
+      if (sidebar.currentWorkspaceId === id) {
+        sidebar.currentWorkspaceId = null
+        stateReady = false
+        restoreRevision++
+      }
+    })
     bindInitialState()
 
     fileTree.initialize()

@@ -1,8 +1,10 @@
 /* Terminal tabs. Every terminal tab runs its own shell session (see
 main/terminal.js), so opening this module more than once is the intended way
 to get several independent shells. */
+/* global ipc */
 
 var browserUI = require('browserUI.js')
+var webviews = require('webviews.js')
 
 const TERMINAL_BASE = 'min://terminal'
 
@@ -48,6 +50,9 @@ and is capped tighter than the in-main tail. */
 const TERMINAL_SCROLLBACK_EVERY = 4
 const MAX_PERSISTED_SCROLLBACK = 64 * 1024
 let scrollbackPollCounter = 0
+let terminalStatePollTimer = null
+let terminalPollSequence = 0
+const terminalPollRequests = new Map()
 
 function forEachTerminalTab (fn) {
   if (typeof workspaces === 'undefined' || !workspaces.forEach) {
@@ -67,42 +72,74 @@ function forEachTerminalTab (fn) {
 function refreshTerminalStates () {
   const includeScrollback = (++scrollbackPollCounter % TERMINAL_SCROLLBACK_EVERY) === 0
   forEachTerminalTab(function (task, tab) {
+    if (terminalPollRequests.has(tab.id)) return
+    const requestId = ++terminalPollSequence
+    terminalPollRequests.set(tab.id, requestId)
     ipc.invoke('terminal-get-state', tab.id, includeScrollback).then(function (state) {
-      if (!state) {
+      const current = webviews.getTabData(tab.id)
+      if (terminalPollRequests.get(tab.id) !== requestId || !current || current.kind !== 'terminal' || !state) {
         return
       }
       const update = {}
-      if (state.cwd && state.cwd !== tab.resource) {
+      if (state.cwd && state.cwd !== current.resource) {
         update.resource = state.cwd
       }
       if (includeScrollback && typeof state.tail === 'string') {
         const tail = state.tail.length > MAX_PERSISTED_SCROLLBACK
           ? state.tail.slice(-MAX_PERSISTED_SCROLLBACK)
           : state.tail
-        if (tail !== (tab.terminalScrollback || '')) {
+        if (tail !== (current.terminalScrollback || '')) {
           update.terminalScrollback = tail
         }
       }
-      if (state.shell && state.shell !== tab.terminalShell) {
+      if (state.shell && state.shell !== current.terminalShell) {
         update.terminalShell = state.shell
       }
       if (Object.keys(update).length > 0) {
-        task.tabs.update(tab.id, update)
+        webviews.updateTabState(tab.id, update)
       }
-    }).catch(function () {})
+    }).catch(function () {}).then(function () {
+      if (terminalPollRequests.get(tab.id) === requestId) {
+        terminalPollRequests.delete(tab.id)
+      }
+    })
   })
 }
 
-setInterval(refreshTerminalStates, TERMINAL_STATE_POLL_MS)
+function countTerminalTabs () {
+  let count = 0
+  forEachTerminalTab(function () { count++ })
+  return count
+}
+
+function syncTerminalStatePolling () {
+  const hasTerminals = countTerminalTabs() > 0
+  if (hasTerminals && !terminalStatePollTimer) {
+    terminalStatePollTimer = setInterval(refreshTerminalStates, TERMINAL_STATE_POLL_MS)
+  } else if (!hasTerminals && terminalStatePollTimer) {
+    clearInterval(terminalStatePollTimer)
+    terminalStatePollTimer = null
+  }
+}
 
 /* closing a terminal tab drops the main-process session record; destroying
 the view alone (archive, task/workspace switch) must not, since the record
 is what a later restore reads. The workspace store re-emits every task's
 tab-destroyed, so one listener covers tab, task, and workspace teardown. */
 if (typeof workspaces !== 'undefined' && workspaces.on) {
+  workspaces.on('tab-added', function (tabId, tab) {
+    if (tab && tab.kind === 'terminal') syncTerminalStatePolling()
+  })
   workspaces.on('tab-destroyed', function (tabId) {
+    terminalPollRequests.delete(tabId)
     ipc.send('terminal-tab-gone', tabId)
+    syncTerminalStatePolling()
+    // Task/workspace teardown announces tab destruction before removing the
+    // owner from the workspace store. Recheck after that synchronous teardown.
+    setTimeout(syncTerminalStatePolling, 0)
   })
 }
+
+syncTerminalStatePolling()
 
 module.exports = terminalView

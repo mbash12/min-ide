@@ -7,6 +7,9 @@ const profiles = require('profiles.js')
 const settings = require('util/settings/settings.js')
 const proSettingsPage = require('util/proSettingsPage.js')
 const editorView = require('editorView.js')
+const reconcileChildren = require('util/reconcileChildren.js')
+const rowCache = new Map()
+let archivedHeadingCache = null
 
 const drawer = document.getElementById('workspace-drawer')
 const backdrop = document.getElementById('workspace-backdrop')
@@ -29,20 +32,7 @@ const indicatorIcon = indicator ? indicator.querySelector('.workspace-indicator-
 
 let modalWorkspaceId = null
 let modalIsCreate = false
-
-function profileInitial (profile) {
-  const el = document.createElement('span')
-  el.className = 'profile-initial'
-  el.textContent = (profile.name.trim()[0] || '?').toUpperCase()
-  el.style.backgroundColor = profiles.getColor(profile.id)
-  return el
-}
-
-function defaultInitial () {
-  const el = document.createElement('span')
-  el.className = 'profile-initial profile-initial-default i carbon:user-multiple'
-  return el
-}
+let modalRevision = 0
 
 function populateProfileSelect (selectedId) {
   workspaceModalProfileSelect.textContent = ''
@@ -61,6 +51,7 @@ function populateProfileSelect (selectedId) {
 
 function openWorkspaceModal (workspaceId) {
   const isCreate = !workspaceId
+  modalRevision++
   modalIsCreate = isCreate
   modalWorkspaceId = workspaceId || null
 
@@ -89,6 +80,7 @@ function openWorkspaceModal (workspaceId) {
 }
 
 function closeWorkspaceModal () {
+  modalRevision++
   workspaceModal.hidden = true
   modalWorkspaceId = null
 }
@@ -128,11 +120,12 @@ function saveWorkspaceModal () {
 
 /* opens a folder picker and assigns the selection to the workspace path field */
 async function browseWorkspacePath () {
+  const revision = modalRevision
   try {
     const filePaths = await ipc.invoke('showOpenDialog', {
       properties: ['openDirectory']
     })
-    if (filePaths && filePaths.length > 0) {
+    if (revision === modalRevision && !workspaceModal.hidden && filePaths && filePaths.length > 0) {
       workspaceModalPathInput.value = filePaths[0]
     }
   } catch (e) {
@@ -144,89 +137,6 @@ function openProfilesPage () {
   // profile management lives in the Pro Settings page's Profiles tab;
   // open() focuses the existing Pro Settings tab instead of duplicating it
   proSettingsPage.open('min://proSettings?tab=profiles')
-}
-
-function createWorkspaceRow (ws) {
-  const row = document.createElement('div')
-  row.className = 'ws-row'
-  if (workspaces.getSelected() && ws.id === workspaces.getSelected().id) {
-    row.classList.add('selected')
-  }
-  row.setAttribute('data-workspace', ws.id)
-
-  const collapsed = workspaces.isCollapsed(ws.id)
-  const collapseBtn = document.createElement('button')
-  collapseBtn.className = 'ws-row-collapse i carbon:chevron-' + (collapsed ? 'right' : 'down')
-  collapseBtn.setAttribute('aria-expanded', String(!collapsed))
-  collapseBtn.addEventListener('click', function (e) {
-    e.stopPropagation()
-    workspaces.update(ws.id, { collapsed: !collapsed })
-    workspaceDrawer.render()
-  })
-  row.appendChild(collapseBtn)
-
-  const profile = profiles.getProfile(ws.profileId)
-  row.appendChild(profile ? profileInitial(profile) : defaultInitial())
-
-  const mainEl = document.createElement('span')
-  mainEl.className = 'ws-row-main'
-  const nameEl = document.createElement('span')
-  nameEl.className = 'ws-row-name'
-  nameEl.textContent = ws.name || l('defaultWorkspaceName').replace('%n', workspaces.getIndex(ws.id) + 1)
-  mainEl.appendChild(nameEl)
-
-  if (ws.path) {
-    const pathEl = document.createElement('span')
-    pathEl.className = 'ws-row-path'
-    pathEl.textContent = ws.path
-    pathEl.title = ws.path
-    // the folder is gone: say so instead of pretending the workspace still has
-    // files, and leave the stored path in place so the user can replace it (§8)
-    if (require('workspacePathStatus.js').isUsable(ws.id, ws.path) === false) {
-      const warning = document.createElement('span')
-      warning.className = 'codicon codicon-warning ws-row-warning'
-      warning.title = l('workspaceFolderMissing')
-      mainEl.appendChild(warning)
-      pathEl.classList.add('ws-row-path-missing')
-      pathEl.title = l('workspaceFolderMissing')
-    }
-    mainEl.appendChild(pathEl)
-  }
-  row.appendChild(mainEl)
-
-  const badge = document.createElement('span')
-  badge.className = 'ws-row-badge'
-  const count = ws.tasks ? ws.tasks.map(task => task.tabs.count()).reduce((a, b) => a + b, 0) : 0
-  badge.textContent = String(count)
-  badge.title = count === 1 ? '1 tab' : count + ' tabs'
-  row.appendChild(badge)
-
-  const archiveBtn = document.createElement('button')
-  archiveBtn.className = 'ws-row-settings i carbon:archive'
-  archiveBtn.title = l('workspaceArchiveAction')
-  archiveBtn.addEventListener('click', function (e) {
-    e.stopPropagation()
-    browserUI.archiveWorkspace(ws.id)
-    workspaceDrawer.render()
-  })
-  row.appendChild(archiveBtn)
-
-  const settingsBtn = document.createElement('button')
-  settingsBtn.className = 'ws-row-settings i carbon:edit'
-  settingsBtn.title = l('taskSettings')
-  settingsBtn.addEventListener('click', function (e) {
-    e.stopPropagation()
-    openWorkspaceModal(ws.id)
-  })
-  row.appendChild(settingsBtn)
-
-  row.addEventListener('click', function (e) {
-    if (e.target === settingsBtn || settingsBtn.contains(e.target)) return
-    browserUI.switchToWorkspace(ws.id)
-    workspaceDrawer.hide()
-  })
-
-  return row
 }
 
 /* tasks render as a sub-list under their workspace row. Clicking one switches
@@ -271,202 +181,81 @@ function closeTaskInWorkspace (ws, task) {
   ws.tasks.destroy(task.id)
 }
 
-function createTaskRow (ws, task, index) {
-  const row = document.createElement('div')
-  row.className = 'ws-task-row'
-  // the facade only resolves the active workspace's list, so background
-  // workspaces never highlight - their own getSelected() keeps a stale
-  // selectedInWindow from when they were last open
-  const selectedTask = tasks.getSelected()
-  if (selectedTask && task.id === selectedTask.id) {
-    row.classList.add('selected')
-  }
-  row.setAttribute('data-task', task.id)
-
-  const nameEl = document.createElement('span')
-  nameEl.className = 'ws-task-name'
-  nameEl.textContent = task.name || l('defaultTaskName').replace('%n', index + 1)
-  row.appendChild(nameEl)
-
-  const badge = document.createElement('span')
-  badge.className = 'ws-row-badge'
-  const count = task.tabs.count()
-  badge.textContent = String(count)
-  badge.title = count === 1 ? '1 tab' : count + ' tabs'
-  row.appendChild(badge)
-
-  const deleteBtn = document.createElement('button')
-  deleteBtn.className = 'ws-row-settings i carbon:trash-can'
-  deleteBtn.title = l('taskDelete')
-  deleteBtn.addEventListener('click', function (e) {
-    e.stopPropagation()
-    closeTaskInWorkspace(ws, task)
-    workspaceDrawer.render()
-  })
-  row.appendChild(deleteBtn)
-
-  row.addEventListener('click', function () {
-    switchToWorkspaceTask(ws, task.id)
-  })
-
-  return row
-}
-
-function createTaskList (ws) {
-  const list = document.createElement('div')
-  list.className = 'ws-task-list'
-
-  ws.tasks.forEach(function (task, index) {
-    list.appendChild(createTaskRow(ws, task, index))
-  })
-
-  const addButton = document.createElement('button')
-  addButton.className = 'ws-task-add'
-
-  const addIcon = document.createElement('i')
-  addIcon.className = 'i carbon:add'
-  addButton.appendChild(addIcon)
-
-  const addLabel = document.createElement('span')
-  addLabel.textContent = l('newTask')
-  addButton.appendChild(addLabel)
-
-  addButton.addEventListener('click', function (e) {
-    e.stopPropagation()
-    const selected = workspaces.getSelected()
-    if (selected && selected.id === ws.id) {
-      browserUI.addTask()
-    } else {
-      const taskId = ws.tasks.add({})
-      browserUI.switchToWorkspace(ws.id)
-      browserUI.switchToTask(taskId)
-    }
-    workspaceDrawer.hide()
-  })
-  list.appendChild(addButton)
-
-  return list
-}
-
-/* archived workspaces keep their tabs in the session data, but all of their
-views are destroyed to save memory. Opening one restores it. */
-
-function createArchivedWorkspaceRow (ws) {
-  const row = document.createElement('div')
-  row.className = 'ws-row ws-row-archived'
-  row.setAttribute('data-workspace', ws.id)
-
-  const mainEl = document.createElement('span')
-  mainEl.className = 'ws-row-main'
-  const nameEl = document.createElement('span')
-  nameEl.className = 'ws-row-name'
-  nameEl.textContent = ws.name || l('defaultWorkspaceName').replace('%n', workspaces.getIndex(ws.id) + 1)
-  mainEl.appendChild(nameEl)
-
-  if (ws.path) {
-    const pathEl = document.createElement('span')
-    pathEl.className = 'ws-row-path'
-    pathEl.textContent = ws.path
-    pathEl.title = ws.path
-    // the folder is gone: say so instead of pretending the workspace still has
-    // files, and leave the stored path in place so the user can replace it (§8)
-    if (require('workspacePathStatus.js').isUsable(ws.id, ws.path) === false) {
-      const warning = document.createElement('span')
-      warning.className = 'codicon codicon-warning ws-row-warning'
-      warning.title = l('workspaceFolderMissing')
-      mainEl.appendChild(warning)
-      pathEl.classList.add('ws-row-path-missing')
-      pathEl.title = l('workspaceFolderMissing')
-    }
-    mainEl.appendChild(pathEl)
-  }
-  row.appendChild(mainEl)
-
-  const badge = document.createElement('span')
-  badge.className = 'ws-row-badge'
-  const count = ws.tasks ? ws.tasks.map(task => task.tabs.count()).reduce((a, b) => a + b, 0) : 0
-  badge.textContent = String(count)
-  badge.title = count === 1 ? '1 tab' : count + ' tabs'
-  row.appendChild(badge)
-
-  const restoreBtn = document.createElement('button')
-  restoreBtn.className = 'ws-row-settings i carbon:renew'
-  restoreBtn.title = l('workspaceRestoreAction')
-  restoreBtn.addEventListener('click', function (e) {
-    e.stopPropagation()
-    browserUI.restoreWorkspace(ws.id)
-    workspaceDrawer.hide()
-  })
-  row.appendChild(restoreBtn)
-
-  const settingsBtn = document.createElement('button')
-  settingsBtn.className = 'ws-row-settings i carbon:edit'
-  settingsBtn.title = l('taskSettings')
-  settingsBtn.addEventListener('click', function (e) {
-    e.stopPropagation()
-    openWorkspaceModal(ws.id)
-  })
-  row.appendChild(settingsBtn)
-
-  row.addEventListener('click', function (e) {
-    if (e.target === restoreBtn || restoreBtn.contains(e.target)) return
-    browserUI.restoreWorkspace(ws.id)
-    workspaceDrawer.hide()
-  })
-
-  return row
+function cachedWorkspaceRows (ws, archived) {
+  const selected = workspaces.getSelected()
+  const selectedTask = selected === ws && tasks.getSelected()
+  const collapsed = workspaces.isCollapsed(ws.id)
+  const signature = JSON.stringify([
+    workspaces.getIndex(ws.id), ws.name, ws.path, archived, collapsed,
+    selected === ws, selectedTask && selectedTask.id,
+    profiles.getProfile(ws.profileId), ws.profileId ? profiles.getColor(ws.profileId) : null,
+    require('workspacePathStatus.js').isUsable(ws.id, ws.path),
+    ws.tasks.map(task => [task.id, task.name, task.tabs.count()])
+  ])
+  const previous = rowCache.get(ws.id)
+  if (previous && previous.signature === signature) return previous.nodes
+  const nodes = archived ? [createArchivedWorkspaceRow(ws)] : [createWorkspaceRow(ws)]
+  if (!archived && !collapsed) nodes.push(createTaskList(ws))
+  rowCache.set(ws.id, { signature, nodes })
+  return nodes
 }
 
 var workspaceDrawer = {
   isShown: false,
 
   render: function () {
-    empty(workspaceListEl)
+    const scrollTop = workspaceListEl.scrollTop
+    const desired = []
+    rowCache.forEach((entry, id) => { if (!workspaces.get(id)) rowCache.delete(id) })
     workspaces.getActive().forEach(function (ws) {
-      workspaceListEl.appendChild(createWorkspaceRow(ws))
-      if (!workspaces.isCollapsed(ws.id)) {
-        workspaceListEl.appendChild(createTaskList(ws))
-      }
+      desired.push(...cachedWorkspaceRows(ws, false))
     })
 
     const archivedWorkspaces = workspaces.getArchived()
     if (archivedWorkspaces.length > 0) {
       const collapsed = settings.get('archivedWorkspacesCollapsed') === true
 
-      const heading = document.createElement('button')
-      heading.className = 'ws-section-heading'
-      heading.setAttribute('aria-expanded', String(!collapsed))
+      const headingKey = String(collapsed) + ':' + archivedWorkspaces.length
+      let heading = archivedHeadingCache && archivedHeadingCache.key === headingKey && archivedHeadingCache.node
+      if (!heading) {
+        heading = document.createElement('button')
+        heading.className = 'ws-section-heading'
+        heading.setAttribute('aria-expanded', String(!collapsed))
 
-      const chevron = document.createElement('span')
-      chevron.className = 'ws-section-chevron i carbon:chevron-' + (collapsed ? 'right' : 'down')
-      heading.appendChild(chevron)
+        const chevron = document.createElement('span')
+        chevron.className = 'ws-section-chevron i carbon:chevron-' + (collapsed ? 'right' : 'down')
+        heading.appendChild(chevron)
 
-      const label = document.createElement('span')
-      label.className = 'ws-section-label'
-      label.textContent = l('archivedWorkspacesHeading')
-      heading.appendChild(label)
+        const label = document.createElement('span')
+        label.className = 'ws-section-label'
+        label.textContent = l('archivedWorkspacesHeading')
+        heading.appendChild(label)
 
-      const countEl = document.createElement('span')
-      countEl.className = 'ws-row-badge'
-      countEl.textContent = String(archivedWorkspaces.length)
-      heading.appendChild(countEl)
+        const countEl = document.createElement('span')
+        countEl.className = 'ws-row-badge'
+        countEl.textContent = String(archivedWorkspaces.length)
+        heading.appendChild(countEl)
 
-      heading.addEventListener('click', function (e) {
+        heading.addEventListener('click', function (e) {
         // stopPropagation keeps the document-level outside-click handler from
         // closing the drawer (the re-render detaches this element mid-bubble)
-        e.stopPropagation()
-        settings.set('archivedWorkspacesCollapsed', !collapsed)
-        workspaceDrawer.render()
-      })
+          e.stopPropagation()
+          settings.set('archivedWorkspacesCollapsed', !collapsed)
+          workspaceDrawer.render()
+        })
 
-      workspaceListEl.appendChild(heading)
+        archivedHeadingCache = { key: headingKey, node: heading }
+      }
+      desired.push(heading)
 
       if (!collapsed) {
         archivedWorkspaces.forEach(function (ws) {
-          workspaceListEl.appendChild(createArchivedWorkspaceRow(ws))
+          desired.push(...cachedWorkspaceRows(ws, true))
         })
       }
     }
+    reconcileChildren(workspaceListEl, desired)
+    workspaceListEl.scrollTop = scrollTop
   },
 
   show: function () {
@@ -493,6 +282,8 @@ var workspaceDrawer = {
     setTimeout(function () {
       if (!workspaceDrawer.isShown) {
         empty(workspaceListEl)
+        rowCache.clear()
+        archivedHeadingCache = null
         webviews.hidePlaceholder('workspaceDrawer')
       }
     }, 250)
@@ -503,13 +294,6 @@ var workspaceDrawer = {
       const mostRecent = tabs.get().sort(function (a, b) { return b.lastActivity - a.lastActivity })[0]
       if (mostRecent) browserUI.switchToTab(mostRecent.id)
     }
-    try {
-      const selected = tasks.getSelected()
-      if (selected) {
-        browserUI.switchToTask(selected.id)
-        browserUI.switchToTab(tabs.getSelected())
-      }
-    } catch (e) {}
   },
 
   toggle: function () {
@@ -647,8 +431,14 @@ var workspaceDrawer = {
     /* keep the task sub-lists live while the drawer is open. `tasks.on` is the
     facade over the WorkspaceStore, so these fire for every workspace's list,
     not just the selected one. */
+    let renderPending = false
     const renderIfShown = function () {
-      if (workspaceDrawer.isShown) workspaceDrawer.render()
+      if (!workspaceDrawer.isShown || renderPending) return
+      renderPending = true
+      requestAnimationFrame(function () {
+        renderPending = false
+        if (workspaceDrawer.isShown) workspaceDrawer.render()
+      })
     }
     tasks.on('task-added', renderIfShown)
     tasks.on('task-destroyed', renderIfShown)
@@ -659,29 +449,36 @@ var workspaceDrawer = {
     })
     tasks.on('tab-added', renderIfShown)
     tasks.on('tab-destroyed', renderIfShown)
+    tasks.on('tab-splice', renderIfShown)
+    workspaces.on('workspace-added', renderIfShown)
+    workspaces.on('workspace-destroyed', renderIfShown)
     workspaces.on('workspace-selected', function () {
       updateIndicator()
-      if (workspaceDrawer.isShown) workspaceDrawer.render()
+      renderIfShown()
     })
 
     /* the folder check finishes after the rows are built, so rebuild them once
     the answer is in to show or clear the missing-folder warning */
     require('workspacePathStatus.js').onChange(function () {
       updateIndicator()
-      if (workspaceDrawer.isShown) workspaceDrawer.render()
+      renderIfShown()
     })
     workspaces.on('workspace-updated', function (id, key) {
       if (key === 'name' || key === 'profileId') updateIndicator()
-      if ((key === 'archived' || key === 'collapsed') && workspaceDrawer.isShown) workspaceDrawer.render()
+      if (['archived', 'collapsed', 'name', 'profileId', 'path'].includes(key)) renderIfShown()
     })
     workspaces.on('state-sync-change', function () {
       updateIndicator()
-      if (workspaceDrawer.isShown) workspaceDrawer.render()
+      renderIfShown()
     })
 
     updateIndicator()
     window.workspaceDrawer = workspaceDrawer
   }
 }
+
+const { createWorkspaceRow, createTaskList, createArchivedWorkspaceRow } = require('workspaceDrawer/workspaceRows.js')({
+  browserUI, profiles, workspaceDrawer, openWorkspaceModal, closeTaskInWorkspace, switchToWorkspaceTask
+})
 
 module.exports = workspaceDrawer

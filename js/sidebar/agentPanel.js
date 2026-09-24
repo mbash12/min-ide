@@ -2,6 +2,7 @@
 const proSettingsPage = require('util/proSettingsPage.js')
 const agentMarkdown = require('sidebar/agentMarkdown.js')
 const agentSlash = require('sidebar/agentSlash.js')
+const agentPanelLifecycle = require('sidebar/agentPanelLifecycle.js')
 const taskPrefs = require('taskPrefs.js')
 
 /* Chat UI for the sidebar's AI tab. The pi agent session runs in the main
@@ -51,6 +52,10 @@ keeps the authoritative session/messages; this map just caches what we've
 rendered so switching tasks is instant. */
 const conversations = new Map()
 let activeTaskId = null
+let activeScope = null
+
+const modelCatalogRequest = agentPanelLifecycle.createLatestRequestGuard()
+const historyRequest = agentPanelLifecycle.createLatestRequestGuard()
 
 function getTaskInfo () {
   const task = tasks.getSelected()
@@ -67,18 +72,41 @@ function getActiveTaskId () {
 }
 
 function agentPayload (extra) {
-  const info = getTaskInfo()
+  return taskAgentPayload(getTaskInfo(), extra)
+}
+
+function taskAgentPayload (info, extra) {
   return Object.assign({ taskId: info.taskId, workspaceId: info.workspaceId, cwd: info.cwd }, extra || {})
 }
 
-function convFor (taskId) {
-  const key = taskId || 'default'
-  if (!conversations.has(key)) conversations.set(key, { messages: [], assistantMsg: null, thinking: '' })
+function conversationKey (taskId, workspaceId) {
+  const task = taskId || 'default'
+  return workspaceId && workspaceId !== 'default'
+    ? JSON.stringify([String(workspaceId), String(task)])
+    : String(task)
+}
+
+function convFor (taskId, workspaceId) {
+  const key = conversationKey(taskId, workspaceId)
+  if (!conversations.has(key)) {
+    conversations.set(key, {
+      messages: [],
+      assistantMsg: null,
+      thinking: '',
+      thinkingLevel: 'medium',
+      modelId: null,
+      sessionPath: null,
+      context: null,
+      streaming: false,
+      compacting: false
+    })
+  }
   return conversations.get(key)
 }
 
 function currentConv () {
-  return convFor(getActiveTaskId())
+  const info = getTaskInfo()
+  return convFor(info.taskId, info.workspaceId)
 }
 
 /* ----- session ownership (HANDOVER §25) -----
@@ -342,6 +370,8 @@ function startNewChat () {
   if (!confirmStopRunning('A reply is still running. Stop it and start a new chat?')) return
   closeHistoryDrawer()
   currentSessionPath = null
+  currentConv().sessionPath = null
+  currentConv().context = null
   clearActiveConversation()
   ipc.send('agent-new-session', agentPayload())
 }
@@ -405,14 +435,18 @@ function scheduleHistoryRefresh () {
 
 async function refreshHistoryList () {
   if (!els || !historyOpen) return
+  const scope = getTaskInfo()
+  const selection = taskStateLoader.select(scope)
+  if (!historyOpen) return
+  const request = historyRequest.next()
   const query = (els.historySearch.value || '').trim()
   let result
   try {
-    result = await ipc.invoke('agent-list-sessions', agentPayload({ query: query }))
+    result = await ipc.invoke('agent-list-sessions', taskAgentPayload(scope, { query: query }))
   } catch (e) {
     result = null
   }
-  if (!historyOpen) return
+  if (!historyOpen || !historyRequest.isCurrent(request) || !taskStateLoader.isCurrent(scope, selection)) return
   const sessions = (result && result.sessions) || []
   if (result && result.currentPath) currentSessionPath = result.currentPath
   renderHistoryList(sessions)
@@ -478,59 +512,99 @@ function renderHistoryList (sessions) {
 
 async function switchToSession (sessionPath) {
   if (!sessionPath) return
+  const scope = getTaskInfo()
+  const selection = taskStateLoader.select(scope)
   const owner = ownerTaskFor(sessionPath)
-  if (owner && String(owner.id) !== getActiveTaskId()) return
+  if (owner && String(owner.id) !== scope.taskId) return
   if (sessionPath === currentSessionPath) {
     closeHistoryDrawer()
     return
   }
   if (!confirmStopRunning('A reply is still running. Stop it and switch chats?')) return
   try {
-    const state = await ipc.invoke('agent-open-session', agentPayload({ path: sessionPath }))
+    const state = await ipc.invoke('agent-open-session', taskAgentPayload(scope, { path: sessionPath }))
     if (!state || state.ok === false) return
-    applyTaskState(state)
-    closeHistoryDrawer()
+    if (taskStateLoader.isCurrent(scope, selection)) {
+      applyTaskState(state, scope)
+      closeHistoryDrawer()
+    } else {
+      cacheTaskState(scope, state)
+    }
   } catch (e) {}
 }
 
 async function deleteHistorySession (sessionPath) {
   if (!sessionPath) return
+  const scope = getTaskInfo()
+  const selection = taskStateLoader.select(scope)
+  const owner = ownerTaskFor(sessionPath)
   const isCurrent = sessionPath === currentSessionPath
   const message = (isCurrent && isStreaming)
     ? 'A reply is still running. Stop it and delete this chat?'
     : 'Delete this chat? This cannot be undone.'
   if (!confirm(message)) return
   try {
-    const result = await ipc.invoke('agent-delete-session', agentPayload({ path: sessionPath }))
+    const result = await ipc.invoke('agent-delete-session', taskAgentPayload(scope, { path: sessionPath }))
     if (!result || result.ok === false) return
     /* free the deleted file from whichever task held it */
-    const owner = ownerTaskFor(sessionPath)
     if (owner) syncSessionOwnership(String(owner.id), null)
     if (result.deletedCurrent) {
-      applyTaskState(result.state)
+      if (taskStateLoader.isCurrent(scope, selection)) applyTaskState(result.state, scope)
+      else cacheTaskState(scope, result.state)
     }
-    if (historyOpen) refreshHistoryList()
+    if (historyOpen && taskStateLoader.isCurrent(scope, selection)) refreshHistoryList()
   } catch (e) {}
 }
 
-function applyTaskState (state) {
+function applyTaskState (state, scope) {
   if (!els || !state) return
-  const conv = currentConv()
+  const info = scope || activeScope || getTaskInfo()
+  const taskId = state.taskId != null ? String(state.taskId) : info.taskId
+  const workspaceId = state.workspaceId != null ? String(state.workspaceId) : info.workspaceId
+  const conv = convFor(taskId, workspaceId)
   conv.messages = state.messages || []
   conv.assistantMsg = null
   conv.thinking = ''
-  currentSessionPath = state.sessionPath || null
-  syncSessionOwnership(getActiveTaskId(), state.sessionPath)
-  if (state.modelId) {
-    els.modelLabel.textContent = getModelLabel(state.modelId)
-    els.modelLabel.dataset.modelId = state.modelId
+  conv.sessionPath = state.sessionPath || null
+  conv.modelId = state.modelId || null
+  conv.thinkingLevel = state.thinkingLevel || 'medium'
+  conv.context = state.context || null
+  conv.streaming = !!state.streaming
+  conv.compacting = !!state.compacting
+  syncSessionOwnership(taskId, state.sessionPath)
+  if (taskId !== activeTaskId || (activeScope && workspaceId !== activeScope.workspaceId)) return
+  renderActiveTaskState(conv)
+}
+
+function cacheTaskState (scope, state) {
+  if (!state) return
+  const taskId = String(scope.taskId || 'default')
+  const workspaceId = String(scope.workspaceId || 'default')
+  const conv = convFor(taskId, workspaceId)
+  conv.messages = state.messages || []
+  conv.assistantMsg = null
+  conv.thinking = ''
+  conv.sessionPath = state.sessionPath || null
+  conv.modelId = state.modelId || null
+  conv.thinkingLevel = state.thinkingLevel || 'medium'
+  conv.context = state.context || null
+  conv.streaming = !!state.streaming
+  conv.compacting = !!state.compacting
+  syncSessionOwnership(taskId, state.sessionPath)
+}
+
+function renderActiveTaskState (conv) {
+  currentSessionPath = conv.sessionPath || null
+  if (conv.modelId) {
+    els.modelLabel.textContent = getModelLabel(conv.modelId)
+    els.modelLabel.dataset.modelId = conv.modelId
   } else {
     els.modelLabel.textContent = 'Model'
     els.modelLabel.dataset.modelId = ''
   }
-  applyThinkingUI(state.thinkingLevel || 'medium')
+  applyThinkingUI(conv.thinkingLevel || 'medium')
   const lastBubble = renderTranscript()
-  if (state.streaming && conv.messages.length) {
+  if (conv.streaming && conv.messages.length) {
     const last = conv.messages[conv.messages.length - 1]
     if (last.role === 'assistant') {
       conv.assistantMsg = last
@@ -539,10 +613,37 @@ function applyTaskState (state) {
   } else {
     currentAssistantEl = null
   }
-  updateContext(state.context)
-  setStreamingUI(!!state.streaming)
-  setCompactingUI(!!state.compacting)
+  updateContext(conv.context)
+  setStreamingUI(!!conv.streaming)
+  setCompactingUI(!!conv.compacting)
 }
+
+function onTaskScopeSelected (scope) {
+  activeScope = scope
+  activeTaskId = String(scope.taskId || 'default')
+  historyRequest.invalidate()
+  closeHistoryDrawer()
+  closePopover()
+  hideSlashMenu()
+  streamingRenderer.cancel()
+  currentAssistantEl = null
+  currentThinkingEl = null
+  renderActiveTaskState(convFor(activeTaskId, scope.workspaceId))
+}
+
+function onTaskStateResult (scope, state, active) {
+  if (!state) return
+  if (active) applyTaskState(state, scope)
+  else cacheTaskState(scope, state)
+}
+
+const taskStateLoader = agentPanelLifecycle.createScopeLoader({
+  load: function (scope) {
+    return ipc.invoke('agent-get-state', taskAgentPayload(scope, { restore: true }))
+  },
+  onSelect: onTaskScopeSelected,
+  onResult: onTaskStateResult
+})
 
 /* ----- popovers (model + thinking pickers) ----- */
 
@@ -608,7 +709,9 @@ function openThinkingPopover (anchor) {
 /* the catalog can change at any time (provider key added/removed, provider
 toggled off, OAuth login/logout) - refetch and repaint the open popover */
 function refreshModelCatalog () {
+  const request = modelCatalogRequest.next()
   return ipc.invoke('agent-fetch-models').then(function (models) {
+    if (!modelCatalogRequest.isCurrent(request)) return
     modelsCache = models || []
     if (modelPopoverRender) modelPopoverRender()
   }).catch(function () {})
@@ -753,6 +856,7 @@ function openContextPopover (anchor) {
 }
 
 function setModel (provider, modelId) {
+  currentConv().modelId = modelId || null
   els.modelLabel.textContent = getModelLabel(modelId)
   els.modelLabel.dataset.modelId = modelId || ''
   updateSendButton()
@@ -760,6 +864,7 @@ function setModel (provider, modelId) {
 }
 
 function setThinkingLevel (level) {
+  currentConv().thinkingLevel = level
   applyThinkingUI(level)
   ipc.send('agent-set-thinking', agentPayload({ level: level }))
 }
@@ -782,35 +887,20 @@ function fillFormattedText (el, text) {
 /* Streaming markdown is expensive: marked.parse + DOMPurify over the whole
 accumulated message on every token delta is O(n^2) for long replies, so
 during a stream we render at a fixed cadence and always do one final full
-render when the stream ends. */
-let streamRenderTimer = null
-let streamRenderEl = null
-let streamRenderText = ''
-const STREAM_RENDER_MS = 100
+render when the stream ends. The helper also cancels timers when the visible
+task changes so detached bubbles cannot scroll or repaint the new transcript. */
+const streamingRenderer = agentPanelLifecycle.createStreamingRenderer({
+  render: fillFormattedText,
+  scroll: scrollToEnd,
+  delay: 100
+})
 
 function scheduleStreamingRender (el, text) {
-  streamRenderEl = el
-  streamRenderText = text
-  if (streamRenderTimer) return
-  streamRenderTimer = setTimeout(function () {
-    streamRenderTimer = null
-    if (streamRenderEl) {
-      fillFormattedText(streamRenderEl, streamRenderText)
-      scrollToEnd()
-    }
-  }, STREAM_RENDER_MS)
+  streamingRenderer.schedule(el, text)
 }
 
 function flushStreamingRender () {
-  if (streamRenderTimer) {
-    clearTimeout(streamRenderTimer)
-    streamRenderTimer = null
-  }
-  if (streamRenderEl) {
-    fillFormattedText(streamRenderEl, streamRenderText)
-    streamRenderEl = null
-    streamRenderText = ''
-  }
+  streamingRenderer.flush()
 }
 
 function toolIconClass (name) {
@@ -974,6 +1064,7 @@ function renderCompactMarker (text) {
 
 function setStreamingUI (streaming) {
   isStreaming = streaming
+  if (activeTaskId != null) currentConv().streaming = !!streaming
   if (els && els.input) {
     els.input.placeholder = streaming
       ? 'Steer the agent, or send empty to stop…'
@@ -1015,6 +1106,9 @@ function clearActiveConversation () {
   conv.messages = []
   conv.assistantMsg = null
   conv.thinking = ''
+  conv.context = null
+  conv.streaming = false
+  conv.compacting = false
   els.transcript.textContent = ''
   currentAssistantEl = null
   currentThinkingEl = null
@@ -1028,6 +1122,7 @@ function updateContext (info) {
   /* the SDK reports `percent` as a 0–100 percentage value (e.g. 0.22 means
   0.22%, 50 means 50%), not a 0–1 fraction */
   lastContextInfo = info || null
+  if (activeTaskId != null) currentConv().context = lastContextInfo
   let fraction = 0
   let pctValue = null
   if (info && info.percent != null) {
@@ -1055,6 +1150,7 @@ function updateContext (info) {
 
 function setCompactingUI (compacting) {
   isCompacting = !!compacting
+  if (activeTaskId != null) currentConv().compacting = isCompacting
   if (els && els.donut) els.donut.classList.toggle('agent-donut-busy', isCompacting)
 }
 
@@ -1065,20 +1161,27 @@ async function requestCompact (instructions) {
     ? 'A reply is still running. Stop it and compact older messages to free context? This cannot be undone.'
     : 'Compact this chat? Older messages will be summarized to free context. This cannot be undone.'
   if (!confirm(message)) return
+  const scope = getTaskInfo()
+  const selection = taskStateLoader.select(scope)
   setCompactingUI(true)
   try {
-    const result = await ipc.invoke('agent-compact', agentPayload({
+    const result = await ipc.invoke('agent-compact', taskAgentPayload(scope, {
       instructions: instructions || ''
     }))
     if (!result || result.ok === false) {
-      setCompactingUI(false)
-      addErrorLine((result && result.message) || 'Could not compact context')
+      if (taskStateLoader.isCurrent(scope, selection)) {
+        setCompactingUI(false)
+        addErrorLine((result && result.message) || 'Could not compact context')
+      }
       return
     }
-    applyTaskState(result)
+    if (taskStateLoader.isCurrent(scope, selection)) applyTaskState(result, scope)
+    else cacheTaskState(scope, result)
   } catch (e) {
-    setCompactingUI(false)
-    addErrorLine('Could not compact context')
+    if (taskStateLoader.isCurrent(scope, selection)) {
+      setCompactingUI(false)
+      addErrorLine('Could not compact context')
+    }
   }
 }
 
@@ -1235,11 +1338,14 @@ function runSlashCommand (cmd, arg) {
         addSystemLine('Usage: /name <title>')
         return
       }
-      ipc.invoke('agent-set-name', agentPayload({ name: arg })).then(function (result) {
+      const scope = getTaskInfo()
+      const selection = taskStateLoader.select(scope)
+      ipc.invoke('agent-set-name', taskAgentPayload(scope, { name: arg })).then(function (result) {
+        if (!taskStateLoader.isCurrent(scope, selection)) return
         if (result && result.ok === false) addSystemLine(result.message || 'Could not name chat')
         else addSystemLine('Named this chat “' + arg + '”')
       }).catch(function () {
-        addSystemLine('Could not name chat')
+        if (taskStateLoader.isCurrent(scope, selection)) addSystemLine('Could not name chat')
       })
       break
     case 'copy':
@@ -1345,6 +1451,7 @@ function sendCurrentInput () {
   els.input.style.height = 'auto'
   hideSlashMenu()
   addUserMessage(text)
+  currentConv().streaming = true
   setStreamingUI(true)
   ipc.send('agent-prompt', agentPayload({ text: text }))
 }
@@ -1358,12 +1465,14 @@ function applyEvent (ev) {
   const taskKey = (ev.taskId != null && ev.taskId !== '')
     ? String(ev.taskId)
     : 'default'
-  const conv = convFor(taskKey)
-  const active = taskKey === String(activeTaskId)
+  const conv = convFor(taskKey, ev.workspaceId)
+  const active = taskKey === String(activeTaskId) &&
+    (!ev.workspaceId || !activeScope || String(ev.workspaceId) === String(activeScope.workspaceId))
   switch (ev.type) {
     case 'delta':
       if (ev.deltaType === 'thinking' && ev.delta) {
         conv.thinking = (conv.thinking || '') + ev.delta
+        conv.streaming = true
         if (active) {
           renderThinking(conv.thinking)
           scrollToEnd()
@@ -1372,6 +1481,7 @@ function applyEvent (ev) {
       }
       if (ev.deltaType === 'text' && ev.delta) {
         conv.thinking = ''
+        conv.streaming = true
         if (active) renderThinking('')
         if (!conv.assistantMsg) {
           const last = conv.messages[conv.messages.length - 1]
@@ -1390,6 +1500,7 @@ function applyEvent (ev) {
     case 'tool_start':
       if (conv.assistantMsg) conv.assistantMsg = null
       conv.thinking = ''
+      conv.streaming = true
       if (active) {
         flushStreamingRender()
         renderThinking('')
@@ -1434,11 +1545,13 @@ function applyEvent (ev) {
       }
       break
     case 'agent_start':
+      conv.streaming = true
       if (active) setStreamingUI(true)
       break
     case 'agent_end':
       conv.assistantMsg = null
       conv.thinking = ''
+      conv.streaming = false
       if (active) {
         flushStreamingRender()
         renderThinking('')
@@ -1449,6 +1562,7 @@ function applyEvent (ev) {
     case 'error':
       conv.assistantMsg = null
       conv.thinking = ''
+      conv.streaming = false
       if (active) {
         flushStreamingRender()
         renderThinking('')
@@ -1461,21 +1575,27 @@ function applyEvent (ev) {
       conv.messages = []
       conv.assistantMsg = null
       conv.thinking = ''
+      conv.sessionPath = null
+      conv.context = null
+      conv.streaming = false
+      conv.compacting = false
       if (active) {
-        streamRenderEl = null
-        streamRenderText = ''
+        streamingRenderer.cancel()
         currentSessionPath = null
         syncSessionOwnership(getActiveTaskId(), null)
         clearActiveConversation()
       }
       break
     case 'context':
+      conv.context = ev
       if (active) updateContext(ev)
       break
     case 'context_cleared':
+      conv.context = null
       if (active) updateContext(null)
       break
     case 'thinking_changed':
+      conv.thinkingLevel = ev.level || conv.thinkingLevel
       if (active) applyThinkingUI(ev.level)
       break
     case 'models_changed':
@@ -1485,16 +1605,20 @@ function applyEvent (ev) {
       refreshModelCatalog()
       break
     case 'compaction_start':
+      conv.compacting = true
       if (active) setCompactingUI(true)
       break
     case 'compaction_end':
+      conv.compacting = false
+      if (ev.messages) {
+        conv.messages = ev.messages
+        conv.assistantMsg = null
+        conv.thinking = ''
+      }
       if (active) {
         setCompactingUI(false)
         if (ev.errorMessage) addErrorLine(ev.errorMessage)
         if (ev.messages) {
-          conv.messages = ev.messages
-          conv.assistantMsg = null
-          conv.thinking = ''
           renderThinking('')
           renderTranscript()
         }
@@ -1511,22 +1635,7 @@ ipc.on('agent-event', function (e, ev) {
 backend and renders it if it's the active task. */
 async function refreshState () {
   const taskInfo = getTaskInfo()
-  activeTaskId = taskInfo.taskId
-  try {
-    const state = await ipc.invoke('agent-get-state', agentPayload({ restore: true }))
-    if (!state) return
-    /* the state belongs to the task it was queried for - keep its ownership
-    record correct even if the user moved to another task meanwhile */
-    syncSessionOwnership(taskInfo.taskId, state.sessionPath)
-    if (taskInfo.taskId === activeTaskId) {
-      applyTaskState(state)
-    } else {
-      const conv = convFor(taskInfo.taskId)
-      conv.messages = state.messages || []
-      conv.assistantMsg = null
-      conv.thinking = ''
-    }
-  } catch (e) {}
+  try { await taskStateLoader.refresh(taskInfo) } catch (e) {}
 }
 
 /* Re-scope the chat whenever the workspace or task changes. Workspace
@@ -1566,14 +1675,9 @@ async function initialize () {
     }
   })
 
-  /* load the model catalog for the picker in the background */
-  try {
-    modelsCache = await ipc.invoke('agent-fetch-models') || []
-  } catch (e) {
-    modelsCache = []
-  }
-
-  await refreshState()
+  /* The model list is only needed by the picker. Fetch it in parallel with
+  the task transcript so model discovery cannot delay the visible chat. */
+  await Promise.all([refreshModelCatalog(), refreshState()])
 }
 
 module.exports = { initialize: initialize }

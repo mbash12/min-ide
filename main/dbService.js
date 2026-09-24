@@ -1,4 +1,4 @@
-/* global fs, path, ipc, userDataPath, windows, getWindowWebContents */
+/* global fs, path, ipc, userDataPath, windows, getWindowWebContents, onProviderConfigChanged */
 /* Centralized Database Service for Custom Features
 Single-source-of-truth storage backed by SQLite (node:sqlite, WAL) for
 preferences, workspace profiles, workspace snapshots, design documents,
@@ -36,44 +36,23 @@ const KV_SCOPES = [
   'design_spec'
 ]
 
-/* Open the database. A corrupt or otherwise unreadable min.db previously
-crashed the main process on every launch; instead we quarantine the file
-and retry once with a fresh database so the app stays usable. */
-function openDatabase () {
-  try {
-    const handle = new DatabaseSync(dbFilePath)
-    handle.exec('PRAGMA journal_mode = WAL')
-    handle.exec('PRAGMA synchronous = NORMAL')
-    return handle
-  } catch (err) {
-    console.error('[dbService] failed to open database:', err)
-  }
-  try {
-    if (fs.existsSync(dbFilePath)) {
-      const quarantinePath = dbFilePath + '.corrupt-' + Date.now()
-      fs.renameSync(dbFilePath, quarantinePath)
-      console.warn('[dbService] quarantined unreadable database to', quarantinePath)
-      const handle = new DatabaseSync(dbFilePath)
-      handle.exec('PRAGMA journal_mode = WAL')
-      handle.exec('PRAGMA synchronous = NORMAL')
-      return handle
-    }
-  } catch (retryErr) {
-    console.error('[dbService] retry after quarantine failed:', retryErr)
-  }
-  /* Last resort: an in-memory database keeps the app running (session data
-  just won't persist) instead of crashing the main process. */
-  try {
-    const handle = new DatabaseSync(':memory:')
-    console.warn('[dbService] using in-memory database; changes will not persist')
-    return handle
-  } catch (memErr) {
-    console.error('[dbService] failed to open in-memory database:', memErr)
-    return null
-  }
-}
-
-const openedDb = openDatabase()
+const createDatabaseLifecycle = require(require('path').join(__dirname, 'main/lib/storage/databaseLifecycle.js'))
+const databaseLifecycle = createDatabaseLifecycle({
+  DatabaseSync: DatabaseSync,
+  fs: fs,
+  path: path,
+  logger: console
+})
+const createSessionBackup = require(require('path').join(__dirname, 'main/lib/storage/sessionBackup.js'))
+const sessionBackup = createSessionBackup({
+  fs: fs,
+  path: path,
+  userDataPath: userDataPath,
+  writeFileAtomic: require('write-file-atomic'),
+  process: process,
+  logger: console
+})
+const openedDb = databaseLifecycle.openDatabase(dbFilePath)
 const db = openedDb || {
   /* Even an in-memory fallback can fail in pathological environments; a
   no-op stub keeps the rest of the service (and the app) from crashing. */
@@ -91,73 +70,8 @@ if (!openedDb) {
   console.error('[dbService] continuing without persistent database')
 }
 
-if (db) {
-  db.exec(`
-CREATE TABLE IF NOT EXISTS user_preferences (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS workspace_profiles (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  color TEXT,
-  created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS workspace_snapshots (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  title TEXT,
-  snapshot_data TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_snapshots_workspace ON workspace_snapshots(workspace_id);
-CREATE TABLE IF NOT EXISTS design_documents (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT,
-  title TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_designs_workspace ON design_documents(workspace_id);
-CREATE TABLE IF NOT EXISTS documents (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  markdown TEXT NOT NULL,
-  private INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_documents_workspace ON documents(workspace_id);
-CREATE TABLE IF NOT EXISTS notes (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  markdown TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS tab_activities (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT,
-  tab_id TEXT,
-  url TEXT NOT NULL,
-  title TEXT,
-  metadata TEXT,
-  timestamp INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_activities_workspace ON tab_activities(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_activities_timestamp ON tab_activities(timestamp);
-CREATE TABLE IF NOT EXISTS kv_store (
-  scope TEXT NOT NULL,
-  key TEXT NOT NULL,
-  value TEXT,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (scope, key)
-);
-  `)
-}
+const initializeStorageSchema = require(require('path').join(__dirname, 'main/lib/storage/schema.js'))
+initializeStorageSchema(db)
 
 /* One-time import of the legacy JSON store (custom_app_data.db). The file is
  * kept as <name>.migrated so a rollback only requires deleting min.db. */
@@ -929,93 +843,23 @@ function deleteNote (value, id) {
   return { ok: true }
 }
 
-/* --- Tab Activity Logs --- */
-const actInsertStmt = db.prepare('INSERT INTO tab_activities (id, workspace_id, tab_id, url, title, metadata, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)')
-const actAllStmt = db.prepare('SELECT * FROM tab_activities ORDER BY timestamp DESC LIMIT ?')
-const actWsStmt = db.prepare('SELECT * FROM tab_activities WHERE workspace_id = ? ORDER BY timestamp DESC LIMIT ?')
-const actPruneStmt = db.prepare('DELETE FROM tab_activities WHERE id NOT IN (SELECT id FROM tab_activities ORDER BY timestamp DESC LIMIT ?)')
-/* The prune is a full table scan; running it on every insert is wasteful,
-so it only runs periodically while still bounding the table size. */
-let activityPruneCounter = 0
-const ACTIVITY_PRUNE_EVERY = 50
-
-function logTabActivity (activity) {
-  if (!activity || !activity.url) return null
-  const entry = {
-    id: 'act-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
-    workspace_id: activity.workspace_id ? String(activity.workspace_id) : null,
-    tab_id: activity.tab_id ? String(activity.tab_id) : null,
-    url: activity.url,
-    title: activity.title || '',
-    metadata: activity.metadata || {},
-    timestamp: Date.now()
+/* Activity history and scoped JSON state share prepared statements in one
+service, while documents, notes, and preferences keep their domain helpers. */
+const createScopedStore = require(require('path').join(__dirname, 'main/lib/storage/scopedStore.js'))
+const scopedStore = createScopedStore(db, {
+  scopes: KV_SCOPES,
+  parseJson: parseJson,
+  keepActivities: TAB_ACTIVITY_KEEP,
+  onProviderConfigChanged: function () {
+    if (typeof onProviderConfigChanged === 'function') onProviderConfigChanged()
   }
-  actInsertStmt.run(entry.id, entry.workspace_id, entry.tab_id, entry.url, entry.title, JSON.stringify(entry.metadata), entry.timestamp)
-  // keep the last N entries
-  if (++activityPruneCounter >= ACTIVITY_PRUNE_EVERY) {
-    activityPruneCounter = 0
-    actPruneStmt.run(TAB_ACTIVITY_KEEP)
-  }
-  return entry
-}
-
-function getTabActivities (workspaceId, limit) {
-  const max = limit || 100
-  const rows = workspaceId
-    ? actWsStmt.all(String(workspaceId), max)
-    : actAllStmt.all(max)
-  return rows.map(function (row) {
-    return Object.assign({}, row, { metadata: parseJson(row.metadata, {}) })
-  }).reverse()
-}
-
-/* --- Scoped key-value store ---
-   Covers the remaining blueprint entities: workspace_state, task_extra_state,
-   tab_extra_metadata, sidebar_state, tile_state, ai_config, provider_config. */
-const kvGetStmt = db.prepare('SELECT value FROM kv_store WHERE scope = ? AND key = ?')
-const kvSetStmt = db.prepare('INSERT OR REPLACE INTO kv_store (scope, key, value, updated_at) VALUES (?, ?, ?, ?)')
-const kvDelStmt = db.prepare('DELETE FROM kv_store WHERE scope = ? AND key = ?')
-const kvListStmt = db.prepare('SELECT key, value FROM kv_store WHERE scope = ?')
-
-function validScope (scope) {
-  return typeof scope === 'string' && KV_SCOPES.includes(scope)
-}
-
-function kvGet (scope, key) {
-  if (!validScope(scope) || !key) return null
-  const row = kvGetStmt.get(scope, String(key))
-  return row ? parseJson(row.value, null) : null
-}
-
-function kvSet (scope, key, value) {
-  if (!validScope(scope) || !key) return false
-  kvSetStmt.run(scope, String(key), JSON.stringify(value === undefined ? null : value), Date.now())
-  /* provider keys changing means the agent's model catalog is stale and the
-  SDK auth file needs re-syncing; onProviderConfigChanged is declared in
-  main/agent.js (same bundle) */
-  if (scope === 'provider_config' && typeof onProviderConfigChanged === 'function') {
-    onProviderConfigChanged()
-  }
-  return true
-}
-
-function kvDelete (scope, key) {
-  if (!validScope(scope) || !key) return false
-  kvDelStmt.run(scope, String(key))
-  if (scope === 'provider_config' && typeof onProviderConfigChanged === 'function') {
-    onProviderConfigChanged()
-  }
-  return true
-}
-
-function kvList (scope) {
-  if (!validScope(scope)) return {}
-  const out = {}
-  kvListStmt.all(scope).forEach(function (row) {
-    out[row.key] = parseJson(row.value, null)
-  })
-  return out
-}
+})
+var logTabActivity = scopedStore.logTabActivity
+var getTabActivities = scopedStore.getTabActivities
+var kvGet = scopedStore.kvGet
+var kvSet = scopedStore.kvSet
+var kvDelete = scopedStore.kvDelete
+var kvList = scopedStore.kvList
 
 /* =====================================================================
    IPC Handlers
@@ -1063,20 +907,14 @@ ipc.handle('db:deleteNote', async (event, data) => deleteNote(data))
 /* Removes every row belonging to a deleted workspace: documents, designs,
 snapshots and tab activities. Workspace-scoped collections share the
 workspace_id key, so one sweep covers all of them. */
+const createWorkspaceCleanup = require(require('path').join(__dirname, 'main/lib/storage/workspaceCleanup.js'))
+const deleteWorkspaceRows = createWorkspaceCleanup(db)
+
 function deleteWorkspaceData (workspaceId) {
   const id = String(workspaceId)
-  db.exec('BEGIN')
-  try {
-    db.prepare('DELETE FROM documents WHERE workspace_id = ?').run(id)
-    db.prepare('DELETE FROM design_documents WHERE workspace_id = ?').run(id)
-    db.prepare('DELETE FROM workspace_snapshots WHERE workspace_id = ?').run(id)
-    db.prepare('DELETE FROM tab_activities WHERE workspace_id = ?').run(id)
-    db.exec('COMMIT')
-  } catch (e) {
-    db.exec('ROLLBACK')
-  }
-  broadcastDocsChanged(id, null)
-  return { ok: true }
+  const result = deleteWorkspaceRows(id)
+  if (result.ok) broadcastDocsChanged(id, null)
+  return result
 }
 
 ipc.handle('db:deleteWorkspaceData', async (event, workspaceId) => deleteWorkspaceData(workspaceId))
@@ -1095,6 +933,44 @@ ipc.on('db:kvSetSync', function (event, data) {
 })
 ipc.on('db:kvGetSync', function (event, data) {
   event.returnValue = kvGet(data && data.scope, data && data.key)
+})
+
+/* Session state updates the SQLite source of truth and its legacy JSON crash
+ * backup in the main process. The staged writer prevents an older async
+ * completion from replacing a later synchronous unload snapshot. */
+function writeSessionToDatabase (data) {
+  try {
+    return kvSet('workspace_state', 'session', data)
+  } catch (error) {
+    console.error('[dbService] failed to save session state:', error)
+    return false
+  }
+}
+
+ipc.handle('db:saveSession', async (event, data) => {
+  if (!writeSessionToDatabase(data)) return { ok: false, error: 'Could not save session data' }
+  try {
+    const backup = await sessionBackup.save(data)
+    return backup.ok
+      ? { ok: true, backupSaved: !backup.superseded }
+      : { ok: true, backupSaved: false, error: backup.error }
+  } catch (error) {
+    console.warn('[dbService] failed to save session backup:', error)
+    return { ok: true, backupSaved: false, error: error.message || String(error) }
+  }
+})
+ipc.on('db:saveSessionSync', function (event, data) {
+  if (!writeSessionToDatabase(data)) {
+    event.returnValue = { ok: false, error: 'Could not save session data' }
+    return
+  }
+  try {
+    sessionBackup.saveSync(data)
+    event.returnValue = { ok: true, backupSaved: true }
+  } catch (error) {
+    console.warn('[dbService] failed to save synchronous session backup:', error)
+    event.returnValue = { ok: true, backupSaved: false, error: error.message || String(error) }
+  }
 })
 
 /* Used by main/agentTools.js in the concatenated main bundle. Keeping these

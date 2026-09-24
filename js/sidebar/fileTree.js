@@ -13,6 +13,7 @@ const remoteMenu = require('remoteMenuRenderer.js')
 const fileIcons = require('sidebar/fileIcons.js')
 const uiStateDB = require('util/uiStateDB.js')
 const sidebarUI = require('sidebar/ui.js')
+const createDebouncedWriter = require('sidebar/lifecycle/debouncedWriter.js')
 
 const panel = document.getElementById('sidebar-panel-files')
 
@@ -21,6 +22,8 @@ let treeBody = null // the scrollable area that holds the tree rows
 let renderToken = 0 // invalidates stale async renders after a re-render
 const expandedPaths = new Set() // directories the user has expanded
 let activeEditor = null // { input, commit } for the inline name editor
+let initialized = false
+let stateMutationVersion = 0
 
 /* the file path opened by the last file-row click, used to detect a second
 click on the same row (pin) */
@@ -43,15 +46,23 @@ function getWorkspaceId () {
 let currentWorkspaceId = null
 let currentWorkspacePath = null
 
+const stateWriter = createDebouncedWriter(function (key, state) {
+  return uiStateDB.setFileTreeState(key, state)
+}, 40)
+
 async function loadSavedState (workspaceId, workspacePath) {
   workspaceId = workspaceId || currentWorkspaceId
   workspacePath = workspacePath === undefined ? currentWorkspacePath : workspacePath
   if (!workspaceId) return
+  const mutationVersion = stateMutationVersion
   try {
     const state = await uiStateDB.getFileTreeState('tree:' + workspaceId)
     // A second workspace can be selected while the state is being read. Do
     // not let the slower response overwrite the newly selected workspace.
     if (workspaceId !== currentWorkspaceId || workspacePath !== currentWorkspacePath) return
+    // A user may expand or collapse a folder while IndexedDB is responding.
+    // Keep that interaction instead of applying an older saved snapshot over it.
+    if (mutationVersion !== stateMutationVersion) return
     if (!state || !state.expandedPaths) return
     expandedPaths.clear()
     state.expandedPaths.forEach(function (p) { expandedPaths.add(p) })
@@ -60,16 +71,12 @@ async function loadSavedState (workspaceId, workspacePath) {
   }
 }
 
-async function persistState () {
-  if (!currentWorkspaceId) return
-  const state = {
-    expandedPaths: Array.from(expandedPaths)
-  }
-  await uiStateDB.setFileTreeState('tree:' + currentWorkspaceId, state)
-}
-
 function persistStateSoon () {
-  persistState().catch(function () {})
+  if (!currentWorkspaceId) return
+  stateMutationVersion++
+  stateWriter.schedule('tree:' + currentWorkspaceId, {
+    expandedPaths: Array.from(expandedPaths)
+  })
 }
 
 /* WorkspaceList emits both names for compatibility with older task-aware
@@ -100,10 +107,7 @@ function syncWorkspaceScope (workspaceId) {
   currentWorkspacePath = nextWorkspacePath
   expandedPaths.clear()
   lastOpenedFilePath = null
-  if (activeEditor) {
-    activeEditor.input.disabled = true
-    activeEditor = null
-  }
+  cancelActiveEditor()
   render()
 
   if (workspaceChanged) {
@@ -208,8 +212,11 @@ in chunks so a folder with thousands of entries (e.g. node_modules) does not
 freeze the UI. Returns a promise; if the directory can't be read, an error
 row is shown instead. */
 function loadChildren (dirPath, children, depth, token) {
+  if (children.dataset.loading === 'true' || children.dataset.loaded === 'true') return Promise.resolve()
+  children.dataset.loading = 'true'
   return ipc.invoke('readDirectory', dirPath).then(function (entries) {
     if (token !== renderToken) return // the tree was re-rendered meanwhile
+    children.dataset.loading = 'false'
     if (entries === null) {
       addErrorRow(l('folderReadError'))
       return
@@ -228,7 +235,6 @@ function loadChildren (dirPath, children, depth, token) {
         const fullPath = dirPath.replace(/[\\/]+$/, '') + '/' + entry.name
         const row = createRow({ name: entry.name, type: entry.type }, fullPath, depth)
         children.appendChild(row)
-        syncSelectionWithTab()
         let rowChildren = null
         if (entry.type === 'directory') {
           rowChildren = createChildrenContainer(depth + 1)
@@ -241,6 +247,7 @@ function loadChildren (dirPath, children, depth, token) {
           expandDirectory(row, rowChildren, fullPath, depth + 1)
         }
       }
+      syncSelectionWithTab()
       cursor = end
       if (cursor < entries.length) {
         requestAnimationFrame(renderChunk)
@@ -249,6 +256,7 @@ function loadChildren (dirPath, children, depth, token) {
     renderChunk()
   }).catch(function () {
     if (token === renderToken) {
+      children.dataset.loading = 'false'
       addErrorRow(l('folderReadError'))
     }
   })
@@ -309,18 +317,30 @@ function finishEditor (editor, commit, value) {
   if (editor.disabled || (activeEditor && activeEditor.input !== editor)) {
     return
   }
+  const editorState = activeEditor
   editor.disabled = true
   activeEditor = null
+  if (editorState && editorState.input === editor && editor.parentNode && editorState.label) {
+    editor.parentNode.replaceChild(editorState.label, editor)
+  }
   commit(value)
+}
+
+function cancelActiveEditor () {
+  if (!activeEditor) return
+  const editor = activeEditor
+  activeEditor = null
+  editor.input.disabled = true
+  if (editor.input.parentNode && editor.label) {
+    editor.label.textContent = editor.originalName
+    editor.input.parentNode.replaceChild(editor.label, editor.input)
+  }
 }
 
 /* replaces the row's label with an inline input. Enter/Escape/blur finish
 the edit; the commit callback handles the new value. */
 function showEditor (row, initialValue, placeholder, commit) {
-  if (activeEditor) {
-    // cancel the previous editor: re-render restores its label
-    render()
-  }
+  if (activeEditor) cancelActiveEditor()
 
   const label = row.querySelector('.file-tree-label')
   const originalName = label.textContent
@@ -334,7 +354,6 @@ function showEditor (row, initialValue, placeholder, commit) {
   input.focus()
   input.select()
 
-  activeEditor = { input: input }
   const editor = input
 
   function handleEnter (e) {
@@ -343,8 +362,10 @@ function showEditor (row, initialValue, placeholder, commit) {
       finishEditor(editor, commit, editor.value)
     } else if (e.key === 'Escape') {
       e.preventDefault()
+      editor.disabled = true
       label.textContent = originalName
-      editor.remove()
+      if (editor.parentNode) editor.parentNode.replaceChild(label, editor)
+      else editor.remove()
       activeEditor = null
     }
   }
@@ -352,16 +373,28 @@ function showEditor (row, initialValue, placeholder, commit) {
   editor.addEventListener('blur', function () {
     finishEditor(editor, commit, editor.value)
   })
+  activeEditor = { input: editor, label: label, originalName: originalName }
+}
+
+function isCurrentTreeScope (workspaceId, workspacePath) {
+  return workspaceId === currentWorkspaceId &&
+    workspacePath === currentWorkspacePath &&
+    workspaceId === getWorkspaceId() &&
+    workspacePath === (getWorkspacePath() || null)
 }
 
 /* starts an inline "new file/folder" editor inside parentPath's children.
 Expands the parent first so the editor is visible. */
 function startCreate (parentPath, depth, type) {
+  const workspaceId = currentWorkspaceId
+  const workspacePath = currentWorkspacePath
   expandedPaths.add(parentPath)
+  persistStateSoon()
   render()
+  const token = renderToken
   // wait for the (async) child load, then insert the editor
   const tryInsert = function (attempt) {
-    if (attempt > 30) return
+    if (attempt > 30 || token !== renderToken || !isCurrentTreeScope(workspaceId, workspacePath)) return
     const parentRow = treeBody.querySelector('.file-tree-row[data-path="' + CSS.escape(parentPath) + '"]')
     const children = parentRow && parentRow.nextElementSibling
     if (children) {
@@ -375,10 +408,14 @@ function startCreate (parentPath, depth, type) {
           render()
           return
         }
-        ipc.invoke('fileTreeCreate', getWorkspacePath(), parentPath, name, type).then(function (error) {
-          if (error) {
-            alert(error)
-          }
+        if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+        ipc.invoke('fileTreeCreate', workspacePath, parentPath, name, type).then(function (error) {
+          if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+          if (error) alert(error)
+          render()
+        }).catch(function (error) {
+          if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+          alert(error && error.message ? error.message : String(error))
           render()
         })
       })
@@ -391,18 +428,24 @@ function startCreate (parentPath, depth, type) {
 
 /* replaces a row's label with an inline rename editor */
 function startRename (row, oldPath) {
+  const workspaceId = currentWorkspaceId
+  const workspacePath = currentWorkspacePath
   const label = row.querySelector('.file-tree-label')
   const originalName = label.textContent
   showEditor(row, originalName, '', function (value) {
     var name = value.trim()
     if (!name || name === originalName) {
-      label.textContent = originalName
+      render()
       return
     }
-    ipc.invoke('fileTreeRename', getWorkspacePath(), oldPath, name).then(function (error) {
-      if (error) {
-        alert(error)
-      }
+    if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+    ipc.invoke('fileTreeRename', workspacePath, oldPath, name).then(function (error) {
+      if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+      if (error) alert(error)
+      render()
+    }).catch(function (error) {
+      if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+      alert(error && error.message ? error.message : String(error))
       render()
     })
   })
@@ -427,16 +470,21 @@ function collapseAll () {
 }
 
 function moveEntry (sourcePath) {
+  const workspaceId = currentWorkspaceId
+  const workspacePath = currentWorkspacePath
   const parent = sourcePath.replace(/[\\/][^\\/]*$/, '')
   ipc.invoke('showOpenDialog', { properties: ['openDirectory'], defaultPath: parent })
     .then(function (dirs) {
-      if (!dirs || !dirs[0]) return
-      return ipc.invoke('fileTreeMove', getWorkspacePath(), sourcePath, dirs[0])
+      if (!dirs || !dirs[0] || !isCurrentTreeScope(workspaceId, workspacePath)) return null
+      return ipc.invoke('fileTreeMove', workspacePath, sourcePath, dirs[0])
     })
     .then(function (error) {
-      if (error) {
-        alert(error)
-      }
+      if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+      if (error) alert(error)
+      render()
+    }).catch(function (error) {
+      if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+      alert(error && error.message ? error.message : String(error))
       render()
     })
 }
@@ -445,10 +493,15 @@ function deleteEntry (entryPath, entryName) {
   if (!confirm(l('fileTreeDeleteConfirmation').replace('%s', entryName))) {
     return
   }
-  ipc.invoke('fileTreeDelete', getWorkspacePath(), entryPath).then(function (error) {
-    if (error) {
-      alert(error)
-    }
+  const workspaceId = currentWorkspaceId
+  const workspacePath = currentWorkspacePath
+  ipc.invoke('fileTreeDelete', workspacePath, entryPath).then(function (error) {
+    if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+    if (error) alert(error)
+    render()
+  }).catch(function (error) {
+    if (!isCurrentTreeScope(workspaceId, workspacePath)) return
+    alert(error && error.message ? error.message : String(error))
     render()
   })
 }
@@ -541,6 +594,7 @@ function render () {
     syncWorkspaceScope(wsId)
     return
   }
+  cancelActiveEditor()
   renderToken++
   empty(treeBody)
 
@@ -559,7 +613,6 @@ function render () {
   const rootChildren = createChildrenContainer(1)
   treeBody.appendChild(rootChildren)
   rootChildren.hidden = false
-  rootChildren.dataset.loaded = 'true'
   attachClick(rootRow, { name: rootName, type: 'directory' }, rootChildren, wsPath, 1)
   rootRow.querySelector('.file-tree-chevron').classList.add('expanded')
 
@@ -587,6 +640,8 @@ function buildHeader () {
 
 const fileTree = {
   initialize: function () {
+    if (!panel || initialized) return
+    initialized = true
     // structure: [header] + [scrollable tree body] inside the panel
     panel.appendChild(buildHeader())
 
@@ -620,6 +675,11 @@ const fileTree = {
       const selectedWorkspaceId = getWorkspaceId()
       if (selectedWorkspaceId && String(workspaceId) !== selectedWorkspaceId) return
       syncWorkspaceScope()
+    })
+    workspaces.on('workspace-destroyed', function (workspaceId) {
+      if (workspaceId !== null && workspaceId !== undefined) {
+        stateWriter.cancel('tree:' + String(workspaceId))
+      }
     })
     // Covers synchronized workspace updates and task switches.
     workspaces.on('state-sync-change', function () { syncWorkspaceScope() })

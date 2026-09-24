@@ -1,4 +1,4 @@
-/* global fs, path, ipc, isPathInside */
+/* global fs, path, ipc, isPathInside, getViewResource, getViewIdForContents */
 /* file read/write support for the code editor page. fs and path are already
 provided by main.js (all main modules share one scope in the concatenated
 bundle) */
@@ -62,7 +62,7 @@ function isAllowedEditorPath (sender, filePath) {
   return true
 }
 
-ipc.handle('editorReadImage', function (e, filePath) {
+ipc.handle('editorReadImage', async function (e, filePath) {
   try {
     if (!isAllowedEditorPath(e.sender, filePath)) {
       return { error: 'Invalid path' }
@@ -71,22 +71,24 @@ ipc.handle('editorReadImage', function (e, filePath) {
     if (!mimeType) {
       return { error: 'Not an image file' }
     }
-    const stat = fs.lstatSync(filePath)
+    const stat = await fs.promises.lstat(filePath)
     if (!stat.isFile()) {
       return { error: 'Not a regular file' }
     }
     if (stat.size > maxEditorFileSize) {
       return { error: 'File is too large to open' }
     }
+    const image = await fs.promises.readFile(filePath)
+    if (!isAllowedEditorPath(e.sender, filePath)) return { error: 'Invalid path' }
     return {
-      dataURL: 'data:' + mimeType + ';base64,' + fs.readFileSync(filePath).toString('base64')
+      dataURL: 'data:' + mimeType + ';base64,' + image.toString('base64')
     }
   } catch (err) {
     return { error: err.message || 'Failed to read image' }
   }
 })
 
-ipc.handle('editorReadFile', function (e, filePath) {
+ipc.handle('editorReadFile', async function (e, filePath) {
   try {
     if (!isAllowedEditorPath(e.sender, filePath)) {
       return { error: 'Invalid path' }
@@ -94,14 +96,16 @@ ipc.handle('editorReadFile', function (e, filePath) {
     if (isBinaryFilePath(filePath)) {
       return { error: 'Cannot open binary file' }
     }
-    const stat = fs.lstatSync(filePath)
+    const stat = await fs.promises.lstat(filePath)
     if (!stat.isFile()) {
       return { error: 'Not a regular file' }
     }
     if (stat.size > maxEditorFileSize) {
       return { error: 'File is too large to open' }
     }
-    return { content: fs.readFileSync(filePath, 'utf8') }
+    const content = await fs.promises.readFile(filePath, 'utf8')
+    if (!isAllowedEditorPath(e.sender, filePath)) return { error: 'Invalid path' }
+    return { content: content }
   } catch (err) {
     return { error: err.message || 'Failed to read file' }
   }
@@ -109,7 +113,7 @@ ipc.handle('editorReadFile', function (e, filePath) {
 
 /* writes content back to disk. Returns null on success or an
 error message string on failure. */
-ipc.handle('editorWriteFile', function (e, filePath, content) {
+ipc.handle('editorWriteFile', async function (e, filePath, content) {
   try {
     if (!isAllowedEditorPath(e.sender, filePath)) {
       return 'Invalid path'
@@ -119,20 +123,27 @@ ipc.handle('editorWriteFile', function (e, filePath, content) {
     }
     // ensure parent directory still exists (file may have been moved/deleted externally)
     const dir = path.dirname(filePath)
-    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    let directory
+    try {
+      directory = await fs.promises.stat(dir)
+    } catch (err) {
       return 'Directory does not exist'
     }
-    try {
-      // prefer atomic write if available
-      const wfa = require('write-file-atomic')
-      if (wfa && wfa.sync) {
-        wfa.sync(filePath, content, 'utf8')
-      } else {
-        fs.writeFileSync(filePath, content, 'utf8')
-      }
-    } catch (e) {
-      // fallback to regular write
-      fs.writeFileSync(filePath, content, 'utf8')
+    if (!directory.isDirectory()) {
+      return 'Directory does not exist'
+    }
+    // A preview editor can be repointed while this async directory check is
+    // pending. Do not let its old save write after the view now represents a
+    // different workspace file.
+    if (!isAllowedEditorPath(e.sender, filePath)) return 'Invalid path'
+    // The async API queues concurrent writes to the same path and renames a
+    // complete temporary file into place. The synchronous variant blocked
+    // the main process on every editor save.
+    const writeFileAtomic = require('write-file-atomic')
+    if (typeof writeFileAtomic === 'function') {
+      await writeFileAtomic(filePath, content, { encoding: 'utf8' })
+    } else {
+      await fs.promises.writeFile(filePath, content, 'utf8')
     }
     return null
   } catch (err) {
@@ -142,12 +153,13 @@ ipc.handle('editorWriteFile', function (e, filePath, content) {
 
 /* returns basic metadata used for tab titles and dirty-state checks:
 { mtimeMs } */
-ipc.handle('editorStatFile', function (e, filePath) {
+ipc.handle('editorStatFile', async function (e, filePath) {
   try {
     if (!isAllowedEditorPath(e.sender, filePath)) {
       return { mtimeMs: null }
     }
-    const stat = fs.statSync(filePath)
+    const stat = await fs.promises.stat(filePath)
+    if (!isAllowedEditorPath(e.sender, filePath)) return { mtimeMs: null }
     return { mtimeMs: stat.mtimeMs }
   } catch (err) {
     return { mtimeMs: null }

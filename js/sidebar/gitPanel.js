@@ -9,6 +9,9 @@
 
 const fileIcons = require('sidebar/fileIcons.js')
 const uiStateDB = require('util/uiStateDB.js')
+const createGitGraphView = require('sidebar/gitGraphView.js')
+const createGitRefreshGate = require('sidebar/gitRefreshGate.js')
+const createGitStatePersistence = require('sidebar/gitStatePersistence.js')
 
 const panel = document.getElementById('sidebar-panel-git')
 
@@ -16,17 +19,14 @@ let currentWorkspacePath = null
 let currentGitRoot = null
 let currentStatus = null
 let isLoading = false
-let loadingWorkspacePath = null
-let refreshGeneration = 0
 let commitMessage = ''
 
 let currentGraph = null
 let currentLogDetailed = null
 
 const collapsedSections = new Set()
-let graphScrollTop = 0
-let graphViewHeight = 0 // splitter-dragged height; 0 = CSS default
-let graphExpandedCommit = null // hash of the commit whose diff is shown
+const graphState = { scrollTop: 0, viewHeight: 0, expandedCommit: null }
+const refreshGate = createGitRefreshGate()
 let renderToken = 0 // invalidates stale async renders (diff loading)
 let lastRenderKey = null // data signature of the last render; skips no-op re-renders
 
@@ -34,10 +34,32 @@ let lastRenderKey = null // data signature of the last render; skips no-op re-re
    only rebuilds the DOM when this changes, so open diffs, scroll positions
    and the commit box aren't torn down by a no-op poll */
 function renderKey () {
-  return currentWorkspaceId + '|' + currentWorkspacePath + '|' + JSON.stringify([currentStatus, currentGraph, currentLogDetailed])
+  const statusKey = currentStatus && currentStatus.signature != null
+    ? currentStatus.signature
+    : JSON.stringify(currentStatus)
+  return JSON.stringify([currentWorkspaceId, currentWorkspacePath, statusKey, currentGraph, currentLogDetailed])
 }
 
 let currentWorkspaceId = null
+
+const graphViewModule = createGitGraphView({
+  document: document,
+  ipc: ipc,
+  l: l,
+  fileIcons: fileIcons,
+  electron: electron,
+  empty: empty,
+  panel: panel,
+  collapsedSections: collapsedSections,
+  graphState: graphState,
+  persistStateSoon: persistStateSoon,
+  statusLetterColor: statusLetterColor,
+  getGraphData: function () { return { graph: currentGraph, commits: currentLogDetailed } },
+  getGitRoot: function () { return currentGitRoot },
+  getWorkspacePath: function () { return currentWorkspacePath },
+  getRenderToken: function () { return renderToken },
+  refresh: refresh
+})
 
 function getWorkspacePath () {
   const ws = workspaces.getSelected()
@@ -49,32 +71,50 @@ function getWorkspaceId () {
   return ws && ws.id != null ? String(ws.id) : null
 }
 
-/* ----- per-workspace state persistence ----- */
-
-function getStateKey () {
-  return currentWorkspaceId ? 'git:' + currentWorkspaceId : null
+function isWorkspaceSelectionCurrent (workspaceId, workspacePath) {
+  return workspaceId === currentWorkspaceId && workspacePath === currentWorkspacePath &&
+    getWorkspaceId() === workspaceId && (getWorkspacePath() || null) === workspacePath
 }
+
+/* ----- per-workspace state persistence ----- */
 
 /* sections collapsed by default on first run (Branches, Graph) */
 const defaultCollapsedSections = ['branches', 'graph']
 
+const statePersistence = createGitStatePersistence({
+  uiStateDB: uiStateDB,
+  workspaces: workspaces,
+  getCurrentWorkspaceId: function () { return currentWorkspaceId }
+})
+
+function snapshotState () {
+  return {
+    collapsedSections: Array.from(collapsedSections),
+    commitMessage: commitMessage,
+    graphScrollTop: graphState.scrollTop,
+    graphViewHeight: graphState.viewHeight,
+    graphExpandedCommit: graphState.expandedCommit
+  }
+}
+
 async function loadSavedState (workspaceId) {
   workspaceId = workspaceId || currentWorkspaceId
   const workspacePath = currentWorkspacePath
+  const revision = statePersistence.getRevision()
   const key = workspaceId ? 'git:' + workspaceId : null
   if (!key) return
   try {
     const state = await uiStateDB.getGitPanelState(key)
     // A later selection may have happened while the state was loading. Do
     // not apply the old workspace's draft or graph state to the new one.
-    if (workspaceId !== currentWorkspaceId || workspacePath !== currentWorkspacePath) return
+    if (workspaceId !== currentWorkspaceId || workspacePath !== currentWorkspacePath || revision !== statePersistence.getRevision()) return
     collapsedSections.clear()
     if (state && state.collapsedSections) {
       ;(state.collapsedSections || []).forEach(function (s) { collapsedSections.add(s) })
       commitMessage = state.commitMessage || ''
-      graphScrollTop = state.graphScrollTop || 0
-      graphViewHeight = state.graphViewHeight || 0
-      graphExpandedCommit = state.graphExpandedCommit || null
+      graphState.scrollTop = state.graphScrollTop || 0
+      graphState.viewHeight = state.graphViewHeight || 0
+      graphState.expandedCommit = state.graphExpandedCommit || null
     } else {
       // first run for this workspace: Branches & Graph start collapsed
       defaultCollapsedSections.forEach(function (s) { collapsedSections.add(s) })
@@ -84,22 +124,20 @@ async function loadSavedState (workspaceId) {
   }
 }
 
-async function persistState () {
-  const key = getStateKey()
-  if (!key) return
-  const state = {
-    collapsedSections: Array.from(collapsedSections),
-    commitMessage: commitMessage,
-    graphScrollTop: graphScrollTop,
-    graphViewHeight: graphViewHeight,
-    graphExpandedCommit: graphExpandedCommit
-  }
-  await uiStateDB.setGitPanelState(key, state)
+/* Keep only the latest snapshot for each workspace and serialize writes.
+   Scrolling the graph and typing a draft can otherwise enqueue many writes,
+   and overlapping IndexedDB requests can let an older snapshot win. */
+function persistStateSoon () {
+  if (!statePersistence.isWritable(currentWorkspaceId)) return
+  statePersistence.persist(currentWorkspaceId, snapshotState())
 }
 
-/* saves the panel's state without awaiting; used by fire-and-forget callers */
-function persistStateSoon () {
-  persistState().catch(function () {})
+function onWorkspaceDestroyed (workspaceId) {
+  statePersistence.invalidateWorkspace(workspaceId)
+}
+
+function onWorkspaceAdded (workspaceId) {
+  statePersistence.workspaceAdded(workspaceId)
 }
 
 /* WorkspaceList emits both names for compatibility with older task-aware
@@ -115,9 +153,8 @@ function onWorkspaceSelected (workspaceId) {
   if (nextWorkspaceId === currentWorkspaceId) return
 
   persistStateSoon()
-  refreshGeneration++
+  refreshGate.invalidate()
   isLoading = false
-  loadingWorkspacePath = null
   currentWorkspaceId = nextWorkspaceId
   currentWorkspacePath = getWorkspacePath() || null
   currentGitRoot = null
@@ -127,9 +164,9 @@ function onWorkspaceSelected (workspaceId) {
   commitMessage = ''
   collapsedSections.clear()
   defaultCollapsedSections.forEach(function (section) { collapsedSections.add(section) })
-  graphScrollTop = 0
-  graphViewHeight = 0
-  graphExpandedCommit = null
+  graphState.scrollTop = 0
+  graphState.viewHeight = 0
+  graphState.expandedCommit = null
   lastRenderKey = null
   updateBadge(0)
   render()
@@ -149,17 +186,16 @@ function syncWorkspacePath () {
 
   // Drop path-scoped status immediately. The next render starts a fresh read;
   // old git status/graph data must not remain visible while it is in flight.
-  refreshGeneration++
+  refreshGate.invalidate()
   isLoading = false
-  loadingWorkspacePath = null
   currentWorkspacePath = workspacePath
   currentGitRoot = null
   currentStatus = null
   currentGraph = null
   currentLogDetailed = null
   commitMessage = ''
-  graphExpandedCommit = null
-  graphScrollTop = 0
+  graphState.expandedCommit = null
+  graphState.scrollTop = 0
   lastRenderKey = null
   persistStateSoon()
   updateBadge(0)
@@ -184,24 +220,6 @@ function shortStatusLabel (entry) {
   if (s === 'untracked') return 'U'
   if (s === 'conflicted') return 'C'
   return entry.x || entry.status[0].toUpperCase()
-}
-
-/* turns a unix-seconds timestamp into a compact relative time like
-5m, 3h, 2d, 1w, 6mo or 2y */
-function compactDate (timestamp) {
-  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(timestamp))
-  if (seconds < 60) return 'now'
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return minutes + 'm'
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return hours + 'h'
-  const days = Math.floor(hours / 24)
-  if (days < 7) return days + 'd'
-  const weeks = Math.floor(days / 7)
-  if (weeks < 5) return weeks + 'w'
-  const months = Math.floor(days / 30)
-  if (months < 12) return months + 'mo'
-  return Math.floor(days / 365) + 'y'
 }
 
 function buildEmptyState (message, actionLabel, actionFn) {
@@ -254,23 +272,33 @@ function buildCommitBox () {
   generateBtn.title = 'Generate Commit Message'
   generateBtn.setAttribute('aria-label', generateBtn.title)
   generateBtn.addEventListener('click', async function () {
+    const workspaceId = currentWorkspaceId
+    const workspacePath = currentWorkspacePath
     const cwd = currentGitRoot || currentWorkspacePath
     generateBtn.disabled = true
     generateBtn.classList.add('codicon-loading', 'codicon-modifier-spin')
     generateBtn.classList.remove('codicon-sparkle')
-    const result = await ipc.invoke('gitGenerateCommitMessage', cwd)
-    generateBtn.classList.remove('codicon-loading', 'codicon-modifier-spin')
-    generateBtn.classList.add('codicon-sparkle')
-    if (!result || result.error) {
-      alert((result && result.error) || 'Could not generate a commit message.')
-    } else {
-      commitMessage = result.message
-      textarea.value = result.message
-      textarea.focus()
-      updateCommitButtonState()
-      persistStateSoon()
+    try {
+      const result = await ipc.invoke('gitGenerateCommitMessage', cwd)
+      if (!isWorkspaceSelectionCurrent(workspaceId, workspacePath)) return
+      if (!result || result.error) {
+        alert((result && result.error) || 'Could not generate a commit message.')
+      } else {
+        commitMessage = result.message
+        textarea.value = result.message
+        textarea.focus()
+        updateCommitButtonState()
+        persistStateSoon()
+      }
+    } catch (e) {
+      if (isWorkspaceSelectionCurrent(workspaceId, workspacePath)) alert(e.message || 'Could not generate a commit message.')
+    } finally {
+      generateBtn.classList.remove('codicon-loading', 'codicon-modifier-spin')
+      generateBtn.classList.add('codicon-sparkle')
+      if (isWorkspaceSelectionCurrent(workspaceId, workspacePath)) {
+        generateBtn.disabled = !(currentStatus && currentStatus.staged && currentStatus.staged.length > 0)
+      }
     }
-    generateBtn.disabled = !(currentStatus && currentStatus.staged && currentStatus.staged.length > 0)
   })
   inputWrap.appendChild(generateBtn)
   box.appendChild(inputWrap)
@@ -312,6 +340,8 @@ function buildCommitBox () {
 }
 
 async function doCommit () {
+  const workspaceId = currentWorkspaceId
+  const workspacePath = currentWorkspacePath
   const message = commitMessage.trim()
   if (!message) {
     alert(l('gitCommitMessageRequired') || 'Commit message required')
@@ -323,14 +353,14 @@ async function doCommit () {
   const err = await ipc.invoke('gitCommit', cwd, message)
   if (err) {
     alert(err)
-  } else {
+  } else if (isWorkspaceSelectionCurrent(workspaceId, workspacePath)) {
     commitMessage = ''
     const ta = panel.querySelector('.git-commit-input')
     if (ta) ta.value = ''
     persistStateSoon()
     await refresh()
   }
-  if (commitBtn) commitBtn.disabled = false
+  if (commitBtn && isWorkspaceSelectionCurrent(workspaceId, workspacePath)) commitBtn.disabled = false
 }
 
 async function doStageAll () {
@@ -609,13 +639,10 @@ async function discardFiles (files) {
 async function fetchGraph (gitRoot) {
   if (!gitRoot) return { graph: null, commits: null }
   try {
-    const [graphResult, logResult] = await Promise.all([
-      ipc.invoke('gitGraph', gitRoot, 30),
-      ipc.invoke('gitLogDetailed', gitRoot, 30)
-    ])
+    const result = await ipc.invoke('gitGraphData', gitRoot, 30)
     return {
-      graph: graphResult && !graphResult.error ? (graphResult.graph || graphResult) : null,
-      commits: logResult && !logResult.error && logResult.commits ? logResult.commits : null
+      graph: result && !result.error ? result.graph : null,
+      commits: result && !result.error && result.commits ? result.commits : null
     }
   } catch (e) {
     return { graph: null, commits: null }
@@ -759,511 +786,6 @@ function buildBranchesSection () {
   return section
 }
 
-/* Graph lane colors, cycled per active lane (like VSCode's graph) */
-const graphLaneColors = ['#0e639c', '#cca700', '#73c991', '#f85149', '#9b59b6', '#e67e22', '#1abc9c', '#c0392b']
-
-/* SVG symbols used to draw the graph: commit dot, straight vertical line,
-   branch corner, and the merge "T" shape */
-const graphSvgNs = 'http://www.w3.org/2000/svg'
-
-function laneSymbol (color, kind) {
-  const svg = document.createElementNS(graphSvgNs, 'svg')
-  svg.setAttribute('viewBox', '0 0 16 16')
-  svg.setAttribute('width', '14')
-  svg.setAttribute('height', '14')
-  svg.classList.add('git-graph-lane-svg')
-  const path = document.createElementNS(graphSvgNs, 'path')
-  path.setAttribute('stroke', color)
-  path.setAttribute('stroke-width', '1.5')
-  path.setAttribute('fill', 'none')
-  path.setAttribute('stroke-linecap', 'round')
-  path.setAttribute('stroke-linejoin', 'round')
-  if (kind === 'dot') {
-    path.setAttribute('d', 'M8 8 m-3 0 a3 3 0 1 0 6 0 a3 3 0 1 0 -6 0')
-    path.setAttribute('fill', color)
-  } else if (kind === 'vline') {
-    path.setAttribute('d', 'M8 0 L8 16')
-  } else if (kind === 'corner') {
-    // branch turns right: enter from the left, then continue down
-    path.setAttribute('d', 'M2 8 L8 8 L8 16')
-  } else if (kind === 'merge') {
-    // merge from the right: come down, then turn left
-    path.setAttribute('d', 'M8 0 L8 8 L2 8')
-  } else if (kind === 'elbow') {
-    // horizontal connector
-    path.setAttribute('d', 'M2 8 L14 8')
-  } else if (kind === 'diag-r') {
-    // '\' connector: from the left column down to the right column
-    path.setAttribute('d', 'M4 2 L12 14')
-  } else if (kind === 'diag-l') {
-    // '/' connector: from the right column down to the left column
-    path.setAttribute('d', 'M12 2 L4 14')
-  }
-  svg.appendChild(path)
-  return svg
-}
-
-/* The graph is drawn from git's --graph ASCII output, which is a sequence of
-   "lane columns". Each column is 2 chars wide (a lane char + a space). A
-   state machine walks the columns row by row: '|' keeps the lane open,
-   '*' places the commit dot, '\' opens a new lane to the right, '/' closes a
-   lane from the right, '-' draws a horizontal connector (branch/merge). Each
-   lane gets a stable color that follows it down the graph. */
-function buildGraphRows (graphLines) {
-  const rows = []
-  // laneStates[idx] = color of the lane currently passing through column idx
-  let laneStates = []
-  let nextColorIndex = 0
-
-  const newLaneColor = function () {
-    const color = graphLaneColors[nextColorIndex % graphLaneColors.length]
-    nextColorIndex++
-    return color
-  }
-
-  graphLines.forEach(function (line) {
-    const laneMatch = line.match(/^([*|\\/\-\s]+)/)
-    const prefix = laneMatch ? laneMatch[1] : ''
-    const rest = line.slice(prefix.length).trim()
-
-    // git writes one 2-char column per lane: position 2i holds the lane char,
-    // position 2i+1 holds a connector ('\', '/' or ' ')
-    const cols = []
-    for (let i = 0; i < prefix.length; i += 2) {
-      cols.push({ lane: prefix[i] || ' ', conn: prefix[i + 1] || ' ' })
-    }
-
-    const symbols = []
-    const nextLaneStates = []
-    let hasCommit = false
-
-    cols.forEach(function (col, idx) {
-      const ch = col.lane
-      const conn = col.conn
-      const prev = laneStates[idx] || null
-
-      if (ch === '*') {
-        hasCommit = true
-        const color = prev || newLaneColor()
-        symbols.push({ kind: 'dot', color: color, col: idx })
-        if (conn === '\\') {
-          // branch splits off to the right
-          const branchColor = newLaneColor()
-          symbols.push({ kind: 'diag-r', color: branchColor, col: idx })
-          nextLaneStates[idx + 1] = branchColor
-          nextLaneStates[idx] = color
-        } else if (conn === '/') {
-          // a lane merges in from the right
-          const mergedColor = laneStates[idx + 1] || newLaneColor()
-          symbols.push({ kind: 'diag-l', color: mergedColor, col: idx })
-          nextLaneStates[idx] = color
-        } else {
-          // the lane continues straight down
-          nextLaneStates[idx] = color
-        }
-      } else if (ch === '|') {
-        const color = prev || newLaneColor()
-        symbols.push({ kind: 'vline', color: color, col: idx })
-        nextLaneStates[idx] = color
-        if (conn === '\\') {
-          // a new branch lane starts here
-          const branchColor = newLaneColor()
-          symbols.push({ kind: 'diag-r', color: branchColor, col: idx })
-          nextLaneStates[idx + 1] = branchColor
-        } else if (conn === '/') {
-          // the lane from the right merges into this one
-          const mergedColor = laneStates[idx + 1] || newLaneColor()
-          symbols.push({ kind: 'diag-l', color: mergedColor, col: idx })
-        }
-      } else if (ch === '-') {
-        // horizontal connector
-        const color = prev || laneStates[idx - 1] || newLaneColor()
-        symbols.push({ kind: 'elbow', color: color, col: idx })
-        nextLaneStates[idx] = color
-      } else if (ch === '\\') {
-        // rare: backslash as the lane char itself
-        const color = prev || newLaneColor()
-        symbols.push({ kind: 'corner', color: color, col: idx })
-        nextLaneStates[idx + 1] = color
-      } else if (ch === '/') {
-        const color = prev || laneStates[idx + 1] || newLaneColor()
-        symbols.push({ kind: 'merge', color: color, col: idx })
-        nextLaneStates[idx - 1] = color
-      }
-      // ' ' closes any lane at this column
-    })
-
-    laneStates = nextLaneStates
-    rows.push({ symbols: symbols, rest: rest, hasCommit: hasCommit })
-  })
-
-  return rows
-}
-
-function buildGraphDetail (commit) {
-  const detail = document.createElement('div')
-  detail.className = 'git-graph-detail'
-
-  // hash/author/date/refs are already on the row itself; the detail keeps
-  // the full message (the row truncates it) plus the commit's file list
-  const message = document.createElement('div')
-  message.className = 'git-graph-detail-message'
-  message.textContent = commit.message
-  detail.appendChild(message)
-
-  const files = document.createElement('div')
-  files.className = 'git-commit-files'
-  detail.appendChild(files)
-  loadCommitFiles(commit, files)
-
-  return detail
-}
-
-/* the list of files a commit touched, shown in the graph's detail view;
-clicking one opens it as a diff tab against the commit's parent */
-async function loadCommitFiles (commit, container) {
-  const loading = document.createElement('div')
-  loading.className = 'git-commit-files-empty'
-  loading.textContent = l('gitLoadingFiles') || 'Loading files…'
-  container.appendChild(loading)
-
-  const token = renderToken
-  const cwd = currentGitRoot || currentWorkspacePath
-  try {
-    const result = await ipc.invoke('gitCommitFiles', cwd, commit.hash)
-    // the panel may have been re-rendered while the list was loading
-    if (token !== renderToken || !container.isConnected) return
-    empty(container)
-    if (!result || result.error || !result.files || result.files.length === 0) {
-      const emptyEl = document.createElement('div')
-      emptyEl.className = 'git-commit-files-empty'
-      emptyEl.textContent = (result && result.error) || l('gitNoFiles') || 'No files'
-      container.appendChild(emptyEl)
-      return
-    }
-    result.files.forEach(function (file) {
-      container.appendChild(buildCommitFileRow(commit, file, cwd))
-    })
-  } catch (e) {
-    if (token !== renderToken || !container.isConnected) return
-    empty(container)
-    const errEl = document.createElement('div')
-    errEl.className = 'git-commit-files-empty'
-    errEl.textContent = e.message || 'Failed to load files'
-    container.appendChild(errEl)
-  }
-}
-
-function buildCommitFileRow (commit, file, cwd) {
-  const row = document.createElement('div')
-  row.className = 'git-file-row git-commit-file-row'
-
-  const name = file.path.split(/[\\/]/).pop()
-  const icon = document.createElement('img')
-  icon.className = 'file-tree-icon'
-  icon.src = fileIcons.pathPrefix + fileIcons.getIcon(name)
-  icon.alt = ''
-  icon.draggable = false
-  row.appendChild(icon)
-
-  const label = document.createElement('span')
-  label.className = 'git-file-label'
-  label.title = file.oldPath ? file.oldPath + ' → ' + file.path : file.path
-  const fileName = document.createElement('span')
-  fileName.className = 'git-file-name'
-  fileName.textContent = name
-  label.appendChild(fileName)
-  const dirPart = file.path.split(/[\\/]/)
-  dirPart.pop()
-  if (dirPart.length) {
-    const parentPath = document.createElement('span')
-    parentPath.className = 'git-file-path'
-    parentPath.textContent = dirPart.join('/')
-    label.appendChild(parentPath)
-  }
-  row.appendChild(label)
-
-  const statusBadge = document.createElement('span')
-  statusBadge.className = 'git-status-badge'
-  statusBadge.textContent = file.status
-  statusBadge.style.color = statusLetterColor(file.status)
-  row.appendChild(statusBadge)
-
-  row.addEventListener('click', function () {
-    openCommitFileDiff(commit, file, cwd)
-  })
-
-  return row
-}
-
-/* a file inside a commit opens as a diff against the commit's parent; for
-root commits or files added/deleted by it, the missing side renders empty */
-function openCommitFileDiff (commit, file, cwd) {
-  const editorView = require('editorView.js')
-  const name = file.path.split(/[\\/]/).pop()
-  editorView.openDiff({
-    cwd: cwd,
-    resource: cwd + '/' + file.path,
-    title: name + ' (' + commit.shortHash + ')',
-    left: { type: 'ref', ref: commit.hash + '^', path: file.oldPath || file.path, label: commit.shortHash + '^' },
-    right: { type: 'ref', ref: commit.hash, path: file.path, label: commit.shortHash }
-  })
-}
-
-function buildGraphSection () {
-  const sectionKey = 'graph'
-  const section = document.createElement('div')
-  section.className = 'git-section git-graph-section'
-  section.dataset.section = sectionKey
-  // re-apply the splitter-dragged height; renders rebuild this element, so
-  // without this the view snaps back to the CSS default on every refresh
-  if (graphViewHeight > 0 && !collapsedSections.has(sectionKey)) {
-    section.style.flexBasis = graphViewHeight + 'px'
-  }
-
-  const header = document.createElement('div')
-  header.className = 'git-section-header'
-  header.addEventListener('click', function () {
-    if (collapsedSections.has(sectionKey)) collapsedSections.delete(sectionKey)
-    else collapsedSections.add(sectionKey)
-    const collapsed = collapsedSections.has(sectionKey)
-    section.classList.toggle('collapsed', collapsed)
-    // a splitter-dragged flexBasis would keep the collapsed view tall;
-    // drop it so the section shrinks to just its header
-    if (collapsed) {
-      section.style.flexBasis = ''
-    } else if (graphViewHeight > 0) {
-      section.style.flexBasis = graphViewHeight + 'px'
-    }
-    persistStateSoon()
-  })
-  const chevron = document.createElement('span')
-  chevron.className = 'codicon codicon-chevron-down git-section-chevron'
-  if (collapsedSections.has(sectionKey)) section.classList.add('collapsed')
-  header.appendChild(chevron)
-  const titleEl = document.createElement('span')
-  titleEl.className = 'git-section-title'
-  const count = currentLogDetailed ? currentLogDetailed.length : 0
-  titleEl.textContent = (l('gitGraph') || 'Graph') + (count ? ' (' + count + ')' : '')
-  header.appendChild(titleEl)
-  section.appendChild(header)
-
-  const body = document.createElement('div')
-  body.className = 'git-section-body git-graph'
-
-  if (currentLogDetailed && currentLogDetailed.length > 0) {
-    const container = document.createElement('div')
-    container.className = 'git-graph-container'
-
-    // build the full lane layout once, then pair commit rows with commits by
-    // index (connector-only rows like "|\" are skipped)
-    const rawLines = (currentGraph && typeof currentGraph === 'string')
-      ? currentGraph.split('\n').filter(Boolean)
-      : []
-    const graphRows = buildGraphRows(rawLines).filter(function (r) { return r.hasCommit })
-
-    currentLogDetailed.forEach(function (commit, index) {
-      const row = document.createElement('div')
-      row.className = 'git-graph-row'
-      row.dataset.hash = commit.hash
-      row.title = commit.hash + ' ' + commit.message
-
-      const lane = document.createElement('span')
-      lane.className = 'git-graph-lane'
-      const parsed = graphRows[index] || { symbols: [], rest: '' }
-      if (parsed.symbols.length) {
-        parsed.symbols.forEach(function (sym) {
-          const icon = laneSymbol(sym.color, sym.kind)
-          icon.style.marginLeft = (sym.col * 14) + 'px'
-          lane.appendChild(icon)
-        })
-      } else {
-        lane.appendChild(laneSymbol(graphLaneColors[0], 'dot'))
-      }
-      row.appendChild(lane)
-
-      const hashEl = document.createElement('span')
-      hashEl.className = 'git-graph-hash'
-      hashEl.textContent = commit.shortHash
-      row.appendChild(hashEl)
-
-      const msgEl = document.createElement('span')
-      msgEl.className = 'git-graph-message'
-      msgEl.textContent = commit.message
-      if (commit.refs) {
-        const refsEl = document.createElement('span')
-        refsEl.className = 'git-graph-refs'
-        refsEl.textContent = commit.refs
-        msgEl.appendChild(refsEl)
-      }
-      row.appendChild(msgEl)
-
-      const authorEl = document.createElement('span')
-      authorEl.className = 'git-graph-author'
-      authorEl.textContent = commit.author
-      row.appendChild(authorEl)
-
-      const dateEl = document.createElement('span')
-      dateEl.className = 'git-graph-date'
-      dateEl.textContent = compactDate(commit.date)
-      row.appendChild(dateEl)
-
-      // clicking a commit toggles its detail + diff view
-      row.addEventListener('click', function () {
-        graphExpandedCommit = (graphExpandedCommit === commit.hash) ? null : commit.hash
-        persistStateSoon()
-        const detailEl = row.nextElementSibling
-        if (detailEl && detailEl.classList.contains('git-graph-detail')) {
-          detailEl.remove()
-        }
-        if (graphExpandedCommit === commit.hash) {
-          row.classList.add('expanded')
-          row.after(buildGraphDetail(commit))
-        } else {
-          row.classList.remove('expanded')
-        }
-      })
-
-      // right-click: undo (HEAD only) / create branch / checkout / copy hash
-      row.addEventListener('contextmenu', function (e) {
-        e.preventDefault()
-        const remoteMenu = require('remoteMenuRenderer.js')
-        const cwd = currentGitRoot || currentWorkspacePath
-        const short = commit.shortHash
-        const menu = []
-        // undo only makes sense for the tip commit: it deletes HEAD and
-        // moves the commit's changes back to the index
-        if (commit.refs && commit.refs.indexOf('HEAD') !== -1) {
-          menu.push({
-            label: l('gitUndoCommit') || 'Undo Commit',
-            click: function () {
-              if (!confirm((l('gitUndoCommitConfirm') || 'Undo commit %s? Its changes will move back to Staged Changes.').replace('%s', short))) return
-              ipc.invoke('gitUndoCommit', cwd).then(function (err) {
-                if (err) alert(err)
-                refresh()
-              })
-            }
-          })
-        }
-        menu.push({
-          label: l('gitCreateBranchAt') || 'Create Branch from Commit…',
-          click: function () {
-            const name = prompt(l('gitBranchName') || 'Branch name')
-            if (!name) return
-            ipc.invoke('gitCreateBranchAt', cwd, name, commit.hash).then(function (err) {
-              if (err) alert(err)
-              refresh()
-            })
-          }
-        },
-        {
-          label: l('gitCheckoutCommit') || 'Checkout Commit',
-          click: function () {
-            if (!confirm((l('gitCheckoutCommitConfirm') || 'Checkout commit %s?').replace('%s', short))) return
-            ipc.invoke('gitCheckoutCommit', cwd, commit.hash).then(function (err) {
-              if (err) alert(err)
-              refresh()
-            })
-          }
-        })
-        menu.push({
-          label: l('gitCopyHash') || 'Copy Commit Hash',
-          click: function () {
-            electron.clipboard.writeText(commit.hash)
-          }
-        })
-        remoteMenu.open([menu], e.clientX, e.clientY)
-      })
-
-      container.appendChild(row)
-
-      if (graphExpandedCommit === commit.hash) {
-        row.classList.add('expanded')
-        row.after(buildGraphDetail(commit))
-      }
-    })
-
-    body.appendChild(container)
-  } else if (currentGraph && typeof currentGraph === 'string' && currentGraph.trim()) {
-    const container = document.createElement('div')
-    container.className = 'git-graph-container'
-    const graphRows = buildGraphRows(currentGraph.split('\n').filter(Boolean))
-    graphRows.forEach(function (parsed) {
-      const row = document.createElement('div')
-      row.className = 'git-graph-row'
-      const lane = document.createElement('span')
-      lane.className = 'git-graph-lane'
-      parsed.symbols.forEach(function (sym) {
-        const icon = laneSymbol(sym.color, sym.kind)
-        icon.style.marginLeft = (sym.col * 14) + 'px'
-        lane.appendChild(icon)
-      })
-      row.appendChild(lane)
-      const msg = document.createElement('span')
-      msg.className = 'git-graph-message'
-      msg.textContent = parsed.rest
-      row.appendChild(msg)
-      container.appendChild(row)
-    })
-    body.appendChild(container)
-  } else {
-    const empty = document.createElement('div')
-    empty.className = 'git-graph-empty'
-    empty.textContent = l('gitNoCommits') || 'No commits'
-    body.appendChild(empty)
-  }
-  section.appendChild(body)
-
-  // restore the saved scroll position once the graph is in the DOM
-  requestAnimationFrame(function () {
-    const container = section.querySelector('.git-graph-container')
-    if (!container) return
-    if (graphScrollTop > 0) container.scrollTop = graphScrollTop
-    // remember the scroll position while the user browses the graph
-    container.addEventListener('scroll', function () {
-      graphScrollTop = container.scrollTop
-      persistStateSoon()
-    }, { passive: true })
-  })
-  return section
-}
-
-function buildViewSplitter (graphView) {
-  const splitter = document.createElement('div')
-  splitter.className = 'git-view-splitter'
-  splitter.setAttribute('role', 'separator')
-  splitter.setAttribute('aria-orientation', 'horizontal')
-  splitter.tabIndex = 0
-
-  splitter.addEventListener('mousedown', function (event) {
-    event.preventDefault()
-    const startY = event.clientY
-    const startHeight = graphView.getBoundingClientRect().height
-    document.body.classList.add('is-resizing-git-views')
-
-    function resize (moveEvent) {
-      const panelHeight = panel.getBoundingClientRect().height
-      const maxHeight = Math.max(96, panelHeight - 180)
-      const nextHeight = Math.max(72, Math.min(maxHeight, startHeight + startY - moveEvent.clientY))
-      graphView.style.flexBasis = Math.round(nextHeight) + 'px'
-    }
-
-    function stop () {
-      document.removeEventListener('mousemove', resize)
-      document.removeEventListener('mouseup', stop)
-      document.body.classList.remove('is-resizing-git-views')
-      // remember the dragged height; render() rebuilds the graph element
-      // and would otherwise lose it on the next refresh
-      graphViewHeight = Math.round(graphView.getBoundingClientRect().height)
-      persistStateSoon()
-    }
-
-    document.addEventListener('mousemove', resize)
-    document.addEventListener('mouseup', stop)
-  })
-  return splitter
-}
-
 async function refresh () {
   const wsPath = getWorkspacePath() || null
   const wsId = getWorkspaceId()
@@ -1271,64 +793,64 @@ async function refresh () {
     syncWorkspacePath()
     return
   }
-  if (isLoading && loadingWorkspacePath === wsPath && currentWorkspaceId === wsId) return
-  const generation = ++refreshGeneration
-  const isCurrentRequest = function () {
-    return generation === refreshGeneration && getWorkspacePath() === wsPath && getWorkspaceId() === wsId
-  }
   if (!wsPath) {
+    refreshGate.invalidate()
     currentGitRoot = null
     currentStatus = null
     currentGraph = null
     currentLogDetailed = null
     isLoading = false
-    loadingWorkspacePath = null
     updateBadge(0)
     if (renderKey() !== lastRenderKey) render()
     return
   }
-  isLoading = true
-  loadingWorkspacePath = wsPath
-  const loadingEl = panel.querySelector('.git-loading')
-  if (loadingEl) loadingEl.hidden = false
-  try {
-    const status = await ipc.invoke('gitStatus', wsPath)
-    if (!isCurrentRequest()) return
-    if (status && status.isRepo) {
-      const gitRoot = status.gitRoot || wsPath
-      currentStatus = status
-      // fetch branches and graph in parallel when repo exists
-      const graph = await fetchGraph(gitRoot)
+  const key = JSON.stringify([wsId, wsPath])
+  return refreshGate.run(key, async function (isGateCurrent) {
+    const isCurrentRequest = function () {
+      return isGateCurrent() &&
+        getWorkspacePath() === wsPath &&
+        getWorkspaceId() === wsId &&
+        currentWorkspacePath === wsPath &&
+        currentWorkspaceId === wsId
+    }
+    isLoading = true
+    const loadingEl = panel.querySelector('.git-loading')
+    if (loadingEl) loadingEl.hidden = false
+    try {
+      const status = await ipc.invoke('gitStatus', wsPath)
       if (!isCurrentRequest()) return
-      currentGitRoot = gitRoot
-      currentGraph = graph.graph
-      currentLogDetailed = graph.commits
-    } else if (status && status.isRepo === false) {
+      if (status && status.isRepo) {
+        const gitRoot = status.gitRoot || wsPath
+        currentStatus = status
+        const graph = await fetchGraph(gitRoot)
+        if (!isCurrentRequest()) return
+        currentGitRoot = gitRoot
+        currentGraph = graph.graph
+        currentLogDetailed = graph.commits
+      } else if (status && status.isRepo === false) {
+        currentGitRoot = null
+        currentStatus = { isRepo: false }
+        currentGraph = null
+        currentLogDetailed = null
+      } else {
+        currentGitRoot = null
+        currentStatus = status
+        currentGraph = null
+        currentLogDetailed = null
+      }
+    } catch (e) {
+      if (!isCurrentRequest()) return
       currentGitRoot = null
-      currentStatus = { isRepo: false }
       currentGraph = null
       currentLogDetailed = null
-    } else {
-      currentGitRoot = null
-      currentStatus = status
-      currentGraph = null
-      currentLogDetailed = null
+      currentStatus = { error: e.message }
+    } finally {
+      if (isCurrentRequest()) {
+        isLoading = false
+      }
     }
-  } catch (e) {
-    if (!isCurrentRequest()) return
-    currentGitRoot = null
-    currentGraph = null
-    currentLogDetailed = null
-    currentStatus = { error: e.message }
-  } finally {
-    if (generation === refreshGeneration) {
-      isLoading = false
-      loadingWorkspacePath = null
-    }
-  }
-  if (isCurrentRequest()) {
-    if (renderKey() !== lastRenderKey) render()
-  }
+    if (isCurrentRequest() && renderKey() !== lastRenderKey) render()
+  })
 }
 
 function render () {
@@ -1520,9 +1042,9 @@ function render () {
 
   // Changes and Graph are sibling views separated by a draggable split bar.
   if (currentStatus && currentStatus.isRepo && !currentStatus.error) {
-    const graphView = buildGraphSection()
+    const graphView = graphViewModule.buildGraphSection()
     graphView.classList.add('git-split-view')
-    const splitter = buildViewSplitter(graphView)
+    const splitter = graphViewModule.buildViewSplitter(graphView)
     panel.appendChild(splitter)
     panel.appendChild(graphView)
   }
@@ -1562,6 +1084,8 @@ const gitPanel = {
     // re-render on workspace change (both event names are retained for
     // compatibility; onWorkspaceSelected de-duplicates their pair)
     workspaces.on('workspace-selected', onWorkspaceSelected)
+    workspaces.on('workspace-destroyed', onWorkspaceDestroyed)
+    workspaces.on('workspace-added', onWorkspaceAdded)
     // task switches within a workspace share the same repo/state; the
     // workspace-selected handler above covers re-renders
     workspaces.on('state-sync-change', function () {

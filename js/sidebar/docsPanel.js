@@ -1,4 +1,4 @@
-/* global ipc, l, tasks, empty */
+/* global ipc, l, empty */
 
 /* Workspace-scoped document list for the Docs activity. Documents are kept in
  * Min's local data store, so this panel is available for workspaces without a
@@ -8,6 +8,8 @@ const customDataStore = require('util/customDataStore.js')
 const docsView = require('docsView.js')
 const promptModal = require('promptModal.js')
 const sidebarUI = require('sidebar/ui.js')
+const createRequestGate = require('sidebar/lifecycle/requestGate.js')
+const createCoalescedTask = require('sidebar/lifecycle/coalescedTask.js')
 
 const panel = document.getElementById('sidebar-panel-docs')
 
@@ -15,12 +17,16 @@ let currentWorkspaceId = null
 let documents = []
 let isLoading = false
 let lastError = null
-let refreshSequence = 0
-let creating = false
-let queuedEventRefresh = null
-let refreshRequestNumber = 0
-const latestRefreshRequestByWorkspace = new Map()
+const refreshGate = createRequestGate()
+const creatingWorkspaceIds = new Set()
 const privateUpdateSequences = new Map()
+let initialized = false
+
+const queuedRefresh = createCoalescedTask(function (workspaceId) {
+  if (workspaceId && workspaceId === currentWorkspaceId) {
+    refresh({ workspaceId: workspaceId, silent: true })
+  }
+}, 0)
 
 function t (key, fallback) {
   const value = l(key)
@@ -99,10 +105,12 @@ function sortDocuments (list) {
   })
 }
 
-function isCurrentRefresh (workspaceId, sequence) {
-  if (workspaceId !== currentWorkspaceId || sequence !== refreshSequence) return false
-  const selected = workspaceIdFromSelection()
-  return !selected || selected === workspaceId
+function isCurrentRefresh (request) {
+  return refreshGate.isCurrent(request, workspaceIdFromSelection())
+}
+
+function isVisibleWorkspace (workspaceId) {
+  return currentWorkspaceId === workspaceId && workspaceIdFromSelection() === workspaceId
 }
 
 function buildHeader () {
@@ -112,7 +120,7 @@ function buildHeader () {
     actions: [{
       icon: 'codicon-add',
       label: t('docsNew', 'New document'),
-      disabled: !currentWorkspaceId || creating,
+      disabled: !currentWorkspaceId || creatingWorkspaceIds.has(currentWorkspaceId),
       onClick: function (event) {
         event.stopPropagation()
         createDocument()
@@ -134,7 +142,7 @@ function buildEmptyState () {
     icon: 'codicon-note',
     message: t('docsEmpty', 'No documents yet.'),
     actionLabel: t('docsNew', 'New document'),
-    actionDisabled: creating,
+    actionDisabled: !!currentWorkspaceId && creatingWorkspaceIds.has(currentWorkspaceId),
     onAction: function (event) {
       event.stopPropagation()
       createDocument()
@@ -284,14 +292,16 @@ async function refresh (options) {
     : workspaceIdFromSelection())
 
   if (requestedWorkspaceId !== currentWorkspaceId) {
+    // A write started in the previous workspace may finish after a switch. It
+    // can update that workspace's store, but must not move the visible panel.
+    if (requestedWorkspaceId !== workspaceIdFromSelection()) return null
     currentWorkspaceId = requestedWorkspaceId
     documents = []
     lastError = null
   }
 
-  const sequence = ++refreshSequence
-  const requestNumber = ++refreshRequestNumber
-  latestRefreshRequestByWorkspace.set(requestedWorkspaceId, requestNumber)
+  queuedRefresh.invalidate()
+  const request = refreshGate.begin(requestedWorkspaceId)
   if (!requestedWorkspaceId) {
     isLoading = false
     documents = []
@@ -306,7 +316,7 @@ async function refresh (options) {
 
   try {
     const result = await ensureStoreMethod('listDocuments')(requestedWorkspaceId)
-    if (!isCurrentRefresh(requestedWorkspaceId, sequence)) return null
+    if (!isCurrentRefresh(request)) return null
     if (!operationSucceeded(result)) {
       throw new Error(resultError(result, t('docsLoadError', 'Could not load documents')))
     }
@@ -316,7 +326,7 @@ async function refresh (options) {
     render()
     return documents
   } catch (error) {
-    if (!isCurrentRefresh(requestedWorkspaceId, sequence)) return null
+    if (!isCurrentRefresh(request)) return null
     isLoading = false
     lastError = error && error.message ? error.message : t('docsLoadError', 'Could not load documents')
     render()
@@ -326,8 +336,8 @@ async function refresh (options) {
 
 async function createDocument () {
   const workspaceId = currentWorkspaceId || workspaceIdFromSelection()
-  if (!workspaceId || creating) return null
-  creating = true
+  if (!workspaceId || creatingWorkspaceIds.has(workspaceId)) return null
+  creatingWorkspaceIds.add(workspaceId)
   render()
 
   let title
@@ -343,9 +353,9 @@ async function createDocument () {
     title = null
   }
 
-  if (!title) {
-    creating = false
-    render()
+  if (!title || !isVisibleWorkspace(workspaceId)) {
+    creatingWorkspaceIds.delete(workspaceId)
+    if (currentWorkspaceId === workspaceId) render()
     return null
   }
 
@@ -355,19 +365,19 @@ async function createDocument () {
       throw new Error(resultError(result, t('docsCreateError', 'Could not create document')))
     }
     const created = documentFromResult(result)
-    lastError = null
+    if (isVisibleWorkspace(workspaceId)) lastError = null
     await refresh({ workspaceId: workspaceId, silent: true })
-    if (created && created.id && currentWorkspaceId === workspaceId && workspaceIdFromSelection() === workspaceId) {
+    if (created && created.id && isVisibleWorkspace(workspaceId)) {
       docsView.open(workspaceId, created.id, created.title)
     }
     return created
   } catch (error) {
-    if (currentWorkspaceId === workspaceId) {
+    if (isVisibleWorkspace(workspaceId)) {
       lastError = error && error.message ? error.message : t('docsCreateError', 'Could not create document')
     }
     return null
   } finally {
-    creating = false
+    creatingWorkspaceIds.delete(workspaceId)
     if (currentWorkspaceId === workspaceId) render()
   }
 }
@@ -382,7 +392,7 @@ async function renameDocument (documentData) {
     ok: t('docsSave', 'Save'),
     cancel: l('dialogSkipButton') || 'Cancel'
   })
-  if (!title || currentWorkspaceId !== workspaceId) return null
+  if (!title || !isVisibleWorkspace(workspaceId)) return null
 
   try {
     const result = await ensureStoreMethod('updateDocument')(workspaceId, documentData.id, { title: title })
@@ -390,11 +400,11 @@ async function renameDocument (documentData) {
       throw new Error(resultError(result, t('docsRenameError', 'Could not rename document')))
     }
     docsView.updateTitle(workspaceId, documentData.id, title)
-    lastError = null
+    if (isVisibleWorkspace(workspaceId)) lastError = null
     await refresh({ workspaceId: workspaceId, silent: true })
     return documentFromResult(result)
   } catch (error) {
-    if (currentWorkspaceId === workspaceId) {
+    if (isVisibleWorkspace(workspaceId)) {
       lastError = error && error.message ? error.message : t('docsRenameError', 'Could not rename document')
       render()
     }
@@ -411,7 +421,7 @@ async function deleteDocument (documentData) {
     ok: t('docsDelete', 'Delete'),
     cancel: l('dialogSkipButton') || 'Cancel'
   })
-  if (!confirmed || currentWorkspaceId !== workspaceId) return false
+  if (!confirmed || !isVisibleWorkspace(workspaceId)) return false
 
   try {
     const result = await ensureStoreMethod('deleteDocument')(workspaceId, documentData.id)
@@ -419,11 +429,11 @@ async function deleteDocument (documentData) {
       throw new Error(resultError(result, t('docsDeleteError', 'Could not delete document')))
     }
     docsView.close(workspaceId, documentData.id)
-    lastError = null
+    if (isVisibleWorkspace(workspaceId)) lastError = null
     await refresh({ workspaceId: workspaceId, silent: true })
     return true
   } catch (error) {
-    if (currentWorkspaceId === workspaceId) {
+    if (isVisibleWorkspace(workspaceId)) {
       lastError = error && error.message ? error.message : t('docsDeleteError', 'Could not delete document')
       render()
     }
@@ -434,15 +444,16 @@ async function deleteDocument (documentData) {
 async function updatePrivate (documentData, input, value) {
   const workspaceId = currentWorkspaceId
   if (!workspaceId || !documentData || !input) return
-  const sequence = (privateUpdateSequences.get(documentData.id) || 0) + 1
-  privateUpdateSequences.set(documentData.id, sequence)
+  const updateKey = workspaceId + '\0' + documentData.id
+  const sequence = (privateUpdateSequences.get(updateKey) || 0) + 1
+  privateUpdateSequences.set(updateKey, sequence)
   const desired = value === true
   input.disabled = true
   input.setAttribute('aria-busy', 'true')
 
   try {
     const result = await ensureStoreMethod('updateDocument')(workspaceId, documentData.id, { private: desired })
-    if (privateUpdateSequences.get(documentData.id) !== sequence) return
+    if (privateUpdateSequences.get(updateKey) !== sequence || currentWorkspaceId !== workspaceId || workspaceIdFromSelection() !== workspaceId) return
     if (!operationSucceeded(result)) {
       throw new Error(resultError(result, t('docsSaveError', 'Could not save document')))
     }
@@ -451,14 +462,17 @@ async function updatePrivate (documentData, input, value) {
     lastError = null
     render()
   } catch (error) {
-    if (privateUpdateSequences.get(documentData.id) !== sequence) return
+    if (privateUpdateSequences.get(updateKey) !== sequence || currentWorkspaceId !== workspaceId || workspaceIdFromSelection() !== workspaceId) return
     if (currentWorkspaceId === workspaceId) {
       lastError = error && error.message ? error.message : t('docsSaveError', 'Could not save document')
       render()
     }
   } finally {
-    input.removeAttribute('aria-busy')
-    input.disabled = false
+    if (privateUpdateSequences.get(updateKey) === sequence) {
+      privateUpdateSequences.delete(updateKey)
+      input.removeAttribute('aria-busy')
+      input.disabled = false
+    }
   }
 }
 
@@ -468,7 +482,8 @@ function onWorkspaceChange (workspaceId) {
   if (workspaceId !== null && workspaceId !== undefined && workspaceId !== '' && selected && next !== selected) return
   if (next === currentWorkspaceId) return
 
-  refreshSequence++
+  refreshGate.setScope(next)
+  queuedRefresh.invalidate()
   currentWorkspaceId = next
   documents = []
   lastError = null
@@ -484,25 +499,16 @@ function onDocumentsChanged (event, value) {
 }
 
 /* The main process broadcast and the Docs page relay can describe the same
- * save. Coalesce callbacks delivered in one turn so one save causes one list
- * read, while still invalidating stale responses with refreshSequence. */
+ * save. Coalesce callbacks delivered in one turn; a direct refresh cancels
+ * the pending callback before it can start a duplicate list read. */
 function queueRefresh (workspaceId) {
-  if (queuedEventRefresh && queuedEventRefresh.workspaceId === workspaceId) return
-  queuedEventRefresh = { workspaceId: workspaceId, requestNumber: refreshRequestNumber }
-  setTimeout(function () {
-    const queued = queuedEventRefresh
-    queuedEventRefresh = null
-    if (!queued || queued.workspaceId !== currentWorkspaceId) return
-    // A CRUD action may have already started its explicit refresh before the
-    // broadcast callback runs. That request supersedes this queued one.
-    if (latestRefreshRequestByWorkspace.get(queued.workspaceId) > queued.requestNumber) return
-    refresh({ workspaceId: queued.workspaceId, silent: true })
-  }, 0)
+  queuedRefresh.schedule(workspaceId)
 }
 
 const docsPanel = {
   initialize: function () {
-    if (!panel) return
+    if (!panel || initialized) return
+    initialized = true
     docsView.initialize()
     render()
 
@@ -523,6 +529,7 @@ const docsPanel = {
     }
 
     currentWorkspaceId = workspaceIdFromSelection()
+    refreshGate.setScope(currentWorkspaceId)
     documents = []
     isLoading = !!currentWorkspaceId
     render()

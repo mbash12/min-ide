@@ -10,6 +10,7 @@ const notesView = require('notesView.js')
 const promptModal = require('promptModal.js')
 const sidebarUI = require('sidebar/ui.js')
 const formatRelativeDate = require('util/relativeDate.js')
+const createCoalescedTask = require('sidebar/lifecycle/coalescedTask.js')
 
 const panel = document.getElementById('sidebar-panel-notes')
 
@@ -18,7 +19,11 @@ let isLoading = false
 let lastError = null
 let refreshSequence = 0
 let creating = false
-let queuedEventRefresh = false
+let initialized = false
+
+const queuedRefresh = createCoalescedTask(function () {
+  refresh({ silent: true })
+}, 0)
 
 function t (key, fallback) {
   const value = l(key)
@@ -234,6 +239,7 @@ function render () {
 
 async function refresh (options) {
   options = options || {}
+  queuedRefresh.invalidate()
   const sequence = ++refreshSequence
 
   if (!options.silent || notes.length === 0) {
@@ -364,20 +370,16 @@ function onNotesChanged () {
 }
 
 /* Saves from open note tabs and panel CRUD can arrive together; coalesce them
- * so one burst causes one list read, while refreshSequence still invalidates
- * any response that was already in flight. */
+ * so one burst causes one list read. An explicit refresh cancels the queued
+ * callback before it can duplicate that read. */
 function queueRefresh () {
-  if (queuedEventRefresh) return
-  queuedEventRefresh = true
-  setTimeout(function () {
-    queuedEventRefresh = false
-    refresh({ silent: true })
-  }, 0)
+  queuedRefresh.schedule()
 }
 
 const notesPanel = {
   initialize: function () {
-    if (!panel) return
+    if (!panel || initialized) return
+    initialized = true
     notesView.initialize()
     render()
 

@@ -7,36 +7,6 @@ var hasSeparateTitlebar = settings.get('useSeparateTitlebar')
 var windowIsMaximized = false // affects navbar height on Windows
 var windowIsFullscreen = false
 
-// called whenever a new page starts loading, or an in-page navigation occurs
-function onPageURLChange (tab, url) {
-  if (url.indexOf('https://') === 0 || url.indexOf('about:') === 0 || url.indexOf('chrome:') === 0 || url.indexOf('file://') === 0 || url.indexOf('min://') === 0) {
-    tabs.update(tab, {
-      secure: true,
-      url: url
-    })
-  } else {
-    tabs.update(tab, {
-      secure: false,
-      url: url
-    })
-  }
-
-  webviews.callAsync(tab, 'setVisualZoomLevelLimits', [1, 3])
-}
-
-// called whenever a navigation finishes
-function onNavigate (tabId, url, isInPlace, isMainFrame, frameProcessId, frameRoutingId) {
-  if (isMainFrame) {
-    onPageURLChange(tabId, url)
-  }
-}
-
-// called whenever the page finishes loading
-function onPageLoad (tabId) {
-  // page preview capture is disabled: the stale screenshot placeholder looked
-  // like a broken blur overlay when the drawer was open
-}
-
 function scrollOnLoad (tabId, scrollPosition) {
   const listener = function (eTabId) {
     if (eTabId === tabId) {
@@ -66,7 +36,8 @@ function scrollOnLoad (tabId, scrollPosition) {
 }
 
 function setAudioMutedOnCreate (tabId, muted) {
-  const listener = function () {
+  const listener = function (navigatedId) {
+    if (navigatedId !== tabId) return
     webviews.callAsync(tabId, 'setAudioMuted', muted)
     webviews.unbindEvent('did-navigate', listener)
   }
@@ -98,6 +69,7 @@ const webviews = {
   editorDirtyTabs: {},
   placeholderRequests: [],
   asyncCallbacks: {},
+  viewGenerations: new Map(),
   splitProvider: null, // set by splitView.initialize() - provides split view state
   internalPages: {
     error: 'min://app/pages/error/index.html'
@@ -108,6 +80,14 @@ const webviews = {
     if (!tabId) return false
     const task = workspaces.findTaskContainingTab(tabId)
     return !!(task && task.tabs.get(tabId) && task.tabs.get(tabId).hasWebContents)
+  },
+  getTabData: function (tabId) {
+    const task = workspaces.findTaskContainingTab(tabId)
+    return task ? task.tabs.get(tabId) : undefined
+  },
+  updateTabState: function (tabId, changes) {
+    const task = workspaces.findTaskContainingTab(tabId)
+    if (task) task.tabs.update(tabId, changes)
   },
   setEditorDirty: function (tabId, isDirty) {
     if (isDirty) {
@@ -138,7 +118,7 @@ const webviews = {
       // the view could have been destroyed between when the event was occured and when it was recieved in the UI process, see https://github.com/minbrowser/min/issues/604#issuecomment-419653437
       return
     }
-    webviews.events.forEach(function (ev) {
+    webviews.events.slice().forEach(function (ev) {
       if (ev.event === event) {
         ev.fn.apply(this, [tabId].concat(args))
       }
@@ -197,7 +177,7 @@ const webviews = {
   an internal surface points at, plus the workspace it belongs to (the editor
   uses that as its file access boundary). Web tabs have neither. */
   getViewResourceFor: function (tabId) {
-    const tab = tabs.get(tabId)
+    const tab = webviews.getTabData(tabId)
     const home = workspaces.findWorkspaceContainingTab(tabId)
     const out = {
       resource: (tab && tab.resource) || legacyResourceFromURL(tab && tab.url),
@@ -242,7 +222,8 @@ const webviews = {
     })
   },
   add: function (tabId, existingViewId) {
-    var tabData = tabs.get(tabId)
+    var tabData = webviews.getTabData(tabId)
+    if (!tabData || (tabData.hasWebContents && !existingViewId)) return
 
     // needs to be called before the view is created to that its listeners can be registered
     if (tabData.scrollPosition) {
@@ -278,6 +259,8 @@ const webviews = {
     }
 
     const viewResource = webviews.getViewResourceFor(tabId)
+    const generation = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
+    webviews.viewGenerations.set(tabId, generation)
     ipc.send('createView', {
       existingViewId,
       id: tabId,
@@ -288,7 +271,8 @@ const webviews = {
       events: webviews.events.map(e => e.event).filter((i, idx, arr) => arr.indexOf(i) === idx),
       resource: viewResource.resource,
       rootPath: viewResource.rootPath,
-      extra: viewResource.extra
+      extra: viewResource.extra,
+      generation: generation
     })
 
     if (!existingViewId) {
@@ -319,7 +303,7 @@ const webviews = {
     return !!(sidebar && sidebar.contains(el))
   },
   setSelected: function (id, options) { // options.focus - whether to focus the view. Defaults to true.
-    webviews.emitEvent('view-hidden', webviews.selectedId)
+    if (webviews.selectedId !== id) webviews.emitEvent('view-hidden', webviews.selectedId)
 
     webviews.selectedId = id
 
@@ -371,7 +355,15 @@ const webviews = {
     }
     //we may be destroying a view for which the tab object no longer exists, so this message should be sent unconditionally
     ipc.send('destroyView', id)
+    webviews.viewGenerations.delete(id)
 
+    Object.keys(webviews.asyncCallbacks).forEach(function (callId) {
+      const pending = webviews.asyncCallbacks[callId]
+      if (pending.tabId !== id) return
+      delete webviews.asyncCallbacks[callId]
+      clearTimeout(pending.timer)
+      pending.callback(new Error('View was destroyed'))
+    })
     delete webviews.viewFullscreenMap[id]
     delete webviews.editorDirtyTabs[id]
     if (webviews.selectedId === id) {
@@ -476,7 +468,13 @@ const webviews = {
     }
     if (cb) {
       var callId = Math.random()
-      webviews.asyncCallbacks[callId] = cb
+      const timer = setTimeout(function () {
+        const pending = webviews.asyncCallbacks[callId]
+        if (!pending) return
+        delete webviews.asyncCallbacks[callId]
+        pending.callback(new Error('View call timed out: ' + method))
+      }, 30000)
+      webviews.asyncCallbacks[callId] = { tabId: id, callback: cb, timer: timer }
     }
     ipc.send('callViewMethod', { id: id, callId: callId, method: method, args: args })
   },
@@ -537,103 +535,34 @@ ipc.on('leave-full-screen', function () {
   webviews.resize()
 })
 
-webviews.bindEvent('did-start-navigation', onNavigate)
-webviews.bindEvent('will-redirect', onNavigate)
-webviews.bindEvent('did-navigate', function (tabId, url, httpResponseCode, httpStatusText) {
-  onPageURLChange(tabId, url)
-})
+require('webviews/tabEvents.js')({ webviews, urlParser, settings })
 
-webviews.bindEvent('did-finish-load', onPageLoad)
-
-webviews.bindEvent('page-title-updated', function (tabId, title, explicitSet) {
-  tabs.update(tabId, {
-    title: title
-  })
-})
-
-/* safety net: page-title-updated is a pushed event and can be missed (e.g.
-when a view is recreated mid-navigation or the renderer is busy), so pull the
-final title once loading settles */
-webviews.bindEvent('did-stop-loading', function (tabId) {
-  webviews.callAsync(tabId, 'getTitle', function (err, title) {
-    const tab = tabs.get(tabId)
-    if (!err && title && tab && tab.title !== title) {
-      tabs.update(tabId, { title: title })
-    }
-  })
-})
-
-webviews.bindEvent('did-fail-load', function (tabId, errorCode, errorDesc, validatedURL, isMainFrame) {
-  if (errorCode && errorCode !== -3 && isMainFrame && validatedURL) {
-    webviews.update(tabId, webviews.internalPages.error + '?ec=' + encodeURIComponent(errorCode) + '&url=' + encodeURIComponent(validatedURL))
-  }
-})
-
-webviews.bindEvent('crashed', function (tabId, isKilled) {
-  var url = tabs.get(tabId).url
-
-  tabs.update(tabId, {
-    url: webviews.internalPages.error + '?ec=crash&url=' + encodeURIComponent(url)
-  })
-
-  // the existing process has crashed, so we can't reuse it
-  webviews.destroy(tabId)
-  webviews.add(tabId)
-
-  if (tabId === tabs.getSelected()) {
-    webviews.setSelected(tabId)
-  }
-})
-
-webviews.bindIPC('getSettingsData', function (tabId, args) {
-  if (!urlParser.isInternalURL(tabs.get(tabId).url)) {
-    throw new Error()
-  }
-  webviews.callAsync(tabId, 'send', ['receiveSettingsData', settings.list])
-})
-webviews.bindIPC('setSetting', function (tabId, args) {
-  if (!urlParser.isInternalURL(tabs.get(tabId).url)) {
-    throw new Error()
-  }
-  settings.set(args[0].key, args[0].value)
-})
-
-settings.listen(function () {
-  tasks.forEach(function (task) {
-    task.tabs.forEach(function (tab) {
-      if (tab.url.startsWith('min://')) {
-        try {
-          webviews.callAsync(tab.id, 'send', ['receiveSettingsData', settings.list])
-        } catch (e) {
-          // webview might not actually exist
-        }
-      }
-    })
-  })
-})
-
-webviews.bindIPC('scroll-position-change', function (tabId, args) {
-  tabs.update(tabId, {
-    scrollPosition: args[0]
-  })
-})
-
-webviews.bindIPC('downloadFile', function (tabId, args) {
-  if (tabs.get(tabId).url.startsWith('min://')) {
-    webviews.callAsync(tabId, 'downloadURL', [args[0]])
-  }
+// Main may reuse a view created by another window. Its generation is the
+// authority when adopting that view or receiving a duplicate create request.
+ipc.on('view-generation', function (e, data) {
+  const tab = webviews.getTabData(data.id)
+  if (!tab || !tab.hasWebContents) return
+  if (data.generation) webviews.viewGenerations.set(data.id, data.generation)
+  else webviews.viewGenerations.delete(data.id)
 })
 
 ipc.on('view-event', function (e, args) {
+  const expected = webviews.viewGenerations.get(args.tabId)
+  if (args.generation && expected && args.generation !== expected) return
   webviews.emitEvent(args.event, args.tabId, args.args)
 })
 
 ipc.on('async-call-result', function (e, args) {
-  webviews.asyncCallbacks[args.callId](args.error, args.result)
+  const pending = webviews.asyncCallbacks[args.callId]
+  if (!pending) return
   delete webviews.asyncCallbacks[args.callId]
+  clearTimeout(pending.timer)
+  pending.callback(args.error, args.result)
 })
 
 ipc.on('view-ipc', function (e, args) {
+  const expected = webviews.viewGenerations.get(args.id)
+  if (args.generation && expected && args.generation !== expected) return
   if (!webviews.hasViewForTab(args.id)) {
     // the view could have been destroyed between when the event was occured and when it was recieved in the UI process, see https://github.com/minbrowser/min/issues/604#issuecomment-419653437
     return

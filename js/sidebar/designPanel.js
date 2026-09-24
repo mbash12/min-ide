@@ -2,7 +2,10 @@
 /* Design sidebar: engine controls are global; file and layer context follows
 the active tab. The engine uses the Figma session from the Min tab. */
 
+const createDesignPanelLifecycle = require('sidebar/designPanelLifecycle.js')
+const createDesignPanelExport = require('sidebar/designPanelExport.js')
 const panel = document.getElementById('sidebar-panel-design')
+const lifecycle = createDesignPanelLifecycle()
 
 let lastStatus = null
 let lastParsed = null
@@ -14,8 +17,8 @@ let lastResultKind = 'css'
 let resultModalOpen = false
 let busy = false
 let renderKey = ''
-let statusRefreshGeneration = 0
-let overlayRefreshGeneration = 0
+let contextRevision = 0
+let actionRevision = 0
 let queuedRenderFrame = null
 
 function scheduleRender () {
@@ -50,6 +53,65 @@ function contextTabId () {
 
 function sameTab (a, b) {
   return a != null && b != null && String(a) === String(b)
+}
+
+function currentContext () {
+  const tab = selectedTab()
+  const ws = workspaceInfo()
+  return {
+    revision: contextRevision,
+    tabId: tab && tab.id,
+    url: String((tab && tab.url) || ''),
+    workspaceId: ws.workspaceId,
+    workspacePath: ws.workspacePath
+  }
+}
+
+function contextKey (context) {
+  return JSON.stringify([
+    context.revision,
+    context.tabId == null ? null : String(context.tabId),
+    context.url,
+    context.workspaceId == null ? null : String(context.workspaceId),
+    context.workspacePath || null
+  ])
+}
+
+function contextIsCurrent (context) {
+  return contextKey(context) === contextKey(currentContext())
+}
+
+function invalidateContextWork () {
+  contextRevision++
+  actionRevision++
+  lifecycle.invalidate('status')
+  lifecycle.invalidate('overlay')
+  exportController.invalidateContext()
+  if (busy) {
+    busy = false
+    exportingFor = null
+  }
+  lastError = null
+  lastResult = null
+  resultModalOpen = false
+  importModalOpen = false
+  importFrames = null
+  scheduleRender()
+}
+
+function beginScopedAction () {
+  const action = { revision: ++actionRevision, context: currentContext() }
+  setBusy(true)
+  return action
+}
+
+function actionIsCurrent (action) {
+  return !!action && action.revision === actionRevision && contextIsCurrent(action.context)
+}
+
+function finishScopedAction (action) {
+  if (!action || action.revision !== actionRevision) return
+  setBusy(false)
 }
 
 function contextMatchesSelected () {
@@ -177,34 +239,30 @@ function rememberParsed (parsed, url, tabId) {
 }
 
 async function refreshStatus () {
-  const generation = ++statusRefreshGeneration
-  const tab = selectedTab()
-  const tabId = tab && tab.id
-  const url = tab && tab.url ? tab.url : ''
-  try {
+  const context = currentContext()
+  const scope = contextKey(context)
+  const result = await lifecycle.refresh('status', scope, async function () {
     const status = await ipc.invoke('figmaEngine:status')
-    const parsed = await ipc.invoke('figmaEngine:parseUrl', url)
-    // Lifecycle events and the 2.5s poll can overlap while Connect is
-    // finishing. Do not let an older response overwrite the final connected
-    // status; switching tabs starts a newer generation too.
-    if (generation !== statusRefreshGeneration) return
-    lastStatus = status
+    const parsed = await ipc.invoke('figmaEngine:parseUrl', context.url)
+    return { status: status, parsed: parsed }
+  }, function () { return scope === contextKey(currentContext()) })
+  if (!result.current) return
+  if (result.error) {
+    lastError = result.error.message || String(result.error)
+  } else {
+    lastStatus = result.value.status
     const current = selectedTab()
     if (
-      (tabId == null && !current) ||
+      (context.tabId == null && !current) ||
       (
         current &&
-        sameTab(tabId, current.id) &&
-        String(current.url || '') === String(url || '')
+        sameTab(context.tabId, current.id) &&
+        String(current.url || '') === context.url
       )
     ) {
-      rememberParsed(parsed, url, tabId)
+      rememberParsed(result.value.parsed, context.url, context.tabId)
     }
-  } catch (err) {
-    if (generation !== statusRefreshGeneration) return
-    lastError = err.message || String(err)
   }
-  if (generation !== statusRefreshGeneration) return
   scheduleRender()
 }
 
@@ -246,56 +304,58 @@ function workspaceInfo () {
 async function connectSelectedTab () {
   const tab = selectedTab()
   if (!tab || busy) return
-  const parsed = await ipc.invoke('figmaEngine:parseUrl', tab.url)
-  if (!parsed || !parsed.isFigmaFile) {
-    lastError = t('designNotFigma', 'Not a Figma file')
-    render(true)
-    return
-  }
+  const action = beginScopedAction()
   const ws = workspaceInfo()
-  setBusy(true)
   lastError = null
   lastResult = null
   try {
+    const parsed = await ipc.invoke('figmaEngine:parseUrl', tab.url)
+    if (!actionIsCurrent(action)) return
+    if (!parsed || !parsed.isFigmaFile) {
+      lastError = t('designNotFigma', 'Not a Figma file')
+      return
+    }
     const result = await ipc.invoke('figmaEngine:connect', {
       tabId: tab.id,
       url: tab.url,
       workspaceId: ws.workspaceId,
       workspacePath: ws.workspacePath
     })
-    await refreshStatus()
+    if (!actionIsCurrent(action)) return
     if (result && result.ok === false && !result.needsLogin) {
-      const current = selectedTab()
-      if (current && sameTab(current.id, tab.id)) {
-        lastError = result.error || t('designConnectFailed', 'Connect failed')
-      }
+      lastError = result.error || t('designConnectFailed', 'Connect failed')
     }
+    refreshStatus()
   } catch (err) {
-    lastError = err.message || String(err)
+    if (actionIsCurrent(action)) lastError = err.message || String(err)
+  } finally {
+    finishScopedAction(action)
   }
-  setBusy(false)
 }
 
 async function disconnectSelectedTab () {
   if (busy) return
-  setBusy(true)
+  const action = beginScopedAction()
+  const tab = selectedTab()
   lastError = null
   try {
     await ipc.invoke('figmaEngine:disconnect', {
-      tabId: selectedTab() && selectedTab().id
+      tabId: tab && tab.id
     })
-    lastStatus = await ipc.invoke('figmaEngine:status')
+    if (!actionIsCurrent(action)) return
+    refreshStatus()
   } catch (err) {
-    lastError = err.message || String(err)
+    if (actionIsCurrent(action)) lastError = err.message || String(err)
+  } finally {
+    finishScopedAction(action)
   }
-  setBusy(false)
 }
 
 async function runCommand (action, extra, kind) {
   if (!connectedToSelected() || !pluginReady()) return
+  const request = beginScopedAction()
   const nodeId = currentNodeId()
   lastResultKind = kind || lastResultKind
-  setBusy(true)
   lastError = null
   lastResult = null
   const parsed = activeParsed()
@@ -304,6 +364,7 @@ async function runCommand (action, extra, kind) {
       nodeId: nodeId,
       fileKey: parsed && parsed.fileKey
     }, extra || {}))
+    if (!actionIsCurrent(request)) return
     if (result && result.ok === false) {
       lastError = result.error || result.message || t('designCommandFailed', 'Command failed')
     } else {
@@ -311,9 +372,10 @@ async function runCommand (action, extra, kind) {
       resultModalOpen = true
     }
   } catch (err) {
-    lastError = err.message || String(err)
+    if (actionIsCurrent(request)) lastError = err.message || String(err)
+  } finally {
+    finishScopedAction(request)
   }
-  setBusy(false)
 }
 
 function designCommand (action, params) {
@@ -327,19 +389,31 @@ function designCommand (action, params) {
   }, params))
 }
 
-let exportModalOpen = false
-let exportFormat = 'PNG'
-let exportScale = 2
-let exportDir = ''
-let exportBusy = false
-let exportPrefsGeneration = 0
+const exportController = createDesignPanelExport({
+  ipc: ipc,
+  el: el,
+  t: t,
+  render: function (force) { render(force) },
+  isBusy: function () { return busy },
+  isReady: function () { return connectedToSelected() && pluginReady() },
+  getContext: currentContext,
+  isContextCurrent: contextIsCurrent,
+  getNodeId: currentNodeId,
+  getParsed: activeParsed,
+  designCommand: designCommand,
+  setError: function (error) { lastError = error },
+  setResult: function (result) {
+    lastResult = result
+    resultModalOpen = true
+  }
+})
+const exportState = exportController.state
 
 /* Design spec (build list) state — the list of Figma objects to implement,
 each with variants pinned to a node id and a target viewport. */
 let spec = { entries: [] }
 let specWorkspace = ''
 let activeSpecWorkspace = null
-let specRequestGeneration = 0
 const specExpanded = {}
 const variantRemovePending = new Set()
 let specAddOpen = false
@@ -351,156 +425,7 @@ let exportingFor = null // 'entryId|variantId'
 let overlayState = null
 let overlayTabId = null
 
-async function loadExportPrefs () {
-  const ws = workspaceInfo()
-  const workspacePath = ws.workspacePath || null
-  const generation = ++exportPrefsGeneration
-  try {
-    const prefs = await ipc.invoke('figmaEngine:getExportPrefs', { workspacePath: ws.workspacePath })
-    if (generation !== exportPrefsGeneration || workspacePath !== (workspaceInfo().workspacePath || null)) return false
-    exportDir = (prefs && prefs.effective) || (prefs && prefs.fallback) || ''
-    return true
-  } catch (e) {
-    if (generation === exportPrefsGeneration && workspacePath === (workspaceInfo().workspacePath || null)) exportDir = ''
-    return false
-  }
-}
-
-async function openExportModal () {
-  if (busy || !connectedToSelected() || !pluginReady()) return
-  const workspacePath = workspaceInfo().workspacePath || null
-  const loaded = await loadExportPrefs()
-  if (!loaded || workspacePath !== (workspaceInfo().workspacePath || null)) return
-  exportModalOpen = true
-  exportBusy = false
-  render(true)
-}
-
-function closeExportModal () {
-  exportModalOpen = false
-  exportBusy = false
-  render(true)
-}
-
-async function browseExportDir () {
-  try {
-    const dirs = await ipc.invoke('showOpenDialog', {
-      title: t('designExportDirTitle', 'Choose export folder'),
-      properties: ['openDirectory', 'createDirectory'],
-      defaultPath: exportDir || undefined
-    })
-    if (dirs && dirs.length) {
-      exportDir = dirs[0]
-      render(true)
-    }
-  } catch (e) {}
-}
-
-async function confirmExport () {
-  if (exportBusy || !exportDir) return
-  exportBusy = true
-  render(true)
-  const nodeId = currentNodeId()
-  const parsed = activeParsed()
-  const ws = workspaceInfo()
-  try {
-    // Persist the chosen folder for this workspace so the next export opens
-    // here again.
-    await ipc.invoke('figmaEngine:setExportDir', {
-      workspacePath: ws.workspacePath,
-      dir: exportDir
-    })
-    const result = await designCommand('export', {
-      nodeId: nodeId,
-      fileKey: parsed && parsed.fileKey,
-      format: exportFormat,
-      scale: exportScale,
-      target: 'asset',
-      exportDir: exportDir
-    })
-    if (result && result.ok === false) {
-      lastError = result.error || result.message || t('designCommandFailed', 'Command failed')
-    } else {
-      lastResult = result
-      resultModalOpen = true
-      closeExportModal()
-    }
-  } catch (err) {
-    lastError = err.message || String(err)
-  }
-  exportBusy = false
-  render(true)
-}
-
-function exportModal () {
-  if (!exportModalOpen) return null
-  const wrap = el('div', 'design-modal-overlay')
-  const box = el('div', 'design-modal')
-  box.appendChild(el('div', 'design-modal-title', t('designExportTitle', 'Export asset')))
-
-  const formatRow = el('div', 'design-modal-row')
-  formatRow.appendChild(el('span', 'design-modal-label', t('designExportFormat', 'Format')))
-  const formatSelect = el('select', 'design-modal-select')
-  ;['PNG', 'JPG', 'SVG'].forEach(function (f) {
-    const opt = el('option', null, f)
-    opt.value = f
-    if (f === exportFormat) opt.selected = true
-    formatSelect.appendChild(opt)
-  })
-  formatSelect.addEventListener('change', function () {
-    exportFormat = formatSelect.value
-    render(true)
-  })
-  formatRow.appendChild(formatSelect)
-  box.appendChild(formatRow)
-
-  const scaleRow = el('div', 'design-modal-row')
-  scaleRow.appendChild(el('span', 'design-modal-label', t('designExportScale', 'Scale')))
-  const scaleSelect = el('select', 'design-modal-select')
-  ;[1, 2, 3, 4].forEach(function (s) {
-    const opt = el('option', null, s + '×')
-    opt.value = String(s)
-    if (s === exportScale) opt.selected = true
-    scaleSelect.appendChild(opt)
-  })
-  scaleSelect.addEventListener('change', function () {
-    exportScale = Number(scaleSelect.value)
-    render(true)
-  })
-  scaleRow.appendChild(scaleSelect)
-  box.appendChild(scaleRow)
-
-  const dirRow = el('div', 'design-modal-row')
-  dirRow.appendChild(el('span', 'design-modal-label', t('designExportDir', 'Folder')))
-  const dirInput = el('input', 'design-modal-input')
-  dirInput.type = 'text'
-  dirInput.value = exportDir
-  dirInput.placeholder = t('designExportDirPlaceholder', '/path/to/exports')
-  dirInput.addEventListener('change', function () {
-    exportDir = dirInput.value.trim()
-  })
-  dirRow.appendChild(dirInput)
-  const browseBtn = el('button', 'design-modal-browse', t('designExportBrowse', 'Browse…'))
-  browseBtn.type = 'button'
-  browseBtn.addEventListener('click', function () { browseExportDir() })
-  dirRow.appendChild(browseBtn)
-  box.appendChild(dirRow)
-
-  const actions = el('div', 'design-modal-actions')
-  const cancelBtn = el('button', 'design-modal-btn', t('designCancel', 'Cancel'))
-  cancelBtn.type = 'button'
-  cancelBtn.addEventListener('click', closeExportModal)
-  actions.appendChild(cancelBtn)
-  const exportBtn = el('button', 'design-modal-btn primary', t('designExportConfirm', 'Export'))
-  exportBtn.type = 'button'
-  exportBtn.disabled = exportBusy || !exportDir
-  exportBtn.addEventListener('click', confirmExport)
-  actions.appendChild(exportBtn)
-  box.appendChild(actions)
-
-  wrap.appendChild(box)
-  return wrap
-}
+function openExportModal () { return exportController.open() }
 
 function iconButton (icon, title, onClick, disabled) {
   const btn = el('button', 'codicon ' + icon + ' git-icon-button')
@@ -753,10 +678,8 @@ function syncSpecWorkspace () {
   // Build-list entries are stored by folder path. Clear them synchronously so
   // a new path never shows the previous folder while its list is loading.
   activeSpecWorkspace = key
-  specRequestGeneration++
-  exportPrefsGeneration++
-  exportDir = ''
-  exportModalOpen = false
+  lifecycle.invalidate('spec')
+  exportController.resetForWorkspace()
   spec = { entries: [] }
   specWorkspace = key
   specUnavailable = false
@@ -773,53 +696,64 @@ function specFail (err) {
   render()
 }
 
-async function refreshSpec () {
+async function refreshSpec (force) {
   const ws = workspaceInfo()
   const key = ws.workspacePath || 'default'
   if (key !== activeSpecWorkspace) {
     syncSpecWorkspace()
     return
   }
-  const generation = ++specRequestGeneration
-  try {
-    const result = await ipc.invoke('designSpec:list', { workspacePath: ws.workspacePath })
-    if (
-      generation === specRequestGeneration &&
-      key === activeSpecWorkspace &&
-      key === specWorkspaceKey()
-    ) {
-      spec = (result && result.doc) || { entries: [] }
-      specWorkspace = key
-      specUnavailable = false
-    }
-  } catch (e) {
+  if (force) lifecycle.invalidate('spec')
+  const result = await lifecycle.refresh('spec', key, function () {
+    return ipc.invoke('designSpec:list', { workspacePath: ws.workspacePath })
+  }, function () { return key === activeSpecWorkspace && key === specWorkspaceKey() })
+  if (!result.current) return
+  if (result.error) {
     // Old main process without designSpec handlers — flag it so the section
     // can hint at a restart instead of looking broken.
-    if (
-      generation === specRequestGeneration &&
-      key === activeSpecWorkspace &&
-      key === specWorkspaceKey()
-    ) specUnavailable = true
+    specUnavailable = true
+  } else {
+    spec = (result.value && result.value.doc) || { entries: [] }
+    specWorkspace = key
+    specUnavailable = false
   }
 }
 
-async function refreshOverlay () {
-  const generation = ++overlayRefreshGeneration
+async function refreshOverlay (force) {
   const tab = selectedTab()
   const tabId = tab ? tab.id : null
-  try {
-    const nextState = tab ? await ipc.invoke('designOverlay:get', { tabId: tab.id }) : null
-    if (generation !== overlayRefreshGeneration) return
-    const currentTab = selectedTab()
-    if ((tabId == null && currentTab) || (tabId != null && (!currentTab || !sameTab(tabId, currentTab.id)))) return
-    overlayTabId = tabId
-    overlayState = nextState
-  } catch (e) {
-    if (generation === overlayRefreshGeneration) {
-      overlayTabId = tabId
-      overlayState = null
-    }
-  }
+  const url = String((tab && tab.url) || '')
+  const revision = contextRevision
+  const scope = JSON.stringify([revision, tabId == null ? null : String(tabId), url])
+  if (force) lifecycle.invalidate('overlay')
+  const result = await lifecycle.refresh('overlay', scope, function () {
+    return tab ? ipc.invoke('designOverlay:get', { tabId: tab.id }) : null
+  }, function () {
+    const current = selectedTab()
+    return revision === contextRevision &&
+      ((tabId == null && !current) ||
+        (current && sameTab(tabId, current.id) && String(current.url || '') === url))
+  })
+  if (!result.current) return
+  overlayTabId = tabId
+  overlayState = result.error ? null : result.value
+}
+
+function invokeSpecMutation (action, payload, onSuccess) {
+  const context = currentContext()
+  const request = Object.assign({ workspacePath: context.workspacePath }, payload || {})
+  lifecycle.invalidate('spec')
+  return ipc.invoke(action, request).then(function (result) {
+    if (!contextIsCurrent(context)) return
+    if (result && result.ok === false) throw new Error(result.error || t('designCommandFailed', 'Command failed'))
+    return refreshSpec(true).then(function () {
+      if (!contextIsCurrent(context)) return
+      if (onSuccess) onSuccess(result)
+      render()
+    })
+  }).catch(function (error) {
+    if (contextIsCurrent(context)) specFail(error)
+  })
 }
 
 function overlayActiveFor (entryId, variantId) {
@@ -827,6 +761,14 @@ function overlayActiveFor (entryId, variantId) {
   return !!(overlayState && overlayState.active && tab && sameTab(overlayTabId, tab.id) &&
     sameTab(overlayState.tabId, tab.id) &&
     overlayState.entryId === entryId && overlayState.variantId === variantId)
+}
+
+function overlayNeedsRefresh () {
+  if (!selectedTab()) return false
+  if (overlayState && overlayState.active) return true
+  return !!((spec.entries || []).some(function (entry) {
+    return (entry.variants || []).length > 0
+  }))
 }
 
 function variantRemovalKey (workspaceKey, entryId, variantId) {
@@ -844,6 +786,7 @@ async function removeVariant (entry, variant, button, workspacePath) {
   const tab = selectedTab()
 
   try {
+    lifecycle.invalidate('spec')
     lastError = null
     const result = await ipc.invoke('designSpec:variantRemove', {
       workspacePath: workspacePath,
@@ -874,7 +817,7 @@ async function removeVariant (entry, variant, button, workspacePath) {
         return refreshOverlay()
       }).then(scheduleRender).catch(function () {})
     }
-    await refreshSpec()
+    await refreshSpec(true)
     if (workspaceKey === specWorkspaceKey()) render()
   } catch (err) {
     if (workspaceKey === specWorkspaceKey()) {
@@ -887,20 +830,25 @@ async function removeVariant (entry, variant, button, workspacePath) {
   }
 }
 
-async function ensureVariantImage (entry, variant) {
+async function ensureVariantImage (entry, variant, expectedContext) {
   if (variant.image) return { path: variant.image, cssWidth: variant.cssWidth }
   if (!variant.nodeId) return { error: t('designVariantNoNode', 'Variant has no Figma node — edit the node id first') }
+  const context = expectedContext || currentContext()
   exportingFor = entry.id + '|' + variant.id
   render(true)
   try {
-    return await exportVariantImage(entry, variant)
+    return await exportVariantImage(entry, variant, context)
   } finally {
-    exportingFor = null
-    render(true)
+    if (contextIsCurrent(context)) {
+      exportingFor = null
+      render(true)
+    }
   }
 }
 
-async function exportVariantImage (entry, variant) {
+async function exportVariantImage (entry, variant, expectedContext) {
+  const context = expectedContext || currentContext()
+  const workspacePath = context.workspacePath
   const result = await designCommand('export', {
     nodeId: variant.nodeId,
     fileKey: entry.fileKey || undefined,
@@ -921,12 +869,14 @@ async function exportVariantImage (entry, variant) {
   if (cssWidth && cssHeight && (vp.w !== cssWidth || vp.h !== cssHeight)) {
     patch.viewport = { w: cssWidth, h: cssHeight, mobile: !!vp.mobile, dpr: vp.dpr }
   }
+  lifecycle.invalidate('spec')
   await ipc.invoke('designSpec:variantUpdate', {
-    workspacePath: workspaceInfo().workspacePath,
+    workspacePath: workspacePath,
     entryId: entry.id,
     variantId: variant.id,
     patch: patch
   })
+  if (!contextIsCurrent(context)) return { stale: true }
   variant.image = payload.path
   variant.cssWidth = cssWidth
   if (patch.viewport) variant.viewport = patch.viewport
@@ -936,13 +886,15 @@ async function exportVariantImage (entry, variant) {
 async function toggleVariantOverlay (entry, variant) {
   const tab = selectedTab()
   if (!tab || busy) return
-  setBusy(true)
+  const action = beginScopedAction()
   lastError = null
   try {
     if (overlayActiveFor(entry.id, variant.id)) {
       await ipc.invoke('designOverlay:clear', { tabId: tab.id })
+      if (!actionIsCurrent(action)) return
     } else {
-      const image = await ensureVariantImage(entry, variant)
+      const image = await ensureVariantImage(entry, variant, action.context)
+      if (!actionIsCurrent(action)) return
       if (image.error) {
         lastError = image.error
       } else {
@@ -955,40 +907,45 @@ async function toggleVariantOverlay (entry, variant) {
           entryId: entry.id,
           variantId: variant.id
         })
+        if (!actionIsCurrent(action)) return
         if (result && result.ok === false) lastError = result.error
       }
     }
-    await refreshOverlay()
-    await refreshSpec()
+    await refreshOverlay(true)
+    await refreshSpec(true)
   } catch (err) {
-    lastError = err.message || String(err)
+    if (actionIsCurrent(action)) lastError = err.message || String(err)
+  } finally {
+    finishScopedAction(action)
   }
-  setBusy(false)
 }
 
 async function refreshVariantImage (entry, variant) {
   if (busy) return
-  setBusy(true)
+  const action = beginScopedAction()
   lastError = null
   try {
-    const image = await exportVariantImage(entry, variant)
+    const image = await exportVariantImage(entry, variant, action.context)
+    if (!actionIsCurrent(action)) return
     if (image.error) lastError = image.error
-    await refreshSpec()
+    await refreshSpec(true)
   } catch (err) {
-    lastError = err.message || String(err)
+    if (actionIsCurrent(action)) lastError = err.message || String(err)
+  } finally {
+    finishScopedAction(action)
   }
-  setBusy(false)
 }
 
 async function openImportModal () {
   if (busy || !connectedToSelected() || !pluginReady()) return
-  setBusy(true)
+  const action = beginScopedAction()
   lastError = null
   try {
     const parsed = activeParsed()
     const result = await designCommand('list-frames', {
       fileKey: parsed && parsed.fileKey
     })
+    if (!actionIsCurrent(action)) return
     const payload = result && result.payload
     if (result && result.ok === false) {
       lastError = result.error || t('designCommandFailed', 'Command failed')
@@ -997,16 +954,19 @@ async function openImportModal () {
       importModalOpen = true
     }
   } catch (err) {
-    lastError = err.message || String(err)
+    if (actionIsCurrent(action)) lastError = err.message || String(err)
+  } finally {
+    finishScopedAction(action)
   }
-  setBusy(false)
 }
 
 async function addEntry (name, kind, nodeId) {
+  const context = currentContext()
   const parsed = activeParsed()
   const tab = selectedTab()
   const ws = workspaceInfo()
   try {
+    lifecycle.invalidate('spec')
     const result = await ipc.invoke('designSpec:add', {
       workspacePath: ws.workspacePath,
       name: name,
@@ -1015,17 +975,19 @@ async function addEntry (name, kind, nodeId) {
       fileKey: parsed && parsed.fileKey,
       nodeId: nodeId || (parsed && parsed.nodeId)
     })
+    if (!contextIsCurrent(context)) return
     if (result && result.ok === false) {
       lastError = result.error || t('designCommandFailed', 'Command failed')
     } else {
       specAddOpen = false
     }
   } catch (err) {
+    if (!contextIsCurrent(context)) return
     // Missing IPC handler (old main bundle) lands here — surface it instead
     // of dying silently.
     lastError = err.message || String(err)
   }
-  await refreshSpec()
+  await refreshSpec(true)
   render()
 }
 
@@ -1201,8 +1163,7 @@ function buildVariantForm (entry, variant) {
       setTimeout(function () { refreshSpec().then(scheduleRender) }, 1200)
     }
     if (editing) {
-      ipc.invoke('designSpec:variantUpdate', {
-        workspacePath: workspaceInfo().workspacePath,
+      invokeSpecMutation('designSpec:variantUpdate', {
         entryId: entry.id,
         variantId: variant.id,
         patch: {
@@ -1210,15 +1171,14 @@ function buildVariantForm (entry, variant) {
           nodeId: nodeInput.value.trim(),
           viewport: viewport
         }
-      }).then(refreshSpec).then(done).catch(specFail)
+      }, done)
     } else {
-      ipc.invoke('designSpec:variantAdd', {
-        workspacePath: workspaceInfo().workspacePath,
+      invokeSpecMutation('designSpec:variantAdd', {
         entryId: entry.id,
         label: labelInput.value.trim(),
         nodeId: nodeInput.value.trim() || null,
         viewport: viewport
-      }).then(refreshSpec).then(done).catch(specFail)
+      }, done)
     }
   })
   const cancelBtn = el('button', 'design-form-cancel', t('designCancel', 'Cancel'))
@@ -1270,10 +1230,9 @@ function buildEntryRow (entry) {
     'codicon-trash',
     t('designRemoveEntry', 'Remove entry'),
     function () {
-      ipc.invoke('designSpec:remove', {
-        workspacePath: workspaceInfo().workspacePath,
+      invokeSpecMutation('designSpec:remove', {
         entryId: entry.id
-      }).then(refreshSpec).then(function () { render() }).catch(specFail)
+      })
     }
   ))
   head.appendChild(actions)
@@ -1583,11 +1542,11 @@ function fingerprint () {
     variantFormFor || '',
     variantEditFor || '',
     exportingFor || '',
-    exportModalOpen ? 'export' : '',
-    exportBusy ? 'export-busy' : '',
-    exportDir,
-    exportFormat,
-    exportScale,
+    exportState.modalOpen ? 'export' : '',
+    exportState.busy ? 'export-busy' : '',
+    exportState.dir,
+    exportState.format,
+    exportState.scale,
     resultModalOpen ? 'result' : '',
     importModalOpen ? 'import' : '',
     panelTab,
@@ -1620,7 +1579,7 @@ function render (force) {
     body.appendChild(el('div', 'design-error', lastError))
   }
 
-  const modal = exportModal()
+  const modal = exportController.buildModal()
   if (modal) panel.appendChild(modal)
   const importModal = buildImportModal()
   if (importModal) panel.appendChild(importModal)
@@ -1644,6 +1603,7 @@ const designPanel = {
     // tasks.on subscribes at the workspace store, so it keeps receiving the
     // selected workspace's task events across switches.
     tasks.on('tab-selected', function () {
+      invalidateContextWork()
       lastParsed = null
       lastParsedUrl = ''
       lastParsedTabId = null
@@ -1655,12 +1615,15 @@ const designPanel = {
     })
     tasks.on('tab-updated', function (id, key, value) {
       if (key !== 'url') return
-      ipc.invoke('figmaEngine:syncUrl', { tabId: id, url: value })
+      ipc.invoke('figmaEngine:syncUrl', { tabId: id, url: value }).catch(function () {})
       if (!tabs || !sameTab(id, tabs.getSelected())) return
+      invalidateContextWork()
+      const revision = contextRevision
       render()
       ipc.invoke('figmaEngine:parseUrl', value).then(function (parsed) {
         const current = selectedTab()
         if (
+          revision !== contextRevision ||
           !current ||
           !sameTab(id, current.id) ||
           String(current.url || '') !== String(value || '')
@@ -1673,12 +1636,14 @@ const designPanel = {
       ipc.invoke('figmaEngine:disconnect', { tabId: id }).then(function (result) {
         if (result && result.ignored) return
         refreshStatus()
-      })
+      }).catch(function () {})
     })
     tasks.on('task-selected', function () {
+      invalidateContextWork()
       refreshStatus()
     })
     workspaces.on('workspace-selected', function () {
+      invalidateContextWork()
       refreshStatus()
       syncSpecWorkspace()
     })
@@ -1686,6 +1651,8 @@ const designPanel = {
       if (key !== 'path') return
       const selected = workspaces.getSelected()
       if (selected && String(workspaceId) !== String(selected.id)) return
+      invalidateContextWork()
+      refreshStatus()
       syncSpecWorkspace()
     })
     workspaces.on('state-sync-change', syncSpecWorkspace)
@@ -1700,7 +1667,7 @@ const designPanel = {
         refreshStatus()
         // The in-page ✕ control clears the overlay in main — poll keeps the
         // variant's eye state honest without an extra event channel.
-        refreshOverlay().then(scheduleRender)
+        if (overlayNeedsRefresh()) refreshOverlay().then(scheduleRender)
       }
     }, 2500)
   }

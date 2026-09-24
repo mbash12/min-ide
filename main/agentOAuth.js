@@ -18,6 +18,7 @@ bundle shares one scope. */
 
 const oauthNodeCrypto = require('crypto')
 const oauthNodeHttp = require('http')
+const oauthStartCallbackServer = require(require('path').join(__dirname, 'main/lib/oauth/loopbackCallback.js'))(oauthNodeHttp)
 
 /* Electron's net.fetch rides the Chromium network stack (honors the app's
 configured proxy); plain fetch is the fallback for the node test harness */
@@ -88,73 +89,6 @@ unknown placeholders resolve to the empty string (omp's template() semantic) */
 function oauthFillTemplate (str, values) {
   return String(str).replace(/\{(\w+)\}/g, function (m, name) {
     return values[name] !== undefined ? String(values[name]) : ''
-  })
-}
-
-/* ------------------------------------------------------------------ */
-/* loopback callback server                                            */
-/* ------------------------------------------------------------------ */
-
-const OAUTH_SUCCESS_HTML = '<!doctype html><html><body style="font-family:system-ui;text-align:center;padding-top:4em"><h2>Sign-in complete</h2><p>You can close this tab and return to Min.</p></body></html>'
-const OAUTH_ERROR_HTML = '<!doctype html><html><body style="font-family:system-ui;text-align:center;padding-top:4em"><h2>Sign-in failed</h2><p>Return to Min and try again.</p></body></html>'
-
-/* Listens on the spec'd loopback port until the provider redirects the user's
-browser back with ?code&state. Resolves {code,state}; rejects on timeout,
-abort, or bind failure. `server` is exposed so callers can stop it early. */
-function oauthStartCallbackServer (spec, signal) {
-  return new Promise(function (resolve, reject) {
-    let settled = false
-    const server = oauthNodeHttp.createServer(function (req, res) {
-      let url
-      try {
-        url = new URL(req.url, 'http://' + (spec.hostname || '127.0.0.1'))
-      } catch (e) {
-        res.statusCode = 400
-        res.end(OAUTH_ERROR_HTML)
-        return
-      }
-      if (url.pathname !== spec.path) {
-        res.statusCode = 404
-        res.end(OAUTH_ERROR_HTML)
-        return
-      }
-      const code = url.searchParams.get('code')
-      const error = url.searchParams.get('error')
-      res.setHeader('Content-Type', 'text/html')
-      if (error || !code) {
-        res.statusCode = 400
-        res.end(OAUTH_ERROR_HTML)
-        finish(new Error('OAuth callback error: ' + (error || 'missing code')))
-        return
-      }
-      res.end(OAUTH_SUCCESS_HTML)
-      finish(null, { code: code, state: url.searchParams.get('state') || undefined })
-    })
-
-    function finish (err, value) {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      if (signal) signal.removeEventListener('abort', onAbort)
-      try { server.close() } catch (e) {}
-      if (err) reject(err)
-      else resolve(value)
-    }
-
-    function onAbort () {
-      finish(new Error('Login cancelled'))
-    }
-
-    const timer = setTimeout(function () {
-      finish(new Error('OAuth callback timed out'))
-    }, spec.timeoutMs || 5 * 60 * 1000)
-
-    server.on('error', function (err) {
-      finish(err)
-    })
-    if (signal) signal.addEventListener('abort', onAbort, { once: true })
-
-    server.listen(spec.port, spec.hostname || '127.0.0.1')
   })
 }
 
@@ -301,13 +235,16 @@ async function oauthRunCodeFlow (spec, callbacks) {
   remote sessions and custom-scheme redirects (zai's zcode://). A channel
   that fails early (port taken, prompt cancelled) doesn't kill the other. */
   const channels = []
+  const channelController = new AbortController()
+  let signalAbortListener = null
+  let signalAbortError = null
   if (!spec.callback.manualOnly) {
     const callbackPromise = oauthStartCallbackServer({
       port: spec.callback.port,
       hostname: spec.callback.hostname,
       path: spec.callback.path,
       timeoutMs: spec.callback.timeoutMs
-    }, signal)
+    }, channelController.signal)
     /* a late rejection after the other channel won would otherwise surface
     as an unhandled rejection */
     callbackPromise.catch(function () {})
@@ -330,10 +267,28 @@ async function oauthRunCodeFlow (spec, callbacks) {
   let codeState = null
   let first
   try {
-    first = await Promise.any(channels)
-  } catch (aggregate) {
-    const reasons = (aggregate && aggregate.errors) || []
+    const channelRace = Promise.any(channels)
+    if (!signal) {
+      first = await channelRace
+    } else {
+      const abortRace = new Promise(function (resolve, reject) {
+        signalAbortListener = function () {
+          channelController.abort()
+          signalAbortError = new Error('Login cancelled')
+          reject(signalAbortError)
+        }
+        if (signal.aborted) signalAbortListener()
+        else signal.addEventListener('abort', signalAbortListener, { once: true })
+      })
+      first = await Promise.race([channelRace, abortRace])
+    }
+  } catch (error) {
+    if (error === signalAbortError) throw error
+    const reasons = (error && error.errors) || []
     throw reasons[0] || new Error('OAuth flow failed')
+  } finally {
+    channelController.abort()
+    if (signal && signalAbortListener) signal.removeEventListener('abort', signalAbortListener)
   }
   if (first.result) {
     code = first.result.code

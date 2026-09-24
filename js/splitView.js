@@ -20,35 +20,7 @@ to the webviews module via initialize(), and webviews reads back the split state
 through the webviews.splitProvider hook.
 */
 
-const gutterWidth = 4 // gap between two panes
-const minPaneWidth = 100 // minimum width of a pane when resizing
-const maxPanesPerGroup = 3 // most panes a single tiled group can hold
-
-let tileStateMirrorTimer = null // debounces the tile_state DB mirror in persist()
-
-/* a new group starts with the width divided evenly */
-function evenFractions (count) {
-  return new Array(count).fill(1 / count)
-}
-
-/* the saved pane widths of a group: one positive entry per pane, normalized to
-add up to 1. Anything unusable falls back to an even split. Layouts saved
-before a group could hold more than two panes stored a single splitRatio, which
-is still read so those layouts keep their divider position. */
-function readFractions (group, paneCount) {
-  if (Array.isArray(group.fractions) && group.fractions.length === paneCount) {
-    const usable = group.fractions.every(f => typeof f === 'number' && isFinite(f) && f > 0)
-    if (usable) {
-      const total = group.fractions.reduce((a, b) => a + b, 0)
-      return group.fractions.map(f => f / total)
-    }
-  }
-  if (paneCount === 2 && typeof group.splitRatio === 'number' && isFinite(group.splitRatio)) {
-    const left = Math.min(1, Math.max(0, group.splitRatio))
-    return [left, 1 - left]
-  }
-  return evenFractions(paneCount)
-}
+const { gutterWidth, minPaneWidth, maxPanesPerGroup, evenFractions, computePaneWidths } = require('splitView/layout.js')
 
 /* panes are kept in tab bar order, so the leftmost pane is the leftmost tab.
 Each pane keeps its own width while the group is reordered. */
@@ -84,105 +56,6 @@ const splitView = {
     if (splitView.onGroupsChange) {
       splitView.onGroupsChange()
     }
-  },
-  /* copies the layout onto the selected task record. The session restore data
-  is built from the task records, so this is all that is needed to persist it.
-  Assigned directly instead of through tasks.update() because this also runs on
-  every divider drag, and an update() call would emit an event each time. */
-  persist: function () {
-    const task = typeof tasks !== 'undefined' && tasks && tasks.getSelected ? tasks.getSelected() : null
-    if (!task) {
-      return
-    }
-    task.splitState = {
-      groups: splitView.groups.map(function (group) {
-        return {
-          paneTabIds: group.paneTabIds.slice(),
-          activePane: group.activePane,
-          fractions: group.fractions.slice()
-        }
-      }),
-      activeGroupIndex: splitView.activeGroupIndex
-    }
-    /* mirror to the central DB's 'tile_state' scope (debounced - persist runs
-    on every divider drag). The session blob stays the runtime source. */
-    const taskId = task.id
-    const state = task.splitState
-    if (tileStateMirrorTimer) {
-      clearTimeout(tileStateMirrorTimer)
-    }
-    tileStateMirrorTimer = setTimeout(function () {
-      tileStateMirrorTimer = null
-      try {
-        require('util/customDataStore.js')
-          .kvSet('tile_state', taskId, state)
-          .catch(function () {})
-      } catch (e) {}
-    }, 500)
-  },
-  /* loads the layout saved on the selected task. Groups whose tabs no longer
-  exist (or that share a tab) are dropped, and the shown group is only restored
-  when the tab that was active in it is still the selected one, so the pane
-  layout and the tab bar can't disagree. */
-  restoreForSelectedTask: function () {
-    if (typeof tasks === 'undefined' || !tasks || !tasks.getSelected) {
-      return
-    }
-    if (typeof tabs === 'undefined' || !tabs) {
-      return
-    }
-    const task = tasks.getSelected()
-    const state = task && task.splitState
-    if (!state || !Array.isArray(state.groups)) {
-      return
-    }
-
-    const restored = []
-    let activeGroupIndex = null
-
-    state.groups.forEach(function (group, index) {
-      if (!group || !Array.isArray(group.paneTabIds)) {
-        return
-      }
-      if (group.paneTabIds.length < 2 || group.paneTabIds.length > maxPanesPerGroup) {
-        return
-      }
-      if (!group.paneTabIds.every(tabId => tabs.has(tabId))) {
-        return
-      }
-      // a tab may only belong to one group
-      if (restored.some(other => other.paneTabIds.some(tabId => group.paneTabIds.includes(tabId)))) {
-        return
-      }
-      const activePane = Math.min(Math.max(0, group.activePane | 0), group.paneTabIds.length - 1)
-      restored.push({
-        paneTabIds: group.paneTabIds.slice(),
-        activePane: activePane,
-        fractions: readFractions(group, group.paneTabIds.length)
-      })
-      if (index === state.activeGroupIndex) {
-        activeGroupIndex = restored.length - 1
-      }
-    })
-
-    splitView.groups = restored
-    splitView.activeGroupIndex = null
-
-    if (activeGroupIndex !== null) {
-      const group = restored[activeGroupIndex]
-      if (tabs.getSelected() === group.paneTabIds[group.activePane]) {
-        splitView.activeGroupIndex = activeGroupIndex
-        splitView.showSplit()
-      } else {
-        // the group comes back paused, with the pane of the restored tab active
-        const restoredPane = group.paneTabIds.indexOf(tabs.getSelected())
-        if (restoredPane >= 0) {
-          group.activePane = restoredPane
-        }
-      }
-    }
-
-    splitView.notifyGroupsChanged()
   },
   isSplit: function () {
     return splitView.activeGroupIndex !== null
@@ -561,28 +434,8 @@ const splitView = {
   /* pane widths in pixels for the full view width. The stored fractions are
   clamped so no pane is narrower than minPaneWidth, and the result always adds
   up to the width that is left between the gutters. */
-  computePaneWidths: function (group, totalWidth) {
-    const count = group.paneTabIds.length
-    const available = Math.max(0, totalWidth - gutterWidth * (count - 1))
-    const minWidth = Math.min(minPaneWidth, Math.floor(available / count))
-    const maxWidth = Math.max(minWidth, available - minWidth * (count - 1))
+  computePaneWidths,
 
-    const widths = group.fractions.map(fraction => Math.round(available * fraction))
-    for (let i = 0; i < count; i++) {
-      widths[i] = Math.min(Math.max(widths[i], minWidth), maxWidth)
-    }
-
-    // rounding and clamping can leave a few pixels over; hand them back to the
-    // panes that still have room
-    let remainder = available - widths.reduce((a, b) => a + b, 0)
-    for (let i = 0; i < count && remainder !== 0; i++) {
-      const target = Math.min(Math.max(widths[i] + remainder, minWidth), maxWidth)
-      remainder -= target - widths[i]
-      widths[i] = target
-    }
-
-    return widths
-  },
   /* computes the bounds for each pane: the panes sit side by side in tab bar
   order, separated by a gutter */
   getBounds: function () {
@@ -713,5 +566,7 @@ const splitView = {
     splitView.tileTabs(anchorTabId, clickedTabId)
   }
 }
+
+Object.assign(splitView, require('splitView/taskState.js')(splitView))
 
 module.exports = splitView

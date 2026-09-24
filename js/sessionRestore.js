@@ -3,9 +3,10 @@ var webviews = require('webviews.js')
 var tabEditor = require('navbar/tabEditor.js')
 var tabState = require('tabState.js')
 var settings = require('util/settings/settings.js')
+const statistics = require('js/statistics.js')
 var workspaceDrawer = require('workspaceDrawer/workspaceDrawer.js')
 const writeFileAtomic = require('write-file-atomic')
-const statistics = require('js/statistics.js')
+const snapshotSession = require('tabState/sessionSnapshot.js')
 
 const sessionRestore = {
   savePath: window.globalArgs['user-data-path'] + (platformType === 'windows' ? '\\sessionRestore.json' : '/sessionRestore.json'),
@@ -16,66 +17,33 @@ const sessionRestore = {
       return
     }
 
-    var stateString = JSON.stringify(workspaces.getStringifyableState())
-    var data = {
-      version: 3,
-      state: JSON.parse(stateString),
-      saveTime: Date.now()
-    }
-
-    // save all tabs that aren't private
-
-    for (var i = 0; i < data.state.workspaces.length; i++) {
-      for (var j = 0; j < data.state.workspaces[i].tasks.length; j++) {
-        data.state.workspaces[i].tasks[j].tabs = data.state.workspaces[i].tasks[j].tabs.filter(function (tab) {
-          return !tab.private
-        })
-      }
-    }
-
-    //if startupTabOption is "open a new blank task", don't save any tabs in the current task
-    if (settings.get('startupTabOption') === 3) {
-      for (var i = 0; i < data.state.workspaces.length; i++) {
-        for (var j = 0; j < data.state.workspaces[i].tasks.length; j++) {
-          var liveTask = workspaces.findTask(data.state.workspaces[i].tasks[j].id)
-          if (liveTask && liveTask.selectedInWindow) { //need to re-fetch the task because temporary properties have been removed
-            data.state.workspaces[i].tasks[j].tabs = []
-          }
-        }
-      }
-    }
-
-    if (forceSave === true || stateString !== sessionRestore.previousState) {
-      /* the central DB is the source of truth; the JSON file stays as an
-      async crash-backup, and localStorage keeps its legacy copy. The DB
-      write is async except on unload, where only a synchronous write is
-      guaranteed to land before the renderer goes away. */
-      if (sync === true) {
-        try {
-          ipc.sendSync('db:kvSetSync', { scope: 'workspace_state', key: 'session', value: data })
-        } catch (e) {
-          console.warn('failed to save session to DB', e)
-        }
-      } else {
-        ipc.invoke('db:kvSet', { scope: 'workspace_state', key: 'session', value: data }).catch(function (e) {
-          console.warn('failed to save session to DB', e)
-        })
-      }
+    const state = snapshotSession(workspaces, settings.get('startupTabOption'))
+    const stateString = JSON.stringify(state)
+    if (forceSave !== true && stateString === sessionRestore.previousState) return
+    const data = { version: 3, state, saveTime: Date.now() }
+    // Main owns the backup writer too: a pending async file save cannot rename
+    // an older snapshot over the final synchronous save during window close.
+    if (sync === true) {
       try {
-        localStorage.setItem('taskRestoreData', JSON.stringify(data))
-      } catch (e) {}
-      if (sync === true) {
-        writeFileAtomic.sync(sessionRestore.savePath, JSON.stringify(data), {})
-      } else {
-        writeFileAtomic(sessionRestore.savePath, JSON.stringify(data), {}, function (err) {
-          if (err) {
-            console.warn(err)
-            statistics.incrementValue('sessionRestoreSaveAsyncWriteErrors')
-          }
-        })
+        const saved = ipc.sendSync('db:saveSessionSync', data)
+        if (!saved || !saved.ok) throw new Error((saved && saved.error) || 'Session save failed')
+      } catch (e) {
+        console.warn('failed to save session', e)
+        sessionRestore.previousState = null
+        return
       }
-      sessionRestore.previousState = stateString
+    } else {
+      ipc.invoke('db:saveSession', data).then(function (saved) {
+        if (!saved || !saved.ok) throw new Error((saved && saved.error) || 'Session save failed')
+      }).catch(function (e) {
+        console.warn('failed to save session', e)
+        if (sessionRestore.previousState === stateString) sessionRestore.previousState = null
+      })
     }
+    try {
+      localStorage.setItem('taskRestoreData', JSON.stringify(data))
+    } catch (e) {}
+    sessionRestore.previousState = stateString
   },
   restoreFromFile: function () {
     var savedStringData
@@ -332,8 +300,13 @@ const sessionRestore = {
       }
     }
 
-    ipc.on('read-tab-state', function (e) {
-      ipc.send('return-tab-state', workspaces.getCopyableState())
+    ipc.on('read-tab-state', function (e, requestId) {
+      const state = workspaces.getCopyableState()
+      if (requestId) {
+        ipc.send('return-tab-state', { requestId: requestId, state: state })
+      } else {
+        ipc.send('return-tab-state', state)
+      }
     })
   }
 }

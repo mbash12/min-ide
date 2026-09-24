@@ -9,7 +9,7 @@ const PDFViewer = {
     queryString: '?url=%l'
   },
   isPDFViewer: function (tabId) {
-    return tabs.get(tabId).url.startsWith(PDFViewer.url.base)
+    return webviews.getTabData(tabId).url.startsWith(PDFViewer.url.base)
   },
   printPDF: function (viewerTabId) {
     if (!PDFViewer.isPDFViewer(viewerTabId)) {
@@ -58,10 +58,10 @@ const PDFViewer = {
 
     // This is a defense-in-depth measure to prevent content inside the viewer page from manipulating the url query parma
     // Without this, if content from origin A escaped the sandbox, it could rewrite the param to origin B, and then fetch cross-origin content from that origin
-    webviews.bindEvent('did-navigate-in-page', function (event, url, isMainFrame, frameProcessId, frameRoutingId) {
+    webviews.bindEvent('did-navigate-in-page', function (tabId, url, isMainFrame, frameProcessId, frameRoutingId) {
       if (url.startsWith(PDFViewer.url.base)) {
         console.warn('Resetting PDF viewer because in-page navigation occurred')
-        webviews.callAsync(tabs.getSelected(), 'reload')
+        webviews.callAsync(tabId, 'reload')
       }
     })
   }

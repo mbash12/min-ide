@@ -1,3 +1,5 @@
+/* global monaco */
+
 /* Monaco-based code editor page, opened as a tab via
 min://app/pages/editor/index.html.
 The file it shows is not in the URL: the host puts it on the tab and the
@@ -20,6 +22,10 @@ let monacoEditor = null
 
 /* tracks whether content differs from what is on disk */
 let dirty = false
+let editRevision = 0
+let savedRevision = 0
+let applyingExternalContent = false
+let pageDisposed = false
 
 /* mtime of the file when it was loaded or last saved */
 let loadedMtimeMs = null
@@ -29,6 +35,9 @@ in memory. The manual save (Ctrl/Cmd+S and the app menu) still works. */
 const autosaveDelayMs = 700
 let autosaveTimer = null
 let saving = false
+let saveAgainRequested = false
+let externalPollTimer = null
+let externalPollInFlight = false
 
 /* pending requests to the preload bridge: id -> { resolve, reject } */
 const pendingRequests = {}
@@ -124,25 +133,32 @@ function setDirty (value) {
 }
 
 function scheduleAutosave () {
+  if (pageDisposed) return
   clearTimeout(autosaveTimer)
   autosaveTimer = setTimeout(flushAutosave, autosaveDelayMs)
 }
 
-/* writes the pending edit, if there is one. Does nothing when a save is
-already running: that save will pick up the newer content anyway. */
+/* Writes the pending edit, if there is one. A timer or manual save that lands
+while a previous write is running is remembered and drained afterwards. */
 async function flushAutosave () {
   clearTimeout(autosaveTimer)
   autosaveTimer = null
-  if (!dirty || saving) {
+  if (!dirty || pageDisposed) return
+  if (saving) {
+    saveAgainRequested = true
     return
   }
   await saveFile()
 }
 
 async function saveFile () {
-  if (!monacoEditor || !editorFilePath || saving) {
+  if (!monacoEditor || !editorFilePath || pageDisposed) return
+  if (saving) {
+    saveAgainRequested = true
     return
   }
+  const revision = editRevision
+  const content = monacoEditor.getValue()
   saving = true
   try {
     // check if file changed on disk since load (external edit)
@@ -151,21 +167,36 @@ async function saveFile () {
       // external change + local edits: warn but still save (last write wins)
       console.warn('File changed on disk since last load, overwriting')
     }
+    if (pageDisposed) return
     const error = await sendRequest('editor-write', {
       path: editorFilePath,
-      content: monacoEditor.getValue()
+      content: content
     })
     if (error) {
       throw new Error(error)
     }
-    setDirty(false)
+    if (pageDisposed) return
     const stat = await sendRequest('editor-stat', { path: editorFilePath })
     loadedMtimeMs = stat ? stat.mtimeMs : null
+    savedRevision = revision
+    setDirty(editRevision !== savedRevision)
   } catch (err) {
     console.error('save failed:', err)
-    showEditorError(err.message || l('editorSaveError'))
+    // An older snapshot can fail after a newer edit has arrived. Keep the
+    // current editor visible and retry that newer revision instead of
+    // replacing it with an error screen for an obsolete save.
+    if (!pageDisposed && editRevision === revision) {
+      showEditorError(err.message || l('editorSaveError'))
+    }
   } finally {
     saving = false
+    if (!pageDisposed && saveAgainRequested && dirty) {
+      saveAgainRequested = false
+      clearTimeout(autosaveTimer)
+      autosaveTimer = setTimeout(flushAutosave, 0)
+    } else if (!pageDisposed && !dirty) {
+      saveAgainRequested = false
+    }
   }
 }
 
@@ -181,6 +212,7 @@ async function loadFile () {
   try {
     if (isImagePath(editorFilePath)) {
       const result = await sendRequest('editor-read-image', { path: editorFilePath })
+      if (pageDisposed) return
       if (!result || !result.dataURL) {
         throw new Error(result && result.error ? result.error : 'Failed to read image')
       }
@@ -189,11 +221,12 @@ async function loadFile () {
     }
     const result = await sendRequest('editor-read', { path: editorFilePath })
     const stat = await sendRequest('editor-stat', { path: editorFilePath })
+    if (pageDisposed) return
     loadedMtimeMs = stat ? stat.mtimeMs : null
     createEditor(result.content)
     startExternalChangePolling()
   } catch (err) {
-    showEditorError(err.message)
+    if (!pageDisposed) showEditorError(err.message)
   }
 }
 
@@ -207,22 +240,35 @@ function showImage (dataURL) {
 }
 
 function startExternalChangePolling () {
+  if (externalPollTimer) return
   // poll for external changes when editor is not dirty; if file changes on disk show indicator
-  setInterval(async function () {
-    if (dirty || !monacoEditor) return
+  externalPollTimer = setInterval(async function () {
+    if (dirty || !monacoEditor || pageDisposed || externalPollInFlight) return
+    externalPollInFlight = true
+    const revision = editRevision
     try {
       const stat = await sendRequest('editor-stat', { path: editorFilePath })
+      if (pageDisposed || dirty || revision !== editRevision) return
       if (stat && stat.mtimeMs !== null && stat.mtimeMs !== loadedMtimeMs) {
         // file changed externally and we have no unsaved edits: reload silently
         const result = await sendRequest('editor-read', { path: editorFilePath })
-        loadedMtimeMs = stat.mtimeMs
+        if (pageDisposed || dirty || revision !== editRevision) return
         // preserve cursor position
         const pos = monacoEditor.getPosition()
-        monacoEditor.setValue(result.content)
-        if (pos) monacoEditor.setPosition(pos)
+        applyingExternalContent = true
+        try {
+          monacoEditor.setValue(result.content)
+          if (pos) monacoEditor.setPosition(pos)
+        } finally {
+          applyingExternalContent = false
+        }
+        loadedMtimeMs = stat.mtimeMs
+        savedRevision = editRevision
         setDirty(false)
       }
-    } catch (e) {}
+    } catch (e) {} finally {
+      externalPollInFlight = false
+    }
   }, 2000)
 }
 
@@ -276,6 +322,8 @@ function createEditor (content) {
     })
 
     monacoEditor.onDidChangeModelContent(function () {
+      if (applyingExternalContent || pageDisposed) return
+      editRevision++
       setDirty(true)
       scheduleAutosave()
     })
@@ -314,6 +362,14 @@ window.addEventListener('beforeunload', function (e) {
     e.preventDefault()
     e.returnValue = ''
   }
+})
+
+window.addEventListener('pagehide', function () {
+  pageDisposed = true
+  clearTimeout(autosaveTimer)
+  autosaveTimer = null
+  clearInterval(externalPollTimer)
+  externalPollTimer = null
 })
 
 /* the pending autosave should not sit in a timer while the page is going away,

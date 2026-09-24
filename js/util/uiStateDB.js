@@ -56,118 +56,74 @@ async function migrateDexie () {
  * shadowed by an early read or clobbered by an early write. */
 const migrationDone = migrateDexie()
 
-async function getSidebarState (key) {
+// Reads, writes, read/modify/write operations and deletes share a per-key
+// queue. A slow save can never land after that workspace's cleanup.
+const pending = new Map()
+function enqueue (key, operation) {
+  const result = (pending.get(key) || migrationDone).then(operation)
+  const settled = result.catch(function () {})
+  pending.set(key, settled)
+  settled.then(function () {
+    if (pending.get(key) === settled) pending.delete(key)
+  })
+  return result
+}
+
+async function readState (key) {
   try {
-    await migrationDone
-    return await customDataStore.kvGet(SCOPE, key)
+    return await enqueue(key, () => customDataStore.kvGet(SCOPE, key))
   } catch (e) {
-    console.warn('failed to read sidebar state', e)
+    console.warn('failed to read UI state', e)
     return null
   }
 }
 
-async function setSidebarState (key, state) {
+async function writeState (key, state) {
   try {
-    await migrationDone
-    await customDataStore.kvSet(SCOPE, key, state)
+    // Capture at call time; panel objects may be edited while a save waits.
+    const snapshot = JSON.parse(JSON.stringify(state))
+    await enqueue(key, () => customDataStore.kvSet(SCOPE, key, snapshot))
   } catch (e) {
-    console.warn('failed to save sidebar state', e)
-  }
-}
-
-async function getGitPanelState (key) {
-  try {
-    await migrationDone
-    return await customDataStore.kvGet(SCOPE, key)
-  } catch (e) {
-    console.warn('failed to read git panel state', e)
-    return null
-  }
-}
-
-async function setGitPanelState (key, state) {
-  try {
-    await migrationDone
-    await customDataStore.kvSet(SCOPE, key, state)
-  } catch (e) {
-    console.warn('failed to save git panel state', e)
-  }
-}
-
-async function getFileTreeState (key) {
-  try {
-    await migrationDone
-    return await customDataStore.kvGet(SCOPE, key)
-  } catch (e) {
-    console.warn('failed to read file tree state', e)
-    return null
-  }
-}
-
-async function setFileTreeState (key, state) {
-  try {
-    await migrationDone
-    await customDataStore.kvSet(SCOPE, key, state)
-  } catch (e) {
-    console.warn('failed to save file tree state', e)
+    console.warn('failed to save UI state', e)
   }
 }
 
 const MAX_RECENT_SEARCHES = 15
 
 async function getRecentFileSearches () {
-  try {
-    await migrationDone
-    const paths = await customDataStore.kvGet(SCOPE, 'recent')
-    return Array.isArray(paths) ? paths : []
-  } catch (e) {
-    console.warn('failed to read recent file searches', e)
-    return []
-  }
+  const paths = await readState('recent')
+  return Array.isArray(paths) ? paths : []
 }
 
 async function addRecentFileSearch (filePath) {
   try {
-    let paths = await getRecentFileSearches()
-    paths = paths.filter(function (p) { return p !== filePath })
-    paths.unshift(filePath)
-    if (paths.length > MAX_RECENT_SEARCHES) {
-      paths = paths.slice(0, MAX_RECENT_SEARCHES)
-    }
-    await customDataStore.kvSet(SCOPE, 'recent', paths)
+    await enqueue('recent', async function () {
+      const stored = await customDataStore.kvGet(SCOPE, 'recent')
+      const paths = (Array.isArray(stored) ? stored : []).filter(p => p !== filePath)
+      paths.unshift(filePath)
+      await customDataStore.kvSet(SCOPE, 'recent', paths.slice(0, MAX_RECENT_SEARCHES))
+    })
   } catch (e) {
     console.warn('failed to save recent file search', e)
   }
 }
 
-// Removes all persisted UI rows for a deleted workspace (sidebar, git
-// panel, file tree). Keys are 'workspace:'/'git:'/'tree:' + workspace id.
 async function deleteWorkspaceState (workspaceId) {
-  const keys = ['workspace:' + workspaceId, 'git:' + workspaceId, 'tree:' + workspaceId]
-  try {
-    await customDataStore.kvDelete(SCOPE, keys[0])
-  } catch (e) {
-    console.warn('failed to delete sidebar state', e)
-  }
-  try {
-    await customDataStore.kvDelete(SCOPE, keys[1])
-  } catch (e) {
-    console.warn('failed to delete git panel state', e)
-  }
-  try {
-    await customDataStore.kvDelete(SCOPE, keys[2])
-  } catch (e) {
-    console.warn('failed to delete file tree state', e)
-  }
+  await Promise.all(['workspace:', 'git:', 'tree:'].map(prefix => {
+    const key = prefix + workspaceId
+    return enqueue(key, () => customDataStore.kvDelete(SCOPE, key)).catch(function (e) {
+      console.warn('failed to delete UI state', e)
+    })
+  }))
 }
 
 module.exports = {
-  getSidebarState,
-  setSidebarState,
-  getGitPanelState,
-  setGitPanelState,
-  getFileTreeState,
-  setFileTreeState,
+  getSidebarState: readState,
+  setSidebarState: writeState,
+  getGitPanelState: readState,
+  setGitPanelState: writeState,
+  getFileTreeState: readState,
+  setFileTreeState: writeState,
   getRecentFileSearches,
   addRecentFileSearch,
   deleteWorkspaceState

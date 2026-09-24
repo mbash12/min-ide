@@ -83,8 +83,9 @@ module.exports = function (platform, extraOptions) {
       '!scripts/',
       // These are bundled in.
       '!**/main',
-      // ...except the generated omp provider bundle, which main.build.js
-      // imports lazily at runtime instead of being concatenated in
+      // Keep runtime helper modules and the generated OMP provider bundle.
+      // main.build.js loads these with require/import instead of concatenation.
+      'main/lib/**/*.js',
       'main/vendor/omp/bundle.mjs',
       'main/vendor/omp/manifest.json',
       'main/vendor/omp/build.mjs',

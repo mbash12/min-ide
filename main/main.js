@@ -484,15 +484,20 @@ ipc.on('tab-state-change', function(e, events) {
   })
 })
 
+const tabStateRequests = require(require('path').join(__dirname, 'main/lib/window/tabStateRequests.js'))({
+  warn: function (message) { console.warn(message) }
+})
+
+ipc.on('return-tab-state', function(e, data) {
+  tabStateRequests.receive(e.sender.id, data)
+})
+
 ipc.on('request-tab-state', function(e) {
   const otherWindow = windows.getAll().find(w => getWindowWebContents(w).id !== e.sender.id)
   if (!otherWindow) {
     throw new Error('secondary window doesn\'t exist as source for tab state')
   }
-  ipc.once('return-tab-state', function(e2, data) {
-    e.returnValue = data
-  })
-  getWindowWebContents(otherWindow).send('read-tab-state')
+  tabStateRequests.begin(e, getWindowWebContents(otherWindow))
 })
 
 /* places service */

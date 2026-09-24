@@ -5,6 +5,7 @@ live in .min/playbooks; without one they are stored in Min per workspace. */
 const editorView = require('editorView.js')
 const promptModal = require('promptModal.js')
 const sidebarUI = require('sidebar/ui.js')
+const createRequestGate = require('sidebar/lifecycle/requestGate.js')
 
 const panel = document.getElementById('sidebar-panel-playbook')
 
@@ -18,9 +19,12 @@ let expandedName = null
 let lastError = null
 let detailCache = {}
 let detailPending = {}
-let refreshSeq = 0
+const refreshGate = createRequestGate()
 let scopeGeneration = 0
 let panelWasActive = false
+let refreshTimer = null
+let initialized = false
+let refreshFlight = null
 const repeatCounts = {}
 
 function getWorkspacePath () {
@@ -31,6 +35,21 @@ function getWorkspacePath () {
 function getWorkspaceId () {
   const ws = workspaces.getSelected()
   return ws && ws.id
+}
+
+function workspaceScopeKey (workspaceId, workspacePath) {
+  const id = workspaceId == null || workspaceId === '' ? null : String(workspaceId)
+  return JSON.stringify([id, workspacePath || null])
+}
+
+function selectedWorkspaceScopeKey () {
+  return workspaceScopeKey(getWorkspaceId(), getWorkspacePath())
+}
+
+function isWorkspaceCurrent (workspaceId, workspacePath) {
+  return workspaceId === currentWorkspaceId &&
+    workspacePath === currentWorkspacePath &&
+    workspaceScopeKey(workspaceId, workspacePath) === selectedWorkspaceScopeKey()
 }
 
 function t (key, fallback) {
@@ -137,10 +156,12 @@ function loadDetail (entry) {
   const workspacePath = currentWorkspacePath
   const workspaceId = currentWorkspaceId
   const generation = scopeGeneration
-  detailPending[name] = true
+  const request = { generation: generation, workspacePath: workspacePath, workspaceId: workspaceId }
+  detailPending[name] = request
   ipc.invoke('playbookGet', workspacePath, name, workspaceId).then(function (result) {
-    if (generation !== scopeGeneration || workspacePath !== currentWorkspacePath || workspaceId !== currentWorkspaceId) return
+    if (detailPending[name] !== request || generation !== scopeGeneration || workspacePath !== currentWorkspacePath || workspaceId !== currentWorkspaceId) return
     delete detailPending[name]
+    if (!playbooks.some(function (entry) { return entry.name === name })) return
     if (!result || !result.ok) {
       detailCache[name] = { error: (result && result.error) || t('playbookLoadError', 'Could not load playbook'), steps: [] }
     } else {
@@ -149,8 +170,9 @@ function loadDetail (entry) {
     const detail = findDetailEl(name)
     if (detail) renderSteps(detail, entry)
   }).catch(function () {
-    if (generation !== scopeGeneration || workspacePath !== currentWorkspacePath || workspaceId !== currentWorkspaceId) return
+    if (detailPending[name] !== request || generation !== scopeGeneration || workspacePath !== currentWorkspacePath || workspaceId !== currentWorkspaceId) return
     delete detailPending[name]
+    if (!playbooks.some(function (entry) { return entry.name === name })) return
     detailCache[name] = { error: t('playbookLoadError', 'Could not load playbook'), steps: [] }
     const detail = findDetailEl(name)
     if (detail) renderSteps(detail, entry)
@@ -165,6 +187,8 @@ function stepSummary (step) {
 }
 
 function buildRow (entry) {
+  const rowWorkspaceId = currentWorkspaceId
+  const rowWorkspacePath = currentWorkspacePath
   const row = document.createElement('div')
   row.className = 'playbook-row' + (runningName === entry.name ? ' running' : '') + (entry.error ? ' error' : '')
   row.dataset.name = entry.name
@@ -229,6 +253,7 @@ function buildRow (entry) {
     repeat.disabled = !!runningName
     repeat.addEventListener('click', function (e) { e.stopPropagation() })
     repeat.addEventListener('change', function () {
+      if (!isWorkspaceCurrent(rowWorkspaceId, rowWorkspacePath)) return
       const value = Math.max(1, Math.min(20, Math.round(Number(repeat.value) || 1)))
       repeatCounts[entry.name] = value
       repeat.value = value
@@ -240,7 +265,7 @@ function buildRow (entry) {
     runBtn.disabled = !!runningName
     runBtn.addEventListener('click', function (e) {
       e.stopPropagation()
-      runPlaybook(entry.name, Number(repeat.value))
+      runPlaybook(entry.name, Number(repeat.value), rowWorkspaceId, rowWorkspacePath)
     })
     actions.appendChild(runBtn)
     if (runningName === entry.name) {
@@ -249,11 +274,14 @@ function buildRow (entry) {
       stopBtn.title = t('playbookStop', 'Stop after current step; run cleanup')
       stopBtn.addEventListener('click', async function (e) {
         e.stopPropagation()
+        if (!isWorkspaceCurrent(rowWorkspaceId, rowWorkspacePath)) return
         stopBtn.disabled = true
         try {
-          const result = await ipc.invoke('playbookCancel', currentWorkspaceId, entry.name)
-          if (!result.ok) { lastError = result.error; render() }
-        } catch (err) { lastError = err.message; render() }
+          const result = await ipc.invoke('playbookCancel', rowWorkspaceId, entry.name)
+          if (isWorkspaceCurrent(rowWorkspaceId, rowWorkspacePath) && !result.ok) { lastError = result.error; render() }
+        } catch (err) {
+          if (isWorkspaceCurrent(rowWorkspaceId, rowWorkspacePath)) { lastError = err.message; render() }
+        }
       })
       actions.appendChild(stopBtn)
     }
@@ -273,7 +301,7 @@ function buildRow (entry) {
   deleteBtn.title = t('playbookDelete', 'Delete')
   deleteBtn.addEventListener('click', function (e) {
     e.stopPropagation()
-    deletePlaybook(entry.name)
+    deletePlaybook(entry.name, rowWorkspaceId, rowWorkspacePath)
   })
   actions.appendChild(deleteBtn)
 
@@ -331,7 +359,7 @@ function render () {
   panel.appendChild(body)
 }
 
-async function refresh (options) {
+function refresh (options) {
   options = options || {}
   const silent = !!options.silent
   const wsPath = getWorkspacePath() || null
@@ -346,16 +374,35 @@ async function refresh (options) {
     detailPending = {}
     render()
     updateBadge()
-    return
+    return Promise.resolve()
   }
-  const seq = ++refreshSeq
+  const scopeKey = workspaceScopeKey(wsId, wsPath)
+  if (refreshFlight && refreshFlight.scopeKey === scopeKey) {
+    refreshFlight.again = true
+    refreshFlight.silent = refreshFlight.silent && silent
+    return refreshFlight.promise
+  }
+
+  const flight = { scopeKey: scopeKey, again: false, silent: silent, promise: null }
+  refreshFlight = flight
+  flight.promise = performRefresh(silent, wsId, wsPath, scopeKey).finally(function () {
+    if (refreshFlight === flight) refreshFlight = null
+    if (flight.again && flight.scopeKey === selectedWorkspaceScopeKey() && flight.scopeKey === workspaceScopeKey(currentWorkspaceId, currentWorkspacePath)) {
+      refresh({ silent: flight.silent })
+    }
+  })
+  return flight.promise
+}
+
+async function performRefresh (silent, wsId, wsPath, scopeKey) {
+  const request = refreshGate.begin(scopeKey)
   if (!silent && playbooks.length === 0) {
     isLoading = true
     render()
   }
   try {
     const result = await ipc.invoke('playbookList', wsPath, wsId)
-    if (seq !== refreshSeq || currentWorkspaceId !== wsId || currentWorkspacePath !== wsPath) return
+    if (!refreshGate.isCurrent(request, selectedWorkspaceScopeKey()) || currentWorkspaceId !== wsId || currentWorkspacePath !== wsPath) return
     const next = (result && result.ok) ? (result.playbooks || []) : playbooks
     if (result && result.ok) {
       lastError = null
@@ -369,7 +416,7 @@ async function refresh (options) {
     isLoading = false
     if (!silent || changed) render()
   } catch (err) {
-    if (seq !== refreshSeq || currentWorkspaceId !== wsId || currentWorkspacePath !== wsPath) return
+    if (!refreshGate.isCurrent(request, selectedWorkspaceScopeKey()) || currentWorkspaceId !== wsId || currentWorkspacePath !== wsPath) return
     lastError = (err && err.message) || String(err)
     isLoading = false
     if (!silent) render()
@@ -395,6 +442,19 @@ function updateBadge () {
   }
 }
 
+function startRefreshPolling () {
+  if (refreshTimer !== null) return
+  refreshTimer = setInterval(function () {
+    if (panel.classList.contains('active') && !runningName) refresh({ silent: true })
+  }, 4000)
+}
+
+function stopRefreshPolling () {
+  if (refreshTimer === null) return
+  clearInterval(refreshTimer)
+  refreshTimer = null
+}
+
 async function createPlaybook () {
   const wsPath = getWorkspacePath() || null
   const wsId = getWorkspaceId()
@@ -405,7 +465,7 @@ async function createPlaybook () {
     ok: l('dialogConfirmButton') || 'Confirm',
     cancel: l('dialogSkipButton') || 'Cancel'
   })
-  if (!name) return
+  if (!name || !isWorkspaceCurrent(wsId, wsPath)) return
   const stub = {
     name: name,
     description: '',
@@ -415,6 +475,7 @@ async function createPlaybook () {
     ]
   }
   const result = await ipc.invoke('playbookSave', wsPath, stub, wsId)
+  if (!isWorkspaceCurrent(wsId, wsPath)) return
   if (!result || !result.ok) {
     lastError = (result && result.error) || t('playbookSaveError', 'Could not save playbook')
     render()
@@ -425,30 +486,31 @@ async function createPlaybook () {
   if (result.path) editorView.openFile(result.path)
 }
 
-async function runPlaybook (name, repeat) {
-  const wsPath = getWorkspacePath() || null
-  const wsId = getWorkspaceId()
-  if (!wsId || runningName) return
+async function runPlaybook (name, repeat, workspaceId, workspacePath) {
+  const wsPath = workspacePath === undefined ? (getWorkspacePath() || null) : workspacePath
+  const wsId = workspaceId === undefined ? getWorkspaceId() : workspaceId
+  if (!wsId || runningName || !isWorkspaceCurrent(wsId, wsPath)) return
   runningName = name
   lastError = null
   render()
   try {
     const task = tasks.getSelected()
     const result = await ipc.invoke('playbookRun', wsPath, name, {}, wsId, { taskId: task && task.id, repeat: repeat })
-    if (!result || !result.ok) {
+    if (isWorkspaceCurrent(wsId, wsPath) && (!result || !result.ok)) {
       lastError = (result && result.error) || t('playbookRunError', 'Playbook failed')
     }
   } catch (err) {
-    lastError = (err && err.message) || String(err)
+    if (isWorkspaceCurrent(wsId, wsPath)) lastError = (err && err.message) || String(err)
   }
+  if (!isWorkspaceCurrent(wsId, wsPath)) return
   runningName = null
   runProgress = null
   await refresh()
 }
 
-async function deletePlaybook (name) {
-  const wsPath = getWorkspacePath() || null
-  const wsId = getWorkspaceId()
+async function deletePlaybook (name, workspaceId, workspacePath) {
+  const wsPath = workspacePath === undefined ? (getWorkspacePath() || null) : workspacePath
+  const wsId = workspaceId === undefined ? getWorkspaceId() : workspaceId
   if (!wsId) return
   const ok = await promptModal.confirm({
     title: t('playbookDelete', 'Delete'),
@@ -456,8 +518,9 @@ async function deletePlaybook (name) {
     ok: l('dialogConfirmButton') || 'Confirm',
     cancel: l('dialogSkipButton') || 'Cancel'
   })
-  if (!ok) return
+  if (!ok || !isWorkspaceCurrent(wsId, wsPath)) return
   const result = await ipc.invoke('playbookDelete', wsPath, name, wsId)
+  if (!isWorkspaceCurrent(wsId, wsPath)) return
   if (!result || !result.ok) {
     lastError = (result && result.error) || t('playbookDeleteError', 'Could not delete playbook')
   }
@@ -474,10 +537,10 @@ function syncWorkspaceScope () {
   // Clear the old folder's rows before asking for the new list. Incrementing
   // both generations also prevents old list/detail requests from repopulating
   // the panel after the workspace path changes.
-  refreshSeq++
   scopeGeneration++
   currentWorkspacePath = workspacePath
   currentWorkspaceId = workspaceId
+  refreshGate.setScope(workspaceScopeKey(workspaceId, workspacePath))
   playbooks = []
   isLoading = !!workspaceId
   runningName = null
@@ -494,6 +557,8 @@ function syncWorkspaceScope () {
 
 const playbookPanel = {
   initialize: function () {
+    if (initialized) return
+    initialized = true
     currentWorkspacePath = getWorkspacePath() || null
     currentWorkspaceId = getWorkspaceId() || null
     if (currentWorkspaceId) isLoading = true
@@ -516,34 +581,38 @@ const playbookPanel = {
       if (data.cwd && data.cwd !== currentWorkspacePath) return
       if (data.type === 'changed') {
         if (data.name) delete detailCache[data.name]
-        refresh({ silent: true })
+        if (panel.classList.contains('active')) refresh({ silent: true })
         return
       }
       if (data.type === 'progress') {
         runningName = data.name
         runProgress = data
-        render()
+        if (panel.classList.contains('active')) render()
         return
       }
       if (data.type === 'done') {
         runningName = null
         runProgress = null
         if (!data.ok) lastError = data.error || t('playbookRunError', 'Playbook failed')
-        refresh({ silent: true })
+        if (panel.classList.contains('active')) refresh({ silent: true })
       }
     })
 
+    refreshGate.setScope(workspaceScopeKey(currentWorkspaceId, currentWorkspacePath))
     panelWasActive = panel.classList.contains('active')
     const observer = new MutationObserver(function () {
       const isActive = panel.classList.contains('active')
-      if (isActive && !panelWasActive) refresh()
+      if (isActive && !panelWasActive) {
+        refresh()
+        startRefreshPolling()
+      } else if (!isActive && panelWasActive) {
+        stopRefreshPolling()
+      }
       panelWasActive = isActive
     })
     observer.observe(panel, { attributes: true, attributeFilter: ['class'] })
 
-    setInterval(function () {
-      if (panel.classList.contains('active') && !runningName) refresh({ silent: true })
-    }, 4000)
+    if (panelWasActive) startRefreshPolling()
   },
   refresh: refresh
 }

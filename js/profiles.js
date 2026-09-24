@@ -9,17 +9,26 @@ through the same user data directory).
 */
 
 const STORAGE_KEY = 'workspaceProfiles'
+let cachedSource
+let cachedProfiles = []
 
-function getProfiles () {
+function readProfiles () {
   try {
-    const data = JSON.parse(localStorage.getItem(STORAGE_KEY))
-    if (Array.isArray(data)) {
-      return data.filter(p => p && p.id && p.name)
+    const source = localStorage.getItem(STORAGE_KEY)
+    if (source !== cachedSource) {
+      const data = JSON.parse(source)
+      cachedProfiles = Array.isArray(data) ? data.filter(p => p && p.id && p.name) : []
+      cachedSource = source
     }
   } catch (e) {
     console.warn('failed to read workspace profiles', e)
+    return []
   }
-  return []
+  return cachedProfiles
+}
+
+function getProfiles () {
+  return readProfiles().map(profile => Object.assign({}, profile))
 }
 
 function saveProfiles (profiles) {
@@ -31,12 +40,12 @@ function saveProfiles (profiles) {
       profiles.forEach(function (p) {
         if (p && p.id) {
           keep[p.id] = true
-          ipc.invoke('db:saveProfile', p)
+          ipc.invoke('db:saveProfile', p).catch(e => console.warn('failed to save profile', e))
         }
       })
       previous.forEach(function (p) {
         if (p && p.id && !keep[p.id]) {
-          ipc.invoke('db:deleteProfile', p.id)
+          ipc.invoke('db:deleteProfile', p.id).catch(e => console.warn('failed to delete profile', e))
         }
       })
     }
@@ -48,14 +57,16 @@ function saveProfiles (profiles) {
 // before the first IPC round-trip. On startup: an empty DB is seeded from
 // the cache (upgrade path); otherwise the DB wins and refreshes the cache.
 if (typeof ipc !== 'undefined' && ipc.invoke) {
+  const initialCache = localStorage.getItem(STORAGE_KEY)
   ipc.invoke('db:getProfiles').then(function (dbProfiles) {
+    if (localStorage.getItem(STORAGE_KEY) !== initialCache) return
     const local = getProfiles()
     if (Array.isArray(dbProfiles) && dbProfiles.length > 0) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(dbProfiles))
     } else if (local.length > 0) {
       local.forEach(function (p) {
         if (p && p.id) {
-          ipc.invoke('db:saveProfile', p)
+          ipc.invoke('db:saveProfile', p).catch(e => console.warn('failed to save profile', e))
         }
       })
     }
@@ -63,7 +74,8 @@ if (typeof ipc !== 'undefined' && ipc.invoke) {
 }
 
 function getProfile (profileId) {
-  return getProfiles().find(p => p.id === profileId) || null
+  const profile = readProfiles().find(p => p.id === profileId)
+  return profile ? Object.assign({}, profile) : null
 }
 
 function addProfile (name) {

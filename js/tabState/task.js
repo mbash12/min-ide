@@ -1,5 +1,6 @@
 const TabList = require('tabState/tab.js')
 const TabStack = require('tabRestore.js')
+const OwnershipIndex = require('tabState/ownershipIndex.js')
 
 // Upstream Min's TaskList, kept close to upstream/master so that merges from
 // minbrowser/min apply cleanly. Fork divergence is limited to the marked
@@ -10,13 +11,20 @@ const TabStack = require('tabRestore.js')
 class TaskList {
   constructor () {
     this.tasks = [] // each task is {id, name, tabs: [], tabHistory: TabStack}
+    this.index = new OwnershipIndex()
+    this.workspace = null
     this.events = []
     this.pendingCallbacks = []
     this.pendingCallbackTimeout = null
   }
 
   on (name, fn) {
-    this.events.push({ name, fn })
+    const listener = { name, fn, active: true }
+    this.events.push(listener)
+    return () => {
+      listener.active = false
+      this.events = this.events.filter(entry => entry !== listener)
+    }
   }
 
   static temporaryProperties = ['selectedInWindow']
@@ -24,21 +32,39 @@ class TaskList {
   emit (name, ...data) {
     this.events.forEach(listener => {
       if (listener.name === name || listener.name === '*') {
-        this.pendingCallbacks.push([listener.fn, (listener.name === '*' ? [name] : []).concat(data)])
-
-        // run multiple events in one timeout, since calls to setTimeout() appear to be slow (at least based on timeline data)
-        if (!this.pendingCallbackTimeout) {
-          this.pendingCallbackTimeout = setTimeout(() => {
-            this.pendingCallbacks.forEach(t => t[0].apply(this, t[1]))
-            this.pendingCallbacks = []
-            this.pendingCallbackTimeout = null
-          }, 0)
-        }
+        this.pendingCallbacks.push([listener, (listener.name === '*' ? [name] : []).concat(data)])
       }
     })
+    if (this.pendingCallbacks.length && this.pendingCallbackTimeout === null) {
+      this.pendingCallbackTimeout = setTimeout(() => {
+        // Detach the batch first: callbacks can enqueue new events or dispose
+        // the list without losing events or leaving its timer stuck.
+        const callbacks = this.pendingCallbacks
+        this.pendingCallbacks = []
+        this.pendingCallbackTimeout = null
+        callbacks.forEach(([listener, args]) => {
+          if (!listener.active) return
+          try {
+            listener.fn.apply(this, args)
+          } catch (error) {
+            console.error('Task state listener failed', error)
+          }
+        })
+      }, 0)
+    }
+  }
+
+  dispose () {
+    clearTimeout(this.pendingCallbackTimeout)
+    this.pendingCallbackTimeout = null
+    this.pendingCallbacks = []
+    this.events.forEach(listener => { listener.active = false })
+    this.events = []
+    this.index.detach()
   }
 
   add (task = {}, index, emit = true) {
+    if (task.id && this.get(task.id)) return task.id
     const newTask = {
       name: task.name || null,
       tabs: new TabList(task.tabs, this),
@@ -52,14 +78,17 @@ class TaskList {
       splitState: task.splitState || null,
       // FORK: task-scoped preferences (HANDOVER §2), a plain JSON key/value
       // map written via js/taskPrefs.js. null until first use.
-      prefs: task.prefs || null,
+      prefs: task.prefs || null
     }
 
-    if (index) {
+    if (index !== undefined && index !== null) {
       this.tasks.splice(index, 0, newTask)
     } else {
       this.tasks.push(newTask)
     }
+
+    newTask.tabs.ownerTask = newTask
+    this.index.addTask(newTask)
 
     if (emit) {
       this.emit('task-added', newTask.id, Object.assign({}, newTask, { tabHistory: task.tabHistory, tabs: task.tabs }), index)
@@ -79,6 +108,7 @@ class TaskList {
       if (data[key] === undefined) {
         throw new ReferenceError('Key ' + key + ' is undefined.')
       }
+      if (Object.is(task[key], data[key])) continue
       task[key] = data[key]
       if (emit) {
         this.emit('task-updated', id, key, data[key])
@@ -106,7 +136,7 @@ class TaskList {
   }
 
   get (id) {
-    return this.find(task => task.id === id) || null
+    return this.index.tasks.get(id) || null
   }
 
   getSelected () {
@@ -118,7 +148,7 @@ class TaskList {
   }
 
   getTaskContainingTab (tabId) {
-    return this.find(task => task.tabs.has(tabId)) || null
+    return this.index.tabs.get(tabId) || null
   }
 
   getIndex (id) {
@@ -126,6 +156,8 @@ class TaskList {
   }
 
   setSelected (id, emit = true, onWindow=windowId) {
+    const selected = this.get(id)
+    if (!selected) return false
     for (var i = 0; i < this.tasks.length; i++) {
       if (this.tasks[i].selectedInWindow === onWindow) {
         this.tasks[i].selectedInWindow = null
@@ -135,7 +167,7 @@ class TaskList {
       }
     }
     if (onWindow === windowId) {
-      window.tabs = this.get(id).tabs
+      window.tabs = selected.tabs
       if (emit) {
         this.emit('task-selected', id)
         if (tabs.getSelected()) {
@@ -147,16 +179,17 @@ class TaskList {
 
   destroy (id, emit = true) {
     const index = this.getIndex(id)
+    if (index < 0) return false
+    const task = this.get(id)
 
     if (emit) {
     // emit the tab-destroyed event for all tabs in this task
-      this.get(id).tabs.forEach(tab => this.emit('tab-destroyed', tab.id, id))
+      task.tabs.forEach(tab => this.emit('tab-destroyed', tab.id, id))
 
       this.emit('task-destroyed', id)
     }
 
-    if (index < 0) return false
-
+    this.index.removeTask(task)
     this.tasks.splice(index, 1)
 
     return index
@@ -184,11 +217,11 @@ class TaskList {
 
   // FORK: reorder tasks within this list (used by the task overlay drag
   // reorder instead of mutating the internal array directly).
-  reorder (fromIndex, toIndex) {
-    if (fromIndex === toIndex) return
+  reorder (fromIndex, toIndex, emit = true) {
+    if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= this.tasks.length || toIndex < 0 || toIndex >= this.tasks.length) return
     const moved = this.tasks.splice(fromIndex, 1)[0]
     this.tasks.splice(toIndex, 0, moved)
-    this.emit('task-moved', moved.id, fromIndex, toIndex)
+    if (emit) this.emit('task-moved', moved.id, fromIndex, toIndex)
   }
 
   getLength () {
@@ -203,7 +236,16 @@ class TaskList {
 
   slice (...args) { return this.tasks.slice.apply(this.tasks, args) }
 
-  splice (...args) { return this.tasks.splice.apply(this.tasks, args) }
+  splice (...args) {
+    const removed = this.tasks.splice(...args)
+    removed.forEach(task => this.index.removeTask(task))
+    args.slice(2).forEach(task => {
+      task.tabs.parentTaskList = this
+      task.tabs.ownerTask = task
+      this.index.addTask(task)
+    })
+    return removed
+  }
 
   filter (...args) { return this.tasks.filter.apply(this.tasks, args) }
 

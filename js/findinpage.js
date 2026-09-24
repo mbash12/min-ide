@@ -114,6 +114,7 @@ webviews.bindEvent('did-start-navigation', function (tabId, url, isInPlace, isMa
 })
 
 webviews.bindEvent('found-in-page', function (tabId, data) {
+  if (tabId !== findinpage.activeTab) return
   if (data.matches !== undefined) {
     var text
     if (data.matches === 1) {

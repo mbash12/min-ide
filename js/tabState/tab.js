@@ -2,6 +2,8 @@ class TabList {
   constructor (tabs, parentTaskList) {
     this.tabs = tabs || []
     this.parentTaskList = parentTaskList
+    this.ownerTask = null
+    this.byId = new Map(this.tabs.map(tab => [tab.id, tab]))
   }
 
   //tab properties that shouldn't be saved to disk
@@ -10,6 +12,7 @@ class TabList {
 
   add (tab = {}, options = {}, emit=true) {
     var tabId = String(tab.id || Math.round(Math.random() * 100000000000000000)) // you can pass an id that will be used, or a random one will be generated.
+    if (this.has(tabId)) return tabId
 
     var newTab = {
       url: tab.url || '',
@@ -38,7 +41,7 @@ class TabList {
       resource: tab.resource || null,
       // FORK: diff tabs keep the comparison they show here (refs + paths,
       // no contents), so the page can re-resolve it after a restore
-      diff: tab.diff || null,
+      diff: tab.diff || null
     }
 
     if (options.atEnd) {
@@ -46,6 +49,9 @@ class TabList {
     } else {
       this.tabs.splice(this.getSelectedIndex() + 1, 0, newTab)
     }
+
+    this.byId.set(tabId, newTab)
+    this.parentTaskList.index.addTabs(this.ownerTask, [newTab])
 
     if (emit) {
     this.parentTaskList.emit('tab-added', tabId, newTab, options, this.parentTaskList.getTaskContainingTab(tabId).id)
@@ -58,19 +64,21 @@ class TabList {
     if (!this.has(id)) {
       throw new ReferenceError('Attempted to update a tab that does not exist.')
     }
-    const index = this.getIndex(id)
+    const tab = this.byId.get(id)
 
     for (var key in data) {
       if (data[key] === undefined) {
         throw new ReferenceError('Key ' + key + ' is undefined.')
       }
-      this.tabs[index][key] = data[key]
-      if (emit) {
+      const changed = !Object.is(tab[key], data[key])
+      if (!changed && key !== 'url') continue
+      tab[key] = data[key]
+      if (emit && changed) {
         this.parentTaskList.emit('tab-updated', id, key, data[key], this.parentTaskList.getTaskContainingTab(id).id)
       }
       // changing URL erases scroll position
-      if (key === 'url') {
-        this.tabs[index].scrollPosition = 0
+      if (key === 'url' && tab.scrollPosition !== 0) {
+        tab.scrollPosition = 0
         if (emit) {
           this.parentTaskList.emit('tab-updated', id, 'scrollPosition', 0, this.parentTaskList.getTaskContainingTab(id).id)
         }
@@ -90,7 +98,9 @@ class TabList {
     const containingTask = this.parentTaskList.getTaskContainingTab(id).id
 
     this.parentTaskList.getTaskContainingTab(id).tabHistory.push(this.toPermanentState(this.tabs[index]))
-    this.tabs.splice(index, 1)
+    const removed = this.tabs.splice(index, 1)
+    this.byId.delete(id)
+    this.parentTaskList.index.removeTabs(this.ownerTask, removed)
 
     if (emit) {
       this.parentTaskList.emit('tab-destroyed', id, containingTask)
@@ -108,16 +118,12 @@ class TabList {
       }
       return tabsToReturn
     }
-    for (var i = 0; i < this.tabs.length; i++) {
-      if (this.tabs[i].id === id) {
-        return Object.assign({}, this.tabs[i])
-      }
-    }
-    return undefined
+    const tab = this.byId.get(id)
+    return tab ? Object.assign({}, tab) : undefined
   }
 
   has (id) {
-    return this.getIndex(id) > -1
+    return this.byId.has(id)
   }
 
   getIndex (id) {
@@ -241,14 +247,19 @@ class TabList {
   }
 
   splice (...args) {
-    const containingTask = this.parentTaskList.find(t => t.tabs === this).id
-    
+    const containingTask = this.ownerTask.id
+    const removed = this.spliceNoEmit(...args)
     this.parentTaskList.emit('tab-splice', containingTask, ...args)
-    return this.tabs.splice.apply(this.tabs, args)
+    return removed
   }
 
   spliceNoEmit (...args) {
-    return this.tabs.splice.apply(this.tabs, args)
+    const previous = this.tabs.slice()
+    const removed = this.tabs.splice(...args)
+    this.byId = new Map(this.tabs.map(tab => [tab.id, tab]))
+    this.parentTaskList.index.removeTabs(this.ownerTask, previous)
+    this.parentTaskList.index.addTabs(this.ownerTask, this.tabs)
+    return removed
   }
 
   toPermanentState (tab) {

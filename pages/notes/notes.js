@@ -32,6 +32,7 @@
   let editRevision = 0
   let savedRevision = 0
   let saveInFlight = false
+  let pageDisposed = false
   let ready = false
 
   function invoke (action, payload) {
@@ -72,21 +73,24 @@
    * preview pane (diagram replaces the block) and the WYSIWYG surface
    * (diagram under the editable code block), skipping whichever is hidden. */
   function renderMermaidPreview () {
-    if (!window.MinMermaid) return
+    if (pageDisposed || !window.MinMermaid) return
+    const revision = editRevision
     window.MinMermaid.render(editorEl).then(function (result) {
+      if (pageDisposed || revision !== editRevision) return
       if (result && result !== 'rendered' && result !== 'none' && result !== 'no-preview' && result !== 'hidden-preview') {
         setStatus('mermaid: ' + result, true)
       }
     })
   }
 
-  function scheduleMermaidRender () {
+  function scheduleMermaidRender (delay) {
+    if (pageDisposed) return
     clearTimeout(mermaidTimer)
-    mermaidTimer = setTimeout(renderMermaidPreview, 500)
+    mermaidTimer = setTimeout(renderMermaidPreview, delay === undefined ? 500 : delay)
   }
 
   function scheduleSave () {
-    if (!ready) return
+    if (!ready || pageDisposed) return
     editRevision++
     setStatus('Unsaved')
     clearTimeout(saveTimer)
@@ -97,25 +101,42 @@
   async function flushSave () {
     clearTimeout(saveTimer)
     saveTimer = null
-    if (!ready || saveInFlight || savedRevision === editRevision) return
+    if (!ready || pageDisposed || savedRevision === editRevision) return
+    if (saveInFlight) return
     const revision = editRevision
+    const title = titleInput.value.trim() || 'Untitled'
+    const markdown = editor.getMarkdown()
     saveInFlight = true
     setStatus('Saving…')
-    const result = await invoke('update', {
-      id: noteId,
-      title: titleInput.value.trim() || 'Untitled',
-      markdown: editor.getMarkdown()
-    })
+    let result
+    try {
+      result = await invoke('update', {
+        id: noteId,
+        title: title,
+        markdown: markdown
+      })
+    } catch (err) {
+      result = { ok: false, error: err && err.message ? err.message : 'Save failed' }
+    }
     saveInFlight = false
+    if (pageDisposed) return
     if (!result || result.ok === false) {
-      setStatus((result && result.error) || 'Save failed', true)
+      const hasNewerChanges = editRevision !== revision
+      if (hasNewerChanges) {
+        setStatus('Unsaved')
+      } else {
+        setStatus((result && result.error) || 'Save failed', true)
+      }
+      if (hasNewerChanges) flushSave()
       return
     }
     savedRevision = revision
-    document.title = (result.note && result.note.title) || titleInput.value.trim() || 'Untitled'
+    document.title = (result.note && result.note.title) || title
     if (editRevision === savedRevision) {
       setStatus('Saved')
     } else {
+      clearTimeout(saveTimer)
+      saveTimer = null
       flushSave()
     }
   }
@@ -127,6 +148,13 @@
     if (document.visibilityState === 'hidden') flushSave()
   })
   window.addEventListener('beforeunload', flushSave)
+  window.addEventListener('pagehide', function () {
+    pageDisposed = true
+    clearTimeout(saveTimer)
+    clearTimeout(mermaidTimer)
+    saveTimer = null
+    mermaidTimer = null
+  })
 
   async function load () {
     if (!noteId) {
@@ -134,6 +162,7 @@
       return
     }
     const result = await invoke('get', { id: noteId })
+    if (pageDisposed) return
     if (!result || result.ok === false || !result.note) {
       showError((result && result.error) || 'Note not found.')
       return
@@ -169,7 +198,7 @@
         change: scheduleSave,
         blur: flushSave,
         changeMode: function () {
-          setTimeout(renderMermaidPreview, 50)
+          scheduleMermaidRender(50)
         }
       }
     })
@@ -185,6 +214,6 @@
   }
 
   load().catch(function (err) {
-    showError(err && err.message ? err.message : 'Could not load this note.')
+    if (!pageDisposed) showError(err && err.message ? err.message : 'Could not load this note.')
   })
 })()

@@ -1,8 +1,11 @@
 var webviews = require('webviews.js')
 var settings = require('util/settings/settings.js')
 
-const colorExtractorImage = document.createElement('img')
-colorExtractorImage.crossOrigin = 'anonymous'
+const queueFaviconImage = require('webviews/imageQueue.js')(function () {
+  const image = document.createElement('img')
+  image.crossOrigin = 'anonymous'
+  return image
+}, fn => requestIdleCallback(fn, { timeout: 1000 }))
 const colorExtractorCanvas = document.createElement('canvas')
 const colorExtractorContext = colorExtractorCanvas.getContext('2d')
 
@@ -27,14 +30,14 @@ setInterval(function () {
 }, 5 * 60 * 1000)
 
 function getColorFromImage (image) {
-  const w = colorExtractorImage.width
-  const h = colorExtractorImage.height
+  const w = image.width
+  const h = image.height
   colorExtractorCanvas.width = w
   colorExtractorCanvas.height = h
 
   const offset = Math.max(1, Math.round(0.00032 * w * h))
 
-  colorExtractorContext.drawImage(colorExtractorImage, 0, 0, w, h)
+  colorExtractorContext.drawImage(image, 0, 0, w, h)
 
   const data = colorExtractorContext.getImageData(0, 0, w, h).data
 
@@ -226,7 +229,7 @@ const tabColor = {
      */
     webviews.bindEvent('did-start-navigation', function (tabId, url, isInPlace, isMainFrame) {
       if (isMainFrame && isInPlace === false) {
-        tabs.update(tabId, {
+        webviews.updateTabState(tabId, {
           backgroundColor: null,
           favicon: faviconCache.get(faviconCacheKey(url)) || null
         })
@@ -236,7 +239,7 @@ const tabColor = {
     /* if no favicon arrived by the end of the load (the pushed event can be
     missed), read the declared icon from the DOM once loading settles */
     webviews.bindEvent('did-stop-loading', function (tabId) {
-      const tab = tabs.get(tabId)
+      const tab = webviews.getTabData(tabId)
       if (tab && !(tab.favicon && tab.favicon.url)) {
         webviews.callAsync(tabId, 'executeJavaScript', [
           "(function(){var l=document.querySelector('link[rel~=icon], link[rel=\"shortcut icon\"]');return l?l.href:null})()"
@@ -253,6 +256,7 @@ const tabColor = {
     this is needed to go back to default colors in case this page doesn't specify one
      */
     webviews.bindEvent('did-finish-load', function (tabId) {
+      if (tabId !== tabs.getSelected()) return
       tabColor.updateColors()
     })
 
@@ -271,7 +275,7 @@ const tabColor = {
   },
   updateFromThemeColor: function (color, tabId) {
     if (!color) {
-      tabs.update(tabId, {
+      webviews.updateTabState(tabId, {
         themeColor: null
       })
       return
@@ -280,7 +284,7 @@ const tabColor = {
     const rgb = getColorFromString(color)
     const rgbAdjusted = adjustColorForTheme(rgb)
 
-    tabs.update(tabId, {
+    webviews.updateTabState(tabId, {
       themeColor: {
         color: getRGBString(rgbAdjusted),
         textColor: getTextColor(rgbAdjusted),
@@ -290,7 +294,7 @@ const tabColor = {
   },
   updateFromImage: function (favicons, tabId, callback) {
     // private tabs always use a special color, we don't need to get the icon
-    if (tabs.get(tabId) && tabs.get(tabId).private === true) {
+    if (webviews.getTabData(tabId) && webviews.getTabData(tabId).private === true) {
       return
     }
 
@@ -303,29 +307,26 @@ const tabColor = {
     // store the favicon right away so it can be displayed even if the color
     // extraction below fails (the image is loaded with crossOrigin=anonymous,
     // which makes the load fail entirely on servers without CORS headers)
-    const tab = tabs.get(tabId)
+    const tab = webviews.getTabData(tabId)
     if (tab) {
       const favicon = { url: iconUrl, luminance: null }
-      tabs.update(tabId, { favicon })
+      webviews.updateTabState(tabId, { favicon })
       if (tab.url) faviconCache.set(faviconCacheKey(tab.url), favicon)
+      if (faviconCache.size > 500) faviconCache.delete(faviconCache.keys().next().value)
     }
 
-    requestIdleCallback(function () {
-      if (!tabs.get(tabId)) {
-        return
-      }
-      colorExtractorImage.onload = function (e) {
-        if (!tabs.get(tabId)) {
-          return
-        }
-        const backgroundColor = getColorFromImage(colorExtractorImage)
+    const requestedURL = tab && tab.url
+    queueFaviconImage(tabId, {
+      url: iconUrl,
+      isCurrent: function () {
+        const current = webviews.getTabData(tabId)
+        return !!(current && current.url === requestedURL && current.favicon && current.favicon.url === iconUrl)
+      },
+      loaded: function (image) {
+        const backgroundColor = getColorFromImage(image)
         const backgroundColorAdjusted = adjustColorForTheme(backgroundColor)
-
-        const favicon = {
-          url: iconUrl,
-          luminance: getLuminance(backgroundColor)
-        }
-        tabs.update(tabId, {
+        const favicon = { url: iconUrl, luminance: getLuminance(backgroundColor) }
+        webviews.updateTabState(tabId, {
           backgroundColor: {
             color: getRGBString(backgroundColorAdjusted),
             textColor: getTextColor(backgroundColorAdjusted),
@@ -333,16 +334,9 @@ const tabColor = {
           },
           favicon
         })
-        const current = tabs.get(tabId)
-        if (current && current.url) faviconCache.set(faviconCacheKey(current.url), favicon)
-
-        if (callback) {
-          callback()
-        }
+        if (requestedURL) faviconCache.set(faviconCacheKey(requestedURL), favicon)
+        if (callback) callback()
       }
-      colorExtractorImage.src = favicons[0]
-    }, {
-      timeout: 1000
     })
   },
   updateColors: function () {

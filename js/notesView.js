@@ -67,6 +67,27 @@ function getTabRecord (noteId) {
 function getTabRecordForId (tabId) {
   if (tabId === null || tabId === undefined) return null
 
+  if (typeof workspaces !== 'undefined' && workspaces && typeof workspaces.findTaskContainingTab === 'function') {
+    const task = workspaces.findTaskContainingTab(tabId)
+    if (task && task.tabs) {
+      let tab = task.tabs.get(tabId)
+      if (!tab) {
+        tab = task.tabs.get().find(function (entry) { return String(entry.id) === String(tabId) })
+      }
+      const identity = getNoteIdentity(tab)
+      if (identity) {
+        const list = task.tabs.parentTaskList
+        return {
+          id: tab.id,
+          noteId: identity.noteId,
+          tab: tab,
+          workspace: list && list.workspace,
+          task: task
+        }
+      }
+    }
+  }
+
   let found = null
   forEachWorkspace(function (workspace) {
     if (found || !workspace || !workspace.tasks) return

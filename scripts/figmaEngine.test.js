@@ -14,7 +14,13 @@ function engineHarness () {
     __dirname: path.resolve(__dirname, '..'),
     fs,
     path,
-    process,
+    process: {
+      platform: process.platform,
+      pid: process.pid,
+      env: process.env,
+      kill: process.kill.bind(process),
+      on () {}
+    },
     Buffer,
     URL,
     console,
@@ -48,6 +54,24 @@ test('a cold engine connects without showing, priming, or focusing a window', as
   assert.equal((await context.figmaEngineWaitPlugin('target')).ok, true)
   assert.equal(bridge.fileKey, 'target')
   assert.deepEqual(calls, ['ensureRuntime', 'runPlugin'])
+})
+
+test('stopping during bridge startup prevents a late engine spawn', async () => {
+  const { context } = engineHarness()
+  let finishBridgeStart
+  let spawnCalls = 0
+  context.minFigmaBridge.start = () => new Promise(resolve => { finishBridgeStart = resolve })
+  context.figmaEngineResolveLaunch = () => ({ electron: '/electron', entry: '/engine', cwd: '/engine' })
+  context.figmaEngineClearStaleEngine = async () => {}
+  context.figmaEngineSpawn = async () => { spawnCalls++ }
+  context.figmaEngineWaitReady = async () => ({ backgroundRuntime: true, offscreenRendering: true })
+
+  const starting = context.figmaEngineEnsureStarted()
+  await new Promise(resolve => setImmediate(resolve))
+  context.figmaEngineStopNow()
+  finishBridgeStart()
+  await assert.rejects(starting, /startup cancelled/)
+  assert.equal(spawnCalls, 0)
 })
 
 test('an accepted plugin launch is never repeated while waiting for its socket', async () => {
