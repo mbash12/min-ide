@@ -213,7 +213,11 @@ async function figmaBridgeHandleRequest (req, res) {
     }
     var pollTransport = url.searchParams.get('transport')
     if (pollTransport) figmaBridgeTransport = pollTransport
-    var command = figmaBridgeQueue.shift() || null
+    var pollFileKey = fileKey || figmaBridgeFileKey
+    var commandIndex = figmaBridgeQueue.findIndex(function (queued) {
+      return !queued.fileKey || queued.fileKey === pollFileKey
+    })
+    var command = commandIndex < 0 ? null : figmaBridgeQueue.splice(commandIndex, 1)[0]
     if (command) figmaBridgeJobMarkSent(command.id, 'poll')
     figmaBridgeRespond(res, 200, { ok: true, command: command })
     return
@@ -235,6 +239,10 @@ async function figmaBridgeHandleRequest (req, res) {
 
   if (pathname === '/export' && req.method === 'POST') {
     var exportBody = JSON.parse(await figmaBridgeReadBody(req) || '{}')
+    if (exportBody.id == null || !figmaBridgePending.has(String(exportBody.id))) {
+      figmaBridgeRespond(res, 409, { ok: false, message: 'This export request has expired. Retry from Design.' })
+      return
+    }
     figmaBridgeLastSeen = figmaBridgeNow()
     if (exportBody.transport) figmaBridgeTransport = exportBody.transport
     try {
@@ -475,6 +483,20 @@ function figmaBridgeSetFileKey (key) {
   figmaBridgeWsClaim(next)
 }
 
+function figmaBridgeResetPlugin () {
+  // Called after the engine has closed the previous file renderer. Its
+  // heartbeat and anonymous socket must not count as the new file's plugin.
+  figmaBridgeRejectAll('Figma file changed — command dropped')
+  figmaBridgeSockets.forEach(function (ws) { ws.terminate() })
+  figmaBridgeSockets.clear()
+  figmaBridgeSocketsByFile.clear()
+  figmaBridgeFileKey = null
+  figmaBridgeBootId = null
+  figmaBridgeLastSeen = 0
+  figmaBridgeSelection = null
+  figmaBridgeTransport = null
+}
+
 function figmaBridgeStatus () {
   return {
     listening: !!figmaBridgeServer,
@@ -547,6 +569,7 @@ ipc.handle('figmaBridge:status', function () {
 
 ipc.handle('figmaBridge:command', async function (e, action, params) {
   try {
+    if (global.minFigmaEngine && global.minFigmaEngine.command) return await global.minFigmaEngine.command(action, params)
     var result = await figmaBridgeCommand(action, params || {})
     return result
   } catch (err) {
@@ -563,6 +586,7 @@ var minFigmaBridge = {
   stop: figmaBridgeStop,
   status: figmaBridgeStatus,
   command: figmaBridgeCommand,
+  resetPlugin: figmaBridgeResetPlugin,
   setExportDir: figmaBridgeSetExportDir,
   setFileKey: figmaBridgeSetFileKey,
   port: FIGMA_BRIDGE_PORT

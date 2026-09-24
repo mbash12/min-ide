@@ -60,3 +60,13 @@ await esbuild.build({
 });
 
 console.log("omp provider bundle written to main/vendor/omp/bundle.mjs");
+
+const readPackage = (name) => JSON.parse(fs.readFileSync(path.join(root, "node_modules", name, "package.json"), "utf8"));
+fs.writeFileSync(path.join(vendorDir, "manifest.json"), JSON.stringify({
+	version: readPackage("@oh-my-pi/pi-ai").version,
+	esbuildVersion: readPackage("esbuild").version,
+	yamlVersion: readPackage("js-yaml").version,
+	builtAt: new Date().toISOString(),
+}, null, 2));
+// Ship the same builder and adapter sources for isolated, on-demand updates.
+fs.copyFileSync(fileURLToPath(import.meta.url), path.join(vendorDir, "build.mjs"));

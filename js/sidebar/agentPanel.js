@@ -821,6 +821,8 @@ function toolIconClass (name) {
   if (n === 'edit' || n === 'write') return 'codicon-edit'
   if (n === 'browser' || n.indexOf('browser_') === 0) return 'codicon-globe'
   if (n === 'playbook') return 'codicon-checklist'
+  if (n === 'design' || n === 'figma') return 'codicon-symbol-color'
+  if (n === 'docs') return 'codicon-book'
   return 'codicon-tools'
 }
 
@@ -834,7 +836,9 @@ function friendlyToolLabel (name) {
   if (n === 'find') return 'Found files'
   if (n === 'ls') return 'Listed files'
   if (n === 'browser' || n.indexOf('browser_') === 0) return 'Browser'
-  if (n === 'playbook') return 'Playbook'
+  if (n === 'playbook') return l('sidebarPlaybook')
+  if (n === 'design' || n === 'figma') return l('sidebarDesign')
+  if (n === 'docs') return l('sidebarDocs')
   return name || 'Tool'
 }
 

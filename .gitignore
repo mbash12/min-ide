@@ -12,3 +12,5 @@ yarn.lock
 
 # generated omp provider bundle (scripts/buildOmpProviders.mjs)
 main/vendor/omp/bundle.mjs
+main/vendor/omp/manifest.json
+main/vendor/omp/build.mjs

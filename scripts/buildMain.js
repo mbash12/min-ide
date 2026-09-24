@@ -30,6 +30,7 @@ const modules = [
   'main/toolResults.js',
   'main/agentTools.js',
   'main/agentOAuth.js',
+  'main/ompUpdates.js',
   'main/agent.js',
   'main/editorFileIO.js',
   'main/download.js',

@@ -53,6 +53,21 @@ window.addEventListener('message', function (e) {
     })
   }
 
+  var updateChannels = {
+    agentRefreshModels: 'agent-refresh-models',
+    agentComponentStatus: 'agent-component-status',
+    agentCheckUpdates: 'agent-check-updates',
+    agentUpdateComponents: 'agent-update-components'
+  }
+  if (e.data && Object.prototype.hasOwnProperty.call(updateChannels, e.data.message)) {
+    var message = e.data.message
+    ipc.invoke(updateChannels[message]).then(function (result) {
+      window.postMessage({ message: message + 'Result', result: result }, window.location.toString())
+    }).catch(function (err) {
+      window.postMessage({ message: message + 'Result', result: { ok: false, message: err.message } }, window.location.toString())
+    })
+  }
+
   /* OAuth provider sign-in: login/logout are invokes; progress, device codes
   and prompt requests are pushed back as 'agentAuthEvent' postMessages; the
   page answers prompts via 'agentAuthRespond' */

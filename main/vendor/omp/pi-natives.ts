@@ -4,11 +4,12 @@
  * The upstream package resolves its .node addon through Bun-only
  * `import.meta.dir`, which crashes under Node/Electron. The platform
  * binaries themselves work fine in Node, so load them directly via
- * createRequire and re-export the surface the provider graph imports.
+ * createRequire and expose its exports as CommonJS. OMP's shared provider
+ * graph also imports optional native features for providers Min does not
+ * offer (such as Apple's local models). Adding those upstream imports must
+ * not prevent updates to Min's existing HTTP transports from bundling.
  */
-import { createRequire } from "node:module";
-
-const req = createRequire(import.meta.url);
+import { minOmpNativeRequire as req } from "./bun-globals";
 const platformTag = `${process.platform}-${process.arch}`;
 
 interface NativeAddon {
@@ -54,11 +55,11 @@ class NativeOAuthCallbackFallback {
 	}
 }
 
-export const FileLock = (addon.FileLock ?? FileLockFallback) as typeof FileLockFallback;
-export const Process = (addon.Process ?? ProcessFallback) as typeof ProcessFallback;
-export const ProcessStatus = (addon.ProcessStatus ?? {}) as Record<string, unknown>;
-export const NativeOAuthCallback = (addon.NativeOAuthCallback ??
-	NativeOAuthCallbackFallback) as typeof NativeOAuthCallbackFallback;
-export const renderMermaidAscii = (addon.renderMermaidAscii ??
-	((..._args: unknown[]) => unavailable("renderMermaidAscii"))) as (...args: unknown[]) => string;
-export default addon;
+module.exports = {
+	...addon,
+	FileLock: addon.FileLock ?? FileLockFallback,
+	Process: addon.Process ?? ProcessFallback,
+	ProcessStatus: addon.ProcessStatus ?? {},
+	NativeOAuthCallback: addon.NativeOAuthCallback ?? NativeOAuthCallbackFallback,
+	renderMermaidAscii: addon.renderMermaidAscii ?? (() => unavailable("renderMermaidAscii")),
+};

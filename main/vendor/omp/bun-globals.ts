@@ -5,6 +5,10 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
+
+// Shared with the CommonJS native shim; resolve optional addons beside the bundle.
+export const minOmpNativeRequire = createRequire(import.meta.url);
 
 function toBytes(data: unknown): Buffer {
 	if (typeof data === "string") return Buffer.from(data, "utf8");

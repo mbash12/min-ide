@@ -769,6 +769,64 @@ function refreshCommitModels () {
 }
 refreshCommitModels()
 
+var modelsRefreshButton = document.getElementById('models-refresh')
+var componentsCheckButton = document.getElementById('components-check')
+var componentsUpdateButton = document.getElementById('components-update')
+var aiUpdateStatus = document.getElementById('ai-update-status')
+
+function setAiUpdateBusy (busy) {
+  modelsRefreshButton.disabled = busy
+  componentsCheckButton.disabled = busy
+  componentsUpdateButton.disabled = busy
+}
+
+function renderComponentUpdate (result) {
+  if (!result || !result.ok) {
+    aiUpdateStatus.textContent = (result && result.message) || l('proSettingsAiUpdateFailed')
+    return
+  }
+  componentsUpdateButton.hidden = !result.available
+  aiUpdateStatus.textContent = result.available
+    ? l('proSettingsComponentAvailable').replace('%s', result.latest)
+    : l('proSettingsComponentCurrent').replace('%s', result.current || '—')
+}
+
+modelsRefreshButton.addEventListener('click', function () {
+  setAiUpdateBusy(true)
+  aiUpdateStatus.textContent = l('proSettingsRefreshingModels')
+  agentCall('agentRefreshModels', {}, function (result) {
+    setAiUpdateBusy(false)
+    if (!result || !result.ok) {
+      aiUpdateStatus.textContent = (result && result.message) || l('proSettingsAiUpdateFailed')
+      return
+    }
+    aiUpdateStatus.textContent = l('proSettingsModelsUpdated').replace('%s', String((result.models || []).length))
+    if (result.warnings && result.warnings.length) aiUpdateStatus.textContent += ' ' + l('proSettingsModelsRetained').replace('%s', result.warnings.join(', '))
+    refreshCommitModels()
+  })
+})
+
+componentsCheckButton.addEventListener('click', function () {
+  setAiUpdateBusy(true)
+  aiUpdateStatus.textContent = l('proSettingsCheckingComponents')
+  agentCall('agentCheckUpdates', {}, function (result) {
+    setAiUpdateBusy(false)
+    renderComponentUpdate(result)
+  })
+})
+
+componentsUpdateButton.addEventListener('click', function () {
+  setAiUpdateBusy(true)
+  aiUpdateStatus.textContent = l('proSettingsUpdatingComponents')
+  agentCall('agentUpdateComponents', {}, function (result) {
+    setAiUpdateBusy(false)
+    renderComponentUpdate(result)
+    if (result && result.updated) refreshCommitModels()
+  })
+})
+
+agentCall('agentComponentStatus', {}, renderComponentUpdate)
+
 commitModelSelect.addEventListener('change', function () {
   dbInvoke('db:kvSet', { scope: 'ai_config', key: 'commitModel', value: commitModelSelect.value || null })
 })

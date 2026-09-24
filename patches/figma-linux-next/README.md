@@ -46,11 +46,24 @@ engine that does not advertise `backgroundRuntime` instead of falling back to
 showing its window.
 
 Min's plugin iframe uses `visible:false` while keeping its WebSocket alive.
+File tabs and the home tab use Electron offscreen rendering in engine mode.
+Focus emulation alone keeps JavaScript timers alive but can leave the worker
+canvas compositor paused on a never-shown window. Offscreen painting keeps
+both running without opening that window. Status advertises `offscreenRendering`;
+Min rejects an older engine until it is rebuilt.
+
 The bridge drains queued HTTP commands when that socket connects, and removes
 expired commands so they cannot execute after reconnecting. Connect allows up
 to 150 seconds for an uncached editor/WASM download; an already loaded file
 continues as soon as its desktop handler is ready. Login prompts direct the
 user to the Figma tab in Min. Showing the engine remains an explicit control.
+Connect, file switches, inspection and export use one queue in Min. Transient
+export stalls reload the file renderer before one retry; expired uploads are
+rejected. Build list variants can export their saved source URL without an
+open Figma tab, using the engine's existing authenticated session.
+The engine keeps one file renderer for the active Design connection. Switching
+files closes the previous engine file tab and resets its bridge heartbeat, so
+an old anonymous plugin cannot be mistaken for the new connection.
 
 Run `npm run test:figma` from Min for the connection, hidden plugin, and real
 WebSocket handoff regression tests. Check and build the engine with
@@ -60,3 +73,7 @@ Validated locally on Linux/Wayland with Electron 43.4.1: a new hidden engine
 connected to an authenticated Figma file, listed frames, read node data, and
 saved a 1440 × 811 PNG. Instrumented native `show`, `showInactive`, and `focus`
 calls stayed at zero; status remained `windowVisible:false`, `everShown:false`.
+On 2026-09-24, a cold offscreen engine exported two 1440 × 811 PNGs in succession
+with `windowVisible:false`, `everShown:false`, and `offscreenRendering:true`.
+The same test also passed with an injected renderer timeout between exports:
+Min reloaded the real file renderer and completed the second export hidden.

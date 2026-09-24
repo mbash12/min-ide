@@ -2,6 +2,19 @@
   "name": "English (United States)",
   "identifier": "en-US",
   "translations": {
+    "proSettingsAiUpdates": "Models and connection updates",
+    "proSettingsAiUpdatesDescription": "Refresh available models, or update OMP connection components when a provider changes its protocol. Replies in progress finish with their current version.",
+    "proSettingsRefreshModels": "Refresh models",
+    "proSettingsCheckComponents": "Check connection updates",
+    "proSettingsUpdateComponents": "Update connection components",
+    "proSettingsRefreshingModels": "Refreshing models…",
+    "proSettingsCheckingComponents": "Checking for updates…",
+    "proSettingsUpdatingComponents": "Downloading and checking the update… The current version remains available.",
+    "proSettingsComponentAvailable": "Connection update available: %s",
+    "proSettingsComponentCurrent": "Connection components: %s",
+    "proSettingsModelsUpdated": "Model list refreshed: %s models.",
+    "proSettingsModelsRetained": "Kept previous models for unavailable providers: %s.",
+    "proSettingsAiUpdateFailed": "Could not update. The previous version is still available.",
     /* Context menu items
         these are the items displayed in the menu when you right-click on a page
         */

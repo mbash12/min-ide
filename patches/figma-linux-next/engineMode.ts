@@ -102,9 +102,13 @@ const backgroundRenderers = new WeakMap<WebContents, Promise<void>>();
  *  a native window. Keep the CDP session attached while the renderer lives. */
 export function prepareEngineWebContents(contents: WebContents): Promise<void> {
   if (!isMinFigmaEngine() || contents.isDestroyed()) return Promise.resolve();
+  contents.setBackgroundThrottling(false);
+  if (contents.isOffscreen()) {
+    contents.setFrameRate(30);
+    contents.startPainting();
+  }
   const pending = backgroundRenderers.get(contents);
   if (pending) return pending;
-  contents.setBackgroundThrottling(false);
   const ready = (async () => {
     if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
     await contents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true });
@@ -296,6 +300,7 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
             ok: true,
             authed: await hasFigmaSessionCookie(),
             backgroundRuntime: true,
+            offscreenRendering: true,
             runtimeReady,
             currentUrl,
             loading,
@@ -326,6 +331,17 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
               json(res, 400, { ok: false, error: "url required" });
               return;
             }
+            // Min has one active Design connection. Retire the previous file
+            // renderer and its plugin before opening another file; otherwise
+            // its heartbeat can impersonate a reload of the current plugin.
+            const fileKey = parseFigmaFileKey(target);
+            const window = deps.windowManager.getLastFocusedWindow();
+            if (fileKey && window) {
+              for (const tab of [...window.tabs.values()]) {
+                const previousKey = parseFigmaFileKey(tab.getUrl());
+                if (previousKey && previousKey !== fileKey) window.closeTab(tab.id);
+              }
+            }
             deps.windowManager.openUrl(target);
             json(res, 200, { ok: true });
             return;
@@ -351,6 +367,21 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
               ok: ran,
               error: ran ? undefined : `plugin menu item not ready: ${name}`,
             });
+            return;
+          }
+
+          if (method === "reloadFile") {
+            const fileKey = String(params.fileKey || "");
+            const window = deps.windowManager.getLastFocusedWindow();
+            const tab = window && [...window.tabs.values()].find(
+              (tab) => parseFigmaFileKey(tab.getUrl()) === fileKey,
+            );
+            if (!tab || tab.view.webContents.isDestroyed()) {
+              json(res, 404, { ok: false, missing: true, error: "Figma file is no longer open in the engine" });
+              return;
+            }
+            tab.view.webContents.reload();
+            json(res, 200, { ok: true });
             return;
           }
 

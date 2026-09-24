@@ -1,4 +1,4 @@
-/* global openTabInWindow, net */
+/* global openTabInWindow, net, minOmpUpdates */
 /* OMP provider replicas: ports of oh-my-pi's OAuth provider flows
 (https://github.com/can1357/oh-my-pi, pi-catalog auth/*.kdl + pi-ai
 registry/oauth/*.ts) onto the pi SDK extension API the installed SDK exposes
@@ -704,9 +704,15 @@ concatenation. */
 var ompBundlePromise = null
 function loadOmpBundle () {
   if (!ompBundlePromise) {
-    ompBundlePromise = Promise.resolve().then(function () {
+    ompBundlePromise = Promise.resolve().then(async function () {
       const pathMod = require('path')
       const { pathToFileURL } = require('url')
+      const active = typeof minOmpUpdates !== 'undefined' && minOmpUpdates.activeBundle()
+      if (active) {
+        try { return await import(pathToFileURL(active.path).href) } catch (err) {
+          console.warn('OMP update could not load; using bundled components', err.message)
+        }
+      }
       return import(pathToFileURL(pathMod.join(__dirname, 'main/vendor/omp/bundle.mjs')).href)
     }).catch(function (err) {
       console.warn('omp provider bundle unavailable; replicas stay auth-only', err)
@@ -759,8 +765,8 @@ function oauthGoogleApiKey (credentials) {
 }
 
 /* wraps an omp discovery fn: resolves the token from the SDK credential,
-returns undefined (keep existing catalog) when there's nothing to query
-with or the fetch fails — a provider outage must never erase its models */
+returns undefined when there's nothing to query. Discovery failures reach
+the SDK, which preserves the stored catalog and reports a refresh warning. */
 function ompRefreshModels (fetcher, apiOverride) {
   return function (context) {
     const credential = context && context.credential
@@ -773,7 +779,7 @@ function ompRefreshModels (fetcher, apiOverride) {
       })
       .catch(function (err) {
         console.warn('omp model discovery failed', err && err.message)
-        return undefined
+        throw err
       })
   }
 }
@@ -998,6 +1004,7 @@ function oauthOpenAuthUrl (url) {
 /* exposed on global for agent.js (concatenated bundle scope) and for the
 node --test harness, which loads this file in a bare vm context */
 var agentOAuth = {
+  invalidateBundle: function () { ompBundlePromise = null },
   installOmpProviders: installOmpProviders,
   replicaLabels: OMP_REPLICA_LABELS,
   replicaIds: Object.keys(OMP_PROVIDER_CONFIGS),
