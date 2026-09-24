@@ -9,3 +9,6 @@ main.build.js
 package-lock.json
 yarn.lock
 /vendor/figma-linux-next
+
+# generated omp provider bundle (scripts/buildOmpProviders.mjs)
+main/vendor/omp/bundle.mjs

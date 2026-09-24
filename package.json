@@ -71,6 +71,9 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@oh-my-pi/pi-ai": "^18.2.11",
+    "@oh-my-pi/pi-catalog": "^18.2.11",
+    "@oh-my-pi/pi-utils": "^18.2.11",
     "archiver": "^4.0.1",
     "browserify": "^16.5.1",
     "concurrently": "^5.2.0",
@@ -79,6 +82,7 @@
     "electron-builder": "^24.13.3",
     "electron-installer-windows": "^3.0.0",
     "electron-renderify": "0.0.2",
+    "esbuild": "^0.28.2",
     "prebuild-install": "^7.0.1",
     "prettier": "^2.2.1",
     "snazzy": "^9.0.0",
@@ -98,7 +102,7 @@
     "startElectronDev": "electron . --development-mode --dev",
     "start": "npm run build && concurrently \"npm run watch\" \"npm run startElectron\"",
     "dev": "concurrently \"npm run watch\" \"npm run startElectronDev\"",
-    "buildMain": "node ./scripts/buildMain.js",
+    "buildMain": "node ./scripts/buildOmpProviders.mjs && node ./scripts/buildMain.js",
     "buildBrowser": "node ./scripts/buildBrowser.js",
     "buildBrowserStyles": "node ./scripts/buildBrowserStyles.js",
     "buildPreload": "node ./scripts/buildPreload.js",

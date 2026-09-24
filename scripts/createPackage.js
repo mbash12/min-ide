@@ -83,6 +83,9 @@ module.exports = function (platform, extraOptions) {
       '!scripts/',
       // These are bundled in.
       '!**/main',
+      // ...except the generated omp provider bundle, which main.build.js
+      // imports lazily at runtime instead of being concatenated in
+      'main/vendor/omp/bundle.mjs',
       // parts of modules that aren"t needed
       '!**/node_modules/@types/',
       '!**/node_modules/pdfjs-dist/legacy',

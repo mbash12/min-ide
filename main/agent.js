@@ -476,9 +476,22 @@ function readAgentAuthFile () {
 registered, then Min's stored provider_config keys installed as runtime keys */
 async function createAgentModelRuntime () {
   const sdk = await loadPiSdk()
-  const modelRuntime = await sdk.ModelRuntime.create()
+  /* allowModelNetwork lets extension providers run their live model
+  discovery during create(); the bundled catalog seed keeps models listed
+  even when discovery fails or the provider isn't logged in */
+  const modelRuntime = await sdk.ModelRuntime.create({
+    allowModelNetwork: true,
+    modelRefreshTimeoutMs: 12000
+  })
   try {
-    agentOAuth.installOmpProviders(modelRuntime)
+    await agentOAuth.installOmpProviders(modelRuntime)
+    /* the create()-time refresh ran before the replicas existed, so run a
+    replica-scoped pass here: live discovery (devin/cursor/google) publishes
+    its full credential-scoped catalog into this runtime */
+    await modelRuntime.refresh({
+      providers: agentOAuth.replicaIds,
+      signal: AbortSignal.timeout(12000)
+    })
   } catch (err) {
     console.warn('failed to install omp provider replicas', err)
   }

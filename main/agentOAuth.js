@@ -692,6 +692,174 @@ function oauthGetApiKey (credentials) {
   return credentials.access
 }
 
+/* ------------------------------------------------------------------ */
+/* vendored omp transports                                             */
+/* ------------------------------------------------------------------ */
+
+/* main/vendor/omp/bundle.mjs is built by scripts/buildOmpProviders.mjs
+straight from the installed @oh-my-pi/* packages — no code is copied, so
+syncing to a newer omp is `npm update` + re-running that script. Loaded
+lazily: it's an ESM bundle while this file runs inside the CJS main
+concatenation. */
+var ompBundlePromise = null
+function loadOmpBundle () {
+  if (!ompBundlePromise) {
+    ompBundlePromise = Promise.resolve().then(function () {
+      const pathMod = require('path')
+      const { pathToFileURL } = require('url')
+      return import(pathToFileURL(pathMod.join(__dirname, 'main/vendor/omp/bundle.mjs')).href)
+    }).catch(function (err) {
+      console.warn('omp provider bundle unavailable; replicas stay auth-only', err)
+      return null
+    })
+  }
+  return ompBundlePromise
+}
+
+/* OMP ModelSpec -> ProviderConfigInput.models[] entry. applyExtension()
+spreads the definition wholesale, so unknown fields ride along harmlessly —
+but normalize the fields the SDK actually reads. apiOverride rewrites the
+api so extension.streamSimple dispatch (model.api === extension.api) hits
+our vendored stream even when the model's real wire is a standard one
+(gitlab-duo routes internally via model.id). */
+function ompToPiModel (spec, apiOverride) {
+  if (!spec || !spec.id) return null
+  return {
+    id: spec.id,
+    name: spec.name || spec.id,
+    api: apiOverride || spec.api,
+    baseUrl: spec.baseUrl,
+    reasoning: !!spec.reasoning,
+    input: Array.isArray(spec.input) && spec.input.length ? spec.input.slice() : ['text'],
+    cost: spec.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: spec.contextWindow || 0,
+    maxTokens: spec.maxTokens || 0,
+    compat: spec.compat,
+    headers: spec.headers
+  }
+}
+
+function ompCredentialToken (credential) {
+  if (!credential) return null
+  if (credential.type === 'oauth') return credential.access || null
+  if (credential.type === 'api_key') return credential.key || null
+  return null
+}
+
+/* google streams expect options.apiKey to be a JSON blob carrying token +
+projectId (+ refresh/expiry for staleness checks), not a bare token */
+function oauthGoogleApiKey (credentials) {
+  return JSON.stringify({
+    token: credentials.access,
+    projectId: credentials.projectId,
+    refreshToken: credentials.refresh,
+    expiresAt: credentials.expires,
+    email: credentials.email
+  })
+}
+
+/* wraps an omp discovery fn: resolves the token from the SDK credential,
+returns undefined (keep existing catalog) when there's nothing to query
+with or the fetch fails — a provider outage must never erase its models */
+function ompRefreshModels (fetcher, apiOverride) {
+  return function (context) {
+    const credential = context && context.credential
+    const token = ompCredentialToken(credential)
+    if (!token || (context && context.allowNetwork === false)) return Promise.resolve(undefined)
+    return Promise.resolve(fetcher(credential, context))
+      .then(function (specs) {
+        if (!specs || !specs.length) return undefined
+        return specs.map(function (s) { return ompToPiModel(s, apiOverride) }).filter(Boolean)
+      })
+      .catch(function (err) {
+        console.warn('omp model discovery failed', err && err.message)
+        return undefined
+      })
+  }
+}
+
+/* static catalog seed from the bundled models.json — keeps every provider's
+known models listed even before/without a successful live discovery */
+function ompSeedModels (omp, providerId, apiOverride) {
+  try {
+    const specs = omp.getBundledModels(providerId)
+    if (!Array.isArray(specs)) return []
+    return specs.map(function (s) { return ompToPiModel(s, apiOverride) }).filter(Boolean)
+  } catch (err) {
+    return []
+  }
+}
+
+/* chat wiring per replica, resolved against the loaded bundle. Extension
+dispatch is `model.api === extension.api` -> extension.streamSimple, so the
+api here must equal the api stamped on each registered model:
+- devin/cursor models carry their proprietary api already
+- gitlab-duo models carry standard wire apis (anthropic/openai) but
+  streamGitLabDuo routes internally by model.id after exchanging the OAuth
+  token for a direct-access token — so we stamp api 'gitlab-duo' on them
+- google gemini-cli + antigravity share api 'google-gemini-cli'; the stream
+  branches on model.provider, which the runtime sets from the provider id
+- zai rides the standard wires (models carry anthropic-messages /
+  openai-completions) so it needs no streamSimple at all */
+function ompWireFor (id, omp) {
+  switch (id) {
+    case 'devin':
+      return {
+        api: 'devin-agent',
+        streamSimple: omp.streamDevin,
+        models: ompSeedModels(omp, 'devin'),
+        refreshModels: ompRefreshModels(function (credential, context) {
+          return omp.fetchDevinModels({ apiKey: credential.access, signal: context && context.signal })
+        })
+      }
+    case 'cursor':
+      return {
+        api: 'cursor-agent',
+        streamSimple: omp.streamCursor,
+        models: ompSeedModels(omp, 'cursor'),
+        refreshModels: ompRefreshModels(function (credential) {
+          return omp.fetchCursorUsableModels({ apiKey: credential.access })
+        })
+      }
+    case 'gitlab-duo': {
+      let models = []
+      try {
+        models = (omp.getGitLabDuoModels() || []).map(function (s) { return ompToPiModel(s, 'gitlab-duo') }).filter(Boolean)
+      } catch (err) {}
+      return { api: 'gitlab-duo', streamSimple: omp.streamGitLabDuo, models: models }
+    }
+    case 'google-gemini-cli':
+      return {
+        api: 'google-gemini-cli',
+        streamSimple: omp.streamGoogleGeminiCli,
+        models: ompSeedModels(omp, 'google-gemini-cli'),
+        refreshModels: ompRefreshModels(function (credential, context) {
+          return omp.fetchGeminiCliQuotaModels({
+            token: credential.access,
+            projectId: credential.projectId,
+            signal: context && context.signal
+          })
+        })
+      }
+    case 'google-antigravity':
+      return {
+        api: 'google-gemini-cli',
+        streamSimple: omp.streamGoogleGeminiCli,
+        models: ompSeedModels(omp, 'google-antigravity'),
+        refreshModels: ompRefreshModels(function (credential, context) {
+          return omp.fetchAntigravityDiscoveryModels({
+            token: credential.access,
+            signal: context && context.signal
+          })
+        })
+      }
+    case 'zai-coding-plan':
+      return { models: ompSeedModels(omp, 'zai') }
+    default:
+      return {}
+  }
+}
+
 /* env overrides from the KDL (env="X" on fields): envVars maps the env var
 name to the spec field it overrides — applied before each login */
 function oauthApplyEnvOverrides (spec) {
@@ -707,9 +875,9 @@ function oauthApplyEnvOverrides (spec) {
   })
 }
 
-/* all current replicas use proprietary wires, so they register auth-only
-(models: []); a provider gains chat support by adding streamSimple/models
-here once its transport is ported */
+/* auth layer per replica; ompWireFor() merges the vendored chat transport
+(streamSimple/models/refreshModels) on top when the omp bundle is present —
+without it these still register auth-only (models: []) */
 const OMP_PROVIDER_CONFIGS = {
   cursor: {
     name: 'Cursor',
@@ -758,7 +926,8 @@ const OMP_PROVIDER_CONFIGS = {
       isSubscription: true,
       login: function (callbacks) { return oauthCodeFlowFor(OMP_OAUTH_CODE_SPECS['google-gemini-cli'])(callbacks) },
       refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS['google-gemini-cli'], credentials, signal) },
-      getApiKey: oauthGetApiKey
+      /* the vendored stream parses apiKey as a JSON credential blob */
+      getApiKey: oauthGoogleApiKey
     },
     models: []
   },
@@ -770,7 +939,8 @@ const OMP_PROVIDER_CONFIGS = {
       isSubscription: true,
       login: function (callbacks) { return oauthCodeFlowFor(OMP_OAUTH_CODE_SPECS['google-antigravity'])(callbacks) },
       refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS['google-antigravity'], credentials, signal) },
-      getApiKey: oauthGetApiKey
+      /* the vendored stream parses apiKey as a JSON credential blob */
+      getApiKey: oauthGoogleApiKey
     },
     models: []
   },
@@ -797,11 +967,14 @@ const OMP_REPLICA_LABELS = Object.keys(OMP_PROVIDER_CONFIGS).reduce(function (ac
 }, {})
 
 /* registers every replica on a ModelRuntime; safe to call per runtime —
-registration is per-instance */
-function installOmpProviders (modelRuntime) {
+registration is per-instance. Async because the vendored transport bundle
+is ESM. */
+async function installOmpProviders (modelRuntime) {
+  const omp = await loadOmpBundle()
   Object.keys(OMP_PROVIDER_CONFIGS).forEach(function (id) {
     try {
-      modelRuntime.registerProvider(id, OMP_PROVIDER_CONFIGS[id])
+      const wire = omp ? ompWireFor(id, omp) : {}
+      modelRuntime.registerProvider(id, Object.assign({}, OMP_PROVIDER_CONFIGS[id], wire))
     } catch (err) {
       console.warn('failed to register omp provider replica', id, err)
     }
