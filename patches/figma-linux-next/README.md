@@ -20,9 +20,21 @@ every Electron bump can regress `/app_auth/redeem` (see vendor CLAUDE.md).
 Min launches that `dist/main/main.js` with:
 
 - `MIN_FIGMA_ENGINE=1`
-- `MIN_FIGMA_PLUGIN=<min>/figma-plugin`
+- `MIN_FIGMA_PLUGIN=<min userData>/figma-engine/plugin` (a per-launch copy of `figma-plugin/` with the bridge token filled in)
 - `MIN_FIGMA_CONTROL_PORT=44179`
+- `MIN_FIGMA_CONTROL_TOKEN=<random per spawn>`
+- `MIN_FIGMA_BRIDGE_TOKEN=<random per Min run>`
 - `MIN_FIGMA_USER_DATA=<min userData>/figma-engine`
+
+Both loopback ports are reachable from any web page, so neither trusts a
+request by address alone. The control API requires `X-Min-Engine-Token`
+(`MIN_FIGMA_CONTROL_TOKEN`) on `/rpc` and for the full `/status`, and rejects a
+`Host` that is not loopback on its own port. `openUrl` accepts only `https`
+figma.com URLs and `setCookies` drops cookies that are not figma.com's. Without
+the token `/status` returns only `ok`, `backgroundRuntime`, `offscreenRendering`,
+`controlAuth`, and `pluginMenuAgeMs`, enough for Min to recognise a stale engine
+it has to replace. The engine's login flow authenticates its `/auth/open` call
+to the bridge with `MIN_FIGMA_BRIDGE_TOKEN`.
 
 ## What changed
 
@@ -42,8 +54,8 @@ Min launches that `dist/main/main.js` with:
 
 `min-engine.patch` contains all changes other than `engineMode.ts`, based on
 v0.20.1. Rebuild after changing either source or patches. Min rejects an older
-engine that does not advertise `backgroundRuntime` instead of falling back to
-showing its window.
+engine that does not advertise `backgroundRuntime` and `controlAuth` instead of
+falling back to showing its window or driving an unauthenticated control port.
 
 Min's plugin iframe uses `visible:false` while keeping its WebSocket alive.
 File tabs and the home tab use Electron offscreen rendering in engine mode.

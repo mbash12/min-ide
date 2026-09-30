@@ -11,7 +11,9 @@ const PLUGIN_VERSION = '9'
 // NOTE: raw IP (127.0.0.1) makes the wasm sandbox's URL parser throw
 // "must be valid url" — keep the hostname form.
 const BRIDGE_HTTP = 'http://localhost:44178'
-const BRIDGE_TOKEN = 'min-figma-bridge-local'
+// Replaced with a per-run secret when Min copies the plugin (see
+// figmaBridgePreparePlugin in main/figmaBridge.js). Never commit a real value.
+const BRIDGE_TOKEN = '__MIN_BRIDGE_TOKEN__'
 const MAX_SELECTION = 5
 const MAX_TEXT_NODES = 50
 const MAX_TEXT_SEARCH_NODES = 5000

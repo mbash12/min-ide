@@ -3,6 +3,8 @@ const { test } = require('node:test')
 const fs = require('fs')
 const path = require('path')
 const vm = require('vm')
+const http = require('http')
+const os = require('os')
 const { once } = require('events')
 const WebSocket = require('ws')
 
@@ -64,7 +66,7 @@ test('stopping during bridge startup prevents a late engine spawn', async () => 
   context.figmaEngineResolveLaunch = () => ({ electron: '/electron', entry: '/engine', cwd: '/engine' })
   context.figmaEngineClearStaleEngine = async () => {}
   context.figmaEngineSpawn = async () => { spawnCalls++ }
-  context.figmaEngineWaitReady = async () => ({ backgroundRuntime: true, offscreenRendering: true })
+  context.figmaEngineWaitReady = async () => ({ backgroundRuntime: true, offscreenRendering: true, controlAuth: true })
 
   const starting = context.figmaEngineEnsureStarted()
   await new Promise(resolve => setImmediate(resolve))
@@ -72,6 +74,17 @@ test('stopping during bridge startup prevents a late engine spawn', async () => 
   finishBridgeStart()
   await assert.rejects(starting, /startup cancelled/)
   assert.equal(spawnCalls, 0)
+})
+
+test('an engine build without control-port auth is rejected instead of driven', async () => {
+  const { context } = engineHarness()
+  context.minFigmaBridge.start = async () => {}
+  context.figmaEngineClearStaleEngine = async () => {}
+  context.figmaEngineSpawn = async () => {}
+  context.figmaEngineWaitReady = async () => ({ backgroundRuntime: true, offscreenRendering: true })
+  await assert.rejects(context.figmaEngineEnsureStarted(), /Rebuild the Figma engine/)
+  context.figmaEngineWaitReady = async () => ({ backgroundRuntime: true, offscreenRendering: true, controlAuth: true })
+  await context.figmaEngineEnsureStarted()
 })
 
 test('an accepted plugin launch is never repeated while waiting for its socket', async () => {
@@ -316,6 +329,8 @@ test('hidden plugin UI executes commands over WebSocket and falls back to HTTP',
 async function bridgeHarness (t) {
   const context = vm.createContext({
     require,
+    __dirname: path.resolve(__dirname, '..'),
+    process: { env: {} },
     fs,
     path,
     Buffer,
@@ -324,7 +339,7 @@ async function bridgeHarness (t) {
     clearTimeout,
     setInterval,
     clearInterval,
-    app: { on () {} },
+    app: { on () {}, getPath: () => os.tmpdir() },
     ipc: { handle () {} }
   })
   context.global = context
@@ -333,12 +348,26 @@ async function bridgeHarness (t) {
   await context.minFigmaBridge.start()
   t.after(() => context.minFigmaBridge.stop())
   const port = context.figmaBridgeServer.address().port
-  const connect = fileKey => {
-    const socket = new WebSocket('ws://127.0.0.1:' + port + '/ws?token=min-figma-bridge-local&fileKey=' + (fileKey || ''))
+  const token = context.minFigmaBridge.token
+  const connect = (fileKey, socketToken) => {
+    const socket = new WebSocket('ws://127.0.0.1:' + port + '/ws?token=' + (socketToken === undefined ? token : socketToken) + '&fileKey=' + (fileKey || ''))
     t.after(() => socket.terminate())
     return socket
   }
-  return { context, connect, port }
+  return { context, connect, port, token }
+}
+
+// fetch would let the runtime pick the Host header; these tests need to set it.
+function rawRequest (port, options) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: options.path, method: options.method || 'GET', headers: options.headers }, res => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(chunk))
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }))
+    })
+    req.on('error', reject)
+    req.end(options.body)
+  })
 }
 
 test('commands queued during HTTP to WebSocket handoff are delivered once', async t => {
@@ -379,8 +408,8 @@ test('commands that timed out cannot run later when a plugin connects', async t 
 })
 
 test('HTTP polling is file-specific and expired uploads cannot create files', async t => {
-  const { context, port } = await bridgeHarness(t)
-  const headers = { 'x-min-figma-bridge': 'min-figma-bridge-local', 'content-type': 'application/json' }
+  const { context, port, token } = await bridgeHarness(t)
+  const headers = { 'x-min-figma-bridge': token, 'content-type': 'application/json' }
   const pending = context.minFigmaBridge.command('rescan', { fileKey: 'target' })
   const base = 'http://127.0.0.1:' + port
   const wrong = await fetch(base + '/command/poll?fileKey=other', { headers })
@@ -412,4 +441,109 @@ test('switching files discards the old heartbeat and anonymous socket', async t 
   const command = JSON.parse(data)
   next.send(JSON.stringify({ type: 'result', id: command.id, ok: true }))
   assert.equal((await result).ok, true)
+})
+
+test('the bridge is closed to anything that lacks this run\'s token', async t => {
+  const { context, connect, port, token } = await bridgeHarness(t)
+  assert.match(token, /^[0-9a-f]{48}$/)
+  const base = 'http://127.0.0.1:' + port
+  assert.equal((await fetch(base + '/status')).status, 401)
+  assert.equal((await fetch(base + '/status', { headers: { 'x-min-figma-bridge': 'min-figma-bridge-local' } })).status, 401)
+  assert.equal((await fetch(base + '/status', { headers: { 'x-min-figma-bridge': token.slice(0, -1) } })).status, 401)
+  // The query token exists for the WebSocket upgrade only.
+  assert.equal((await fetch(base + '/status?token=' + token)).status, 401)
+  // A blind cross-site "simple" POST carries no token, so it is refused before it reads a body.
+  const blind = await fetch(base + '/export', { method: 'POST', headers: { 'content-type': 'text/plain', origin: 'https://evil.example' }, body: '{}' })
+  assert.equal(blind.status, 401)
+  assert.equal((await fetch(base + '/status', { headers: { 'x-min-figma-bridge': token } })).status, 200)
+  assert.equal(context.minFigmaBridge.status().pluginConnected, false)
+
+  for (const wrong of ['min-figma-bridge-local', '', 'x']) {
+    const socket = connect('target', wrong)
+    // a refused upgrade is destroyed server-side, which ws reports as an error before close
+    await new Promise(resolve => { socket.on('error', () => {}); socket.on('close', resolve) })
+    assert.equal(context.minFigmaBridge.status().pluginConnected, false)
+  }
+  const good = connect('target')
+  await once(good, 'open')
+})
+
+test('requests addressed to any host other than the loopback listener are refused', async t => {
+  const { port, token } = await bridgeHarness(t)
+  const authed = { 'x-min-figma-bridge': token }
+  const ok = await rawRequest(port, { path: '/status', headers: { ...authed, host: '127.0.0.1:' + port } })
+  assert.equal(ok.status, 200)
+  assert.equal((await rawRequest(port, { path: '/status', headers: { ...authed, host: 'localhost:' + port } })).status, 200)
+  // DNS rebinding: the page reaches loopback under its own name.
+  assert.equal((await rawRequest(port, { path: '/status', headers: { ...authed, host: 'evil.example:' + port } })).status, 403)
+  assert.equal((await rawRequest(port, { path: '/status', headers: { ...authed, host: '127.0.0.1.evil.example:' + port } })).status, 403)
+  assert.equal((await rawRequest(port, { path: '/status', headers: { ...authed, host: '127.0.0.1:' + (port + 1) } })).status, 403)
+  assert.equal((await rawRequest(port, { path: '/status', method: 'OPTIONS', headers: { host: 'evil.example' } })).status, 403)
+})
+
+test('an export lands in the directory the command asked for, not the one the request names', async t => {
+  const { context, port, token } = await bridgeHarness(t)
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'min-bridge-export-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const wanted = path.join(root, 'wanted')
+  const attacker = path.join(root, 'attacker')
+  const headers = { 'x-min-figma-bridge': token, 'content-type': 'application/json' }
+  const base = 'http://127.0.0.1:' + port
+
+  const pending = context.minFigmaBridge.command('export-node', { fileKey: 'target', exportDir: wanted })
+  const command = (await (await fetch(base + '/command/poll?fileKey=target', { headers })).json()).command
+  const response = await fetch(base + '/export', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ id: command.id, dataBase64: 'ZGF0YQ==', fileName: 'frame', format: 'PNG', exportDir: attacker })
+  })
+  assert.equal(response.status, 200)
+  const saved = (await pending).payload.path
+  assert.equal(path.dirname(saved), wanted)
+  assert.equal(fs.readFileSync(saved, 'utf8'), 'data')
+  assert.equal(fs.existsSync(attacker), false)
+})
+
+test('the plugin copy Min hands the engine carries this run\'s token and nothing else does', async t => {
+  const { context, token } = await bridgeHarness(t)
+  const source = ['code.js', 'ui.html'].map(name => fs.readFileSync(path.join(__dirname, '../figma-plugin', name), 'utf8'))
+  source.forEach(text => {
+    assert.match(text, /__MIN_BRIDGE_TOKEN__/)
+    assert.equal(text.includes('min-figma-bridge-local'), false)
+  })
+
+  const dest = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'min-bridge-plugin-')), 'plugin')
+  t.after(() => fs.rmSync(path.dirname(dest), { recursive: true, force: true }))
+  assert.equal(context.minFigmaBridge.preparePlugin(dest), dest)
+  const files = fs.readdirSync(dest).sort()
+  assert.deepEqual(files, fs.readdirSync(path.join(__dirname, '../figma-plugin')).sort())
+  for (const name of ['code.js', 'ui.html']) {
+    const text = fs.readFileSync(path.join(dest, name), 'utf8')
+    assert.equal(text.includes('__MIN_BRIDGE_TOKEN__'), false)
+    assert.equal(text.includes(token), true)
+  }
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(path.join(dest, 'code.js')).mode & 0o077, 0)
+  }
+})
+
+test('only processes that listen on the control port are ever signalled', () => {
+  const { context } = engineHarness()
+  // arrays built inside the vm context have another Array.prototype
+  const pids = (...args) => Array.from(context.figmaEngineListenerPids(...args))
+  assert.deepEqual(pids('p4242\n', 'linux', 44179, 1), ['4242'])
+  assert.deepEqual(pids('p4242\np4242\np77\n', 'linux', 44179, 1), ['4242', '77'])
+  // Min's own PID shows up when it holds a keep-alive socket to the port.
+  assert.deepEqual(pids('p' + process.pid + '\np4242\n', 'linux', 44179, process.pid), ['4242'])
+  assert.deepEqual(pids('', 'linux', 44179, 1), [])
+  assert.deepEqual(pids('pnotanumber\nfoo\n', 'linux', 44179, 1), [])
+  const netstat = [
+    '  Proto  Local Address          Foreign Address        State           PID',
+    '  TCP    127.0.0.1:44179        0.0.0.0:0              LISTENING       4242',
+    '  TCP    127.0.0.1:50000        127.0.0.1:44179        ESTABLISHED     999',
+    '  TCP    127.0.0.1:44179        127.0.0.1:50000        ESTABLISHED     4242',
+    '  TCP    0.0.0.0:144179         0.0.0.0:0              LISTENING       555',
+    '  TCP    127.0.0.1:44179        0.0.0.0:0              LISTENING       ' + process.pid
+  ].join('\r\n')
+  assert.deepEqual(pids(netstat, 'win32', 44179, process.pid), ['4242'])
 })

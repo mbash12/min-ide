@@ -3,7 +3,14 @@ figma-linux-next, so export/text/style never touch the rate-limited REST API. */
 /* global fs, path, ipc, app, windows, sendIPCToWindow */
 
 var FIGMA_BRIDGE_PORT = 44178
-var FIGMA_BRIDGE_TOKEN = 'min-figma-bridge-local'
+/* The bridge listens on loopback, which any web page in any browser can reach,
+so every request has to prove it comes from the plugin Min launched. The token
+is random per Min run (MIN_FIGMA_BRIDGE_TOKEN pins it for the standalone
+harness) and only reaches the plugin through the copy written by
+figmaBridgePreparePlugin. */
+var FIGMA_BRIDGE_TOKEN = (typeof process !== 'undefined' && process.env && process.env.MIN_FIGMA_BRIDGE_TOKEN) ||
+  require('crypto').randomBytes(24).toString('hex')
+var FIGMA_BRIDGE_TOKEN_PLACEHOLDER = '__MIN_BRIDGE_TOKEN__'
 var FIGMA_BRIDGE_HEADER = 'x-min-figma-bridge'
 var FIGMA_BRIDGE_BOOT_HEADER = 'x-min-figma-boot'
 var FIGMA_BRIDGE_COMMAND_TIMEOUT_MS = 60000
@@ -99,25 +106,44 @@ function figmaBridgeRespond (res, code, body) {
   res.end(JSON.stringify(body))
 }
 
-function figmaBridgeAuthorized (req) {
-  var token = req.headers[FIGMA_BRIDGE_HEADER]
-  if (token === FIGMA_BRIDGE_TOKEN) return true
+function figmaBridgeTokenMatches (candidate) {
+  if (typeof candidate !== 'string' || !candidate) return false
+  var expected = Buffer.from(FIGMA_BRIDGE_TOKEN)
+  var given = Buffer.from(candidate)
+  return given.length === expected.length && require('crypto').timingSafeEqual(given, expected)
+}
+
+/* Browsers cannot set headers on a WebSocket, so only the upgrade may carry the
+token in the query string; plain HTTP has to use the header. */
+function figmaBridgeAuthorized (req, allowQueryToken) {
+  if (figmaBridgeTokenMatches(req.headers[FIGMA_BRIDGE_HEADER])) return true
+  if (!allowQueryToken) return false
   try {
     var url = new URL(req.url || '/', 'http://127.0.0.1')
-    return url.searchParams.get('token') === FIGMA_BRIDGE_TOKEN
+    return figmaBridgeTokenMatches(url.searchParams.get('token'))
   } catch (e) {
     return false
   }
+}
+
+/* A DNS-rebinding page reaches this socket under its own hostname; only the
+loopback names on the port we actually listen on are ours. */
+function figmaBridgeHostAllowed (req) {
+  var host = String(req.headers.host || '')
+  var match = host.match(/^(127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?$/i)
+  if (!match) return false
+  return Number(match[2] || 80) === req.socket.localPort
 }
 
 function figmaBridgeSafeName (name) {
   return String(name || 'node').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 60) || 'node'
 }
 
-function figmaBridgeWriteExport (payload) {
-  // Per-command exportDir wins; otherwise the connected workspace's dir;
-  // otherwise the userData fallback.
-  var dir = payload.exportDir || figmaBridgeExportDir
+function figmaBridgeWriteExport (payload, pending) {
+  // The directory the caller asked for wins, then the connected workspace's
+  // dir, then the userData fallback. It is never read from the request body:
+  // that would let whoever sends /export choose where the file lands.
+  var dir = (pending && pending.exportDir) || figmaBridgeExportDir
   if (!dir) {
     dir = path.join(app.getPath('userData'), 'figma-exports')
   }
@@ -166,6 +192,10 @@ function figmaBridgeNoteBoot (boot) {
 }
 
 async function figmaBridgeHandleRequest (req, res) {
+  if (!figmaBridgeHostAllowed(req)) {
+    figmaBridgeRespond(res, 403, { ok: false, error: 'Forbidden host' })
+    return
+  }
   if (req.method === 'OPTIONS') {
     figmaBridgeRespond(res, 204, {})
     return
@@ -246,7 +276,7 @@ async function figmaBridgeHandleRequest (req, res) {
     figmaBridgeLastSeen = figmaBridgeNow()
     if (exportBody.transport) figmaBridgeTransport = exportBody.transport
     try {
-      var savedPath = figmaBridgeWriteExport(exportBody)
+      var savedPath = figmaBridgeWriteExport(exportBody, figmaBridgePending.get(String(exportBody.id)))
       if (exportBody.id != null) {
         figmaBridgeFinish(String(exportBody.id), {
           ok: true,
@@ -347,7 +377,7 @@ function figmaBridgeWsAttach (server) {
     try {
       pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname
     } catch (e) {}
-    if (pathname !== '/ws' || !figmaBridgeAuthorized(req)) {
+    if (pathname !== '/ws' || !figmaBridgeHostAllowed(req) || !figmaBridgeAuthorized(req, true)) {
       socket.destroy()
       return
     }
@@ -552,7 +582,7 @@ function figmaBridgeCommand (action, params) {
           (wasQueued ? ' (plugin did not pick up this command — reconnect)' : '')
         ))
       }, timeoutMs)
-      var pending = { resolve: resolve, reject: reject, timer: timer, ws: null }
+      var pending = { resolve: resolve, reject: reject, timer: timer, ws: null, exportDir: params.exportDir || null }
       figmaBridgePending.set(id, pending)
       // A live socket skips the queue entirely — the plugin gets the command
       // on the next frame instead of the next poll tick.
@@ -581,6 +611,33 @@ app.on('before-quit', function () {
   figmaBridgeStop()
 })
 
+/* Writes the plugin into destDir with this run's token filled in and returns
+the directory. The engine (or Figma's "Import plugin from manifest" in the
+standalone harness) loads that copy, never the source folder, so the token
+exists nowhere in the repository. The directory is private to the user. */
+function figmaBridgePreparePlugin (destDir) {
+  // The concatenated main build sits in the repo root; the standalone harness
+  // requires this file from main/.
+  var sourceDir = [path.join(__dirname, 'figma-plugin'), path.join(__dirname, '..', 'figma-plugin')].find(function (dir) {
+    return fs.existsSync(path.join(dir, 'manifest.json'))
+  })
+  if (!sourceDir) throw new Error('figma-plugin folder not found')
+  fs.mkdirSync(destDir, { recursive: true, mode: 0o700 })
+  fs.readdirSync(sourceDir).forEach(function (name) {
+    var source = path.join(sourceDir, name)
+    if (!fs.statSync(source).isFile()) return
+    var content = fs.readFileSync(source, 'utf8')
+    if (name === 'code.js' || name === 'ui.html') {
+      if (content.indexOf(FIGMA_BRIDGE_TOKEN_PLACEHOLDER) === -1) {
+        throw new Error('figma-plugin/' + name + ' has no bridge token placeholder')
+      }
+      content = content.split(FIGMA_BRIDGE_TOKEN_PLACEHOLDER).join(FIGMA_BRIDGE_TOKEN)
+    }
+    fs.writeFileSync(path.join(destDir, name), content, { encoding: 'utf8', mode: 0o600 })
+  })
+  return destDir
+}
+
 var minFigmaBridge = {
   start: figmaBridgeStart,
   stop: figmaBridgeStop,
@@ -589,6 +646,8 @@ var minFigmaBridge = {
   resetPlugin: figmaBridgeResetPlugin,
   setExportDir: figmaBridgeSetExportDir,
   setFileKey: figmaBridgeSetFileKey,
+  preparePlugin: figmaBridgePreparePlugin,
+  token: FIGMA_BRIDGE_TOKEN,
   port: FIGMA_BRIDGE_PORT
 }
 global.minFigmaBridge = minFigmaBridge

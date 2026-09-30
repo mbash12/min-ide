@@ -4,8 +4,11 @@
  *
  *   node scripts/figmaBridgeHarness.js
  *
- * Then run "Min Figma Bridge" from Plugins → Development in Figma and watch:
- *   curl -s 'http://127.0.0.1:44178/status?token=min-figma-bridge-local'
+ * The bridge only talks to a plugin that carries its token, so the harness
+ * writes a token-filled copy of figma-plugin/ and prints its path. In Figma use
+ * Plugins → Development → Import plugin from manifest… on <that dir>/manifest.json,
+ * run "Min Figma Bridge", and watch with the curl line it prints.
+ * MIN_FIGMA_BRIDGE_TOKEN pins the token so the imported copy survives restarts.
  */
 
 const fs = require('fs')
@@ -35,7 +38,9 @@ const bridge = global.minFigmaBridge
 async function main () {
   await bridge.start()
   console.log(`[harness] bridge listening on 127.0.0.1:${bridge.port}`)
-  console.log('[harness] status: curl -s "http://127.0.0.1:44178/status?token=min-figma-bridge-local"')
+  const pluginDir = bridge.preparePlugin(path.join(os.tmpdir(), 'min-figma-harness', 'plugin'))
+  console.log(`[harness] plugin (token filled in): ${path.join(pluginDir, 'manifest.json')}`)
+  console.log(`[harness] status: curl -s -H "x-min-figma-bridge: ${bridge.token}" http://127.0.0.1:${bridge.port}/status`)
 
   let wasConnected = false
   setInterval(() => {

@@ -991,7 +991,7 @@ index 9e3807b..2ed74fa
 diff --git a/src/main/controllers/AuthController.ts b/src/main/controllers/AuthController.ts
 old mode 100644
 new mode 100755
-index dd58b69..2c48fce
+index dd58b69..35cf3c5
 --- a/src/main/controllers/AuthController.ts
 +++ b/src/main/controllers/AuthController.ts
 @@ -3,6 +3,7 @@
@@ -1002,7 +1002,7 @@ index dd58b69..2c48fce
 
  import * as Const from "Const";
  import { request } from "Utils/Main";
-@@ -10,8 +11,71 @@ import { isAppAuthGrandLink } from "Utils/Common";
+@@ -10,8 +11,73 @@ import { isAppAuthGrandLink } from "Utils/Common";
  import { storage } from "../Storage";
  import { logger } from "../Logger";
  import { ipcRegistry } from "./registry";
@@ -1010,7 +1010,8 @@ index dd58b69..2c48fce
  import type WindowManager from "../Ui/WindowManager";
 
 +const MIN_BRIDGE_PORT = 44178;
-+const MIN_BRIDGE_TOKEN = "min-figma-bridge-local";
++// Min generates a random bridge token per run and hands it to the engine here.
++const MIN_BRIDGE_TOKEN = process.env.MIN_FIGMA_BRIDGE_TOKEN || "";
 +
 +function makeAppAuthGrantUrl(grantPath: string): string | null {
 +  try {
@@ -1037,6 +1038,7 @@ index dd58b69..2c48fce
 +}
 +
 +function openGrantInMin(url: string): Promise<void> {
++  if (!MIN_BRIDGE_TOKEN) return Promise.reject(new Error("MIN_FIGMA_BRIDGE_TOKEN is not set"));
 +  const payload = JSON.stringify({ url });
 +  return new Promise((resolve, reject) => {
 +    const req = http.request(
@@ -1074,7 +1076,7 @@ index dd58b69..2c48fce
  export default class AuthController {
    constructor(private windowManager: WindowManager) {
      this.register();
-@@ -35,11 +99,28 @@ export default class AuthController {
+@@ -35,11 +101,28 @@ export default class AuthController {
    }
 
    private startAppAuth(_: IpcMainEvent, data: { grantPath: string }) {

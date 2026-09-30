@@ -68,7 +68,9 @@
     <div id="detail">Min Figma Bridge</div>
 
     <script>
-      const BRIDGE_WS = 'ws://localhost:44178/ws?token=min-figma-bridge-local'
+      // The placeholder is filled in with a per-run secret when Min copies the
+      // plugin (figmaBridgePreparePlugin in main/figmaBridge.js).
+      const BRIDGE_WS = 'ws://localhost:44178/ws?token=__MIN_BRIDGE_TOKEN__'
       const dot = document.getElementById('dot')
       const stateEl = document.getElementById('state')
       const detailEl = document.getElementById('detail')

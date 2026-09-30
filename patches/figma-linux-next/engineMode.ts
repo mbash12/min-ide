@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import { app, session, type BrowserWindow, type Rectangle, type WebContents } from "electron";
 
@@ -219,6 +220,51 @@ function cookieSetUrl(cookie: CookieInput): string {
   return `${secure ? "https" : "http"}://${domain}${cookie.path || "/"}`;
 }
 
+/* The control API listens on loopback, which every web page in every browser on
+ * the machine can reach with a blind cross-site POST. Min hands the engine a
+ * random secret at launch (MIN_FIGMA_CONTROL_TOKEN); /rpc requires it and the
+ * full /status does too. Without a configured token everything stays locked. */
+const CONTROL_TOKEN_HEADER = "x-min-engine-token";
+
+function controlAuthorized(req: http.IncomingMessage): boolean {
+  const expected = process.env.MIN_FIGMA_CONTROL_TOKEN || "";
+  const given = req.headers[CONTROL_TOKEN_HEADER];
+  if (!expected || typeof given !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/* A DNS-rebinding page reaches the socket under its own hostname. */
+function controlHostAllowed(req: http.IncomingMessage): boolean {
+  const match = String(req.headers.host || "").match(/^(127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?$/i);
+  return !!match && Number(match[2] || 80) === req.socket.localPort;
+}
+
+function isFigmaHost(hostname: string): boolean {
+  const host = hostname.replace(/^\./, "").toLowerCase();
+  return host === "figma.com" || host.endsWith(".figma.com");
+}
+
+function isFigmaHttpsUrl(target: string): boolean {
+  try {
+    const url = new URL(target);
+    return url.protocol === "https:" && isFigmaHost(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/* The engine only ever needs Figma's own session, so a cookie for any other
+ * site is refused rather than planted in the engine's session. */
+function isFigmaCookie(cookie: CookieInput): boolean {
+  try {
+    return isFigmaHost(new URL(cookieSetUrl(cookie)).hostname) && (!cookie.domain || isFigmaHost(cookie.domain));
+  } catch {
+    return false;
+  }
+}
+
 async function applyCookies(cookies: CookieInput[]): Promise<{ ok: true; count: number }> {
   const ses = session.defaultSession;
   // Remove the engine's previous Figma session first. Otherwise cookies for
@@ -235,6 +281,7 @@ async function applyCookies(cookies: CookieInput[]): Promise<{ ok: true; count: 
   let count = 0;
   for (const cookie of cookies) {
     if (!cookie || typeof cookie.name !== "string" || typeof cookie.value !== "string") continue;
+    if (!isFigmaCookie(cookie)) continue;
     const details: Electron.CookiesSetDetails = {
       url: cookieSetUrl(cookie),
       name: cookie.name,
@@ -272,10 +319,28 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
       return;
     }
 
+    if (!controlHostAllowed(req)) {
+      json(res, 403, { ok: false, error: "forbidden host" });
+      return;
+    }
+
     void (async () => {
       try {
         const url = new URL(req.url || "/", "http://127.0.0.1");
         if (url.pathname === "/status" && (!req.method || req.method === "GET")) {
+          if (!controlAuthorized(req)) {
+            // Enough for Min to recognise a leftover engine from an earlier
+            // run (and replace it); nothing about the user's session or files.
+            const menu = deps.windowManager.describePluginMenu(ENGINE_PLUGIN_NAME);
+            json(res, 200, {
+              ok: true,
+              backgroundRuntime: true,
+              offscreenRendering: true,
+              controlAuth: true,
+              pluginMenuAgeMs: menu.ageMs,
+            });
+            return;
+          }
           const window = deps.windowManager.getLastFocusedWindow();
           let currentUrl = "";
           let loading = false;
@@ -299,6 +364,7 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
           json(res, 200, {
             ok: true,
             authed: await hasFigmaSessionCookie(),
+            controlAuth: true,
             backgroundRuntime: true,
             offscreenRendering: true,
             runtimeReady,
@@ -318,6 +384,10 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
         }
 
         if (url.pathname === "/rpc" && req.method === "POST") {
+          if (!controlAuthorized(req)) {
+            json(res, 401, { ok: false, error: "unauthorized" });
+            return;
+          }
           const payload = JSON.parse((await readBody(req)) || "{}") as {
             method?: string;
             params?: Record<string, unknown>;
@@ -329,6 +399,10 @@ export function startEngineControl(deps: EngineControlDeps): http.Server {
             const target = String(params.url || "");
             if (!target) {
               json(res, 400, { ok: false, error: "url required" });
+              return;
+            }
+            if (!isFigmaHttpsUrl(target)) {
+              json(res, 400, { ok: false, error: "only https figma.com URLs can be opened" });
               return;
             }
             // Min has one active Design connection. Retire the previous file

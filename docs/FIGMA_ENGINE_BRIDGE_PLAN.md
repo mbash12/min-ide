@@ -109,7 +109,7 @@ Min IPC: `figmaEngine:reveal` (login) and `figmaEngine:hide` (back to invisible)
 
 ### 5.2 Control socket
 
-Listen on `127.0.0.1:44179` (or a Unix socket under `userData`). JSON request/response. Bind loopback only.
+Listen on `127.0.0.1:44179` (or a Unix socket under `userData`). JSON request/response. Bind loopback only. Loopback is reachable from any web page, so `/rpc` and the full `/status` require a per-spawn secret (`X-Min-Engine-Token`, set from `MIN_FIGMA_CONTROL_TOKEN`) and any `Host` other than loopback on the listening port is refused.
 
 | Method | Effect |
 | --- | --- |
@@ -225,7 +225,7 @@ Default `nodeId` if omitted: URL context from Min, else `figma.currentPage.selec
 
 ### Bridge server (`main/figmaBridge.js`)
 
-Loopback HTTP + WebSocket on **44178** (UIX uses 44177). Shared secret header, reject non-loopback.
+Loopback HTTP + WebSocket on **44178** (UIX uses 44177). The secret is random per Min run and reaches the plugin only through a per-launch copy of `figma-plugin/` (`preparePlugin`; the source holds a `__MIN_BRIDGE_TOKEN__` placeholder). HTTP requires the `X-Min-Figma-Bridge` header; only the WebSocket upgrade may carry `?token=` because browsers cannot set headers there. Requests whose `Host` is not loopback on the listening port are refused (DNS rebinding), and export destinations come from the command Min queued, never from the request body.
 
 - One active plugin socket.
 - FIFO command queue, timeout per command.
