@@ -114,7 +114,10 @@ test('session backup versioning prevents a staged async save from replacing a la
   })
 
   const oldSave = backup.save({ version: 3, state: { selected: 'old' }, saveTime: 1 })
-  await new Promise(resolve => setTimeout(resolve, 40))
+  // the staged write finishes on the file system's schedule: wait for it instead of guessing a delay
+  for (let waited = 0; typeof releaseCallback !== 'function' && waited < 5000; waited += 10) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
   assert.equal(typeof releaseCallback, 'function')
 
   backup.saveSync({ version: 3, state: { selected: 'new' }, saveTime: 2 })
