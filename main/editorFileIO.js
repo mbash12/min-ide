@@ -105,15 +105,24 @@ ipc.handle('editorReadFile', async function (e, filePath) {
     }
     const content = await fs.promises.readFile(filePath, 'utf8')
     if (!isAllowedEditorPath(e.sender, filePath)) return { error: 'Invalid path' }
-    return { content: content }
+    // mtime comes from the stat taken before the read: if the file changes
+    // mid-read the editor sees a newer mtime later and reconciles, instead of
+    // recording a version it never saw.
+    return { content: content, mtimeMs: stat.mtimeMs }
   } catch (err) {
     return { error: err.message || 'Failed to read file' }
   }
 })
 
-/* writes content back to disk. Returns null on success or an
-error message string on failure. */
-ipc.handle('editorWriteFile', async function (e, filePath, content) {
+/* writes content back to disk. Returns null on success or an error message
+string on failure.
+
+expectedMtimeMs is the modification time the editor last read or wrote. When it
+is given and the file on disk has a different one, something else (an agent,
+git, another editor) changed the file since, so nothing is written and
+{ conflict: true, mtimeMs } comes back for the editor to resolve. Omit it (or
+pass null) to write unconditionally. */
+ipc.handle('editorWriteFile', async function (e, filePath, content, expectedMtimeMs) {
   try {
     if (!isAllowedEditorPath(e.sender, filePath)) {
       return 'Invalid path'
@@ -136,6 +145,18 @@ ipc.handle('editorWriteFile', async function (e, filePath, content) {
     // pending. Do not let its old save write after the view now represents a
     // different workspace file.
     if (!isAllowedEditorPath(e.sender, filePath)) return 'Invalid path'
+    if (typeof expectedMtimeMs === 'number' && Number.isFinite(expectedMtimeMs)) {
+      let currentMtimeMs = null
+      try {
+        currentMtimeMs = (await fs.promises.stat(filePath)).mtimeMs
+      } catch (err) {
+        // deleted or moved since it was opened: recreating it loses nothing
+      }
+      if (currentMtimeMs !== null && currentMtimeMs !== expectedMtimeMs) {
+        return { conflict: true, mtimeMs: currentMtimeMs }
+      }
+      if (!isAllowedEditorPath(e.sender, filePath)) return 'Invalid path'
+    }
     // The async API queues concurrent writes to the same path and renames a
     // complete temporary file into place. The synchronous variant blocked
     // the main process on every editor save.

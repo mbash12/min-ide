@@ -30,6 +30,14 @@ let pageDisposed = false
 /* mtime of the file when it was loaded or last saved */
 let loadedMtimeMs = null
 
+/* Set while the file on disk changed under unsaved edits. Autosave stays off
+until the user picks a side, so a background write can never replace someone
+else's change. */
+let conflict = null
+/* bumped whenever this page reconciles with the disk (save or reload), so a
+poll that started before it cannot judge the new state by the old mtime */
+let syncEpoch = 0
+
 /* Autosave: write shortly after the last edit instead of keeping changes only
 in memory. The manual save (Ctrl/Cmd+S and the app menu) still works. */
 const autosaveDelayMs = 700
@@ -133,7 +141,7 @@ function setDirty (value) {
 }
 
 function scheduleAutosave () {
-  if (pageDisposed) return
+  if (pageDisposed || conflict) return
   clearTimeout(autosaveTimer)
   autosaveTimer = setTimeout(flushAutosave, autosaveDelayMs)
 }
@@ -143,7 +151,7 @@ while a previous write is running is remembered and drained afterwards. */
 async function flushAutosave () {
   clearTimeout(autosaveTimer)
   autosaveTimer = null
-  if (!dirty || pageDisposed) return
+  if (!dirty || pageDisposed || conflict) return
   if (saving) {
     saveAgainRequested = true
     return
@@ -151,7 +159,37 @@ async function flushAutosave () {
   await saveFile()
 }
 
+function showConflictBar (message) {
+  document.getElementById('editor-conflict-text').textContent = message || l('editorConflictMessage')
+  document.getElementById('editor-conflict').hidden = false
+  document.body.classList.add('has-conflict')
+}
+
+function hideConflictBar () {
+  document.getElementById('editor-conflict').hidden = true
+  document.body.classList.remove('has-conflict')
+}
+
+function enterConflict (diskMtimeMs) {
+  if (conflict || pageDisposed) return
+  conflict = { diskMtimeMs: diskMtimeMs }
+  clearTimeout(autosaveTimer)
+  autosaveTimer = null
+  saveAgainRequested = false
+  showConflictBar()
+}
+
+function leaveConflict () {
+  conflict = null
+  hideConflictBar()
+}
+
 async function saveFile () {
+  return writeToDisk(false)
+}
+
+/* force skips the disk-changed check; only the conflict bar's Overwrite uses it */
+async function writeToDisk (force) {
   if (!monacoEditor || !editorFilePath || pageDisposed) return
   if (saving) {
     saveAgainRequested = true
@@ -161,24 +199,27 @@ async function saveFile () {
   const content = monacoEditor.getValue()
   saving = true
   try {
-    // check if file changed on disk since load (external edit)
-    const currentStat = await sendRequest('editor-stat', { path: editorFilePath })
-    if (loadedMtimeMs !== null && currentStat && currentStat.mtimeMs !== null && currentStat.mtimeMs !== loadedMtimeMs && dirty) {
-      // external change + local edits: warn but still save (last write wins)
-      console.warn('File changed on disk since last load, overwriting')
-    }
-    if (pageDisposed) return
-    const error = await sendRequest('editor-write', {
+    // The main process compares the file's mtime with the one this page last
+    // saw, right before writing, and refuses if they differ (external edit).
+    const result = await sendRequest('editor-write', {
       path: editorFilePath,
-      content: content
+      content: content,
+      expectedMtimeMs: force ? null : loadedMtimeMs
     })
-    if (error) {
-      throw new Error(error)
-    }
     if (pageDisposed) return
+    if (result && result.conflict) {
+      enterConflict(result.mtimeMs)
+      return
+    }
+    if (result) {
+      throw new Error(result)
+    }
     const stat = await sendRequest('editor-stat', { path: editorFilePath })
+    if (pageDisposed) return
     loadedMtimeMs = stat ? stat.mtimeMs : null
+    syncEpoch++
     savedRevision = revision
+    if (conflict) leaveConflict()
     setDirty(editRevision !== savedRevision)
   } catch (err) {
     console.error('save failed:', err)
@@ -190,7 +231,7 @@ async function saveFile () {
     }
   } finally {
     saving = false
-    if (!pageDisposed && saveAgainRequested && dirty) {
+    if (!pageDisposed && saveAgainRequested && dirty && !conflict) {
       saveAgainRequested = false
       clearTimeout(autosaveTimer)
       autosaveTimer = setTimeout(flushAutosave, 0)
@@ -198,6 +239,44 @@ async function saveFile () {
       saveAgainRequested = false
     }
   }
+}
+
+/* Conflict bar, "Reload from disk": replaces the editor text with the file's.
+It goes through an edit operation, so Ctrl+Z brings the local text back. */
+async function reloadFromDisk () {
+  if (!conflict || !monacoEditor || pageDisposed || saving) return
+  const revision = editRevision
+  try {
+    const result = await sendRequest('editor-read', { path: editorFilePath })
+    if (pageDisposed || !conflict) return
+    // typing during the read means the user is still working: leave the bar up
+    if (revision !== editRevision) return
+    const mtimeMs = result.mtimeMs != null
+      ? result.mtimeMs
+      : ((await sendRequest('editor-stat', { path: editorFilePath })) || {}).mtimeMs
+    if (pageDisposed || revision !== editRevision) return
+    const model = monacoEditor.getModel()
+    applyingExternalContent = true
+    try {
+      monacoEditor.pushUndoStop()
+      monacoEditor.executeEdits('min-external-reload', [{ range: model.getFullModelRange(), text: result.content }])
+      monacoEditor.pushUndoStop()
+    } finally {
+      applyingExternalContent = false
+    }
+    loadedMtimeMs = mtimeMs != null ? mtimeMs : null
+    syncEpoch++
+    savedRevision = editRevision
+    leaveConflict()
+    setDirty(false)
+  } catch (err) {
+    if (!pageDisposed && conflict) showConflictBar(err.message || l('editorSaveError'))
+  }
+}
+
+async function overwriteDisk () {
+  if (!conflict || saving) return
+  await writeToDisk(true)
 }
 
 /* called from the UI process (Ctrl+S / menu) via executeJavaScript */
@@ -220,9 +299,9 @@ async function loadFile () {
       return
     }
     const result = await sendRequest('editor-read', { path: editorFilePath })
-    const stat = await sendRequest('editor-stat', { path: editorFilePath })
+    const stat = result.mtimeMs != null ? null : await sendRequest('editor-stat', { path: editorFilePath })
     if (pageDisposed) return
-    loadedMtimeMs = stat ? stat.mtimeMs : null
+    loadedMtimeMs = result.mtimeMs != null ? result.mtimeMs : (stat ? stat.mtimeMs : null)
     createEditor(result.content)
     startExternalChangePolling()
   } catch (err) {
@@ -241,31 +320,38 @@ function showImage (dataURL) {
 
 function startExternalChangePolling () {
   if (externalPollTimer) return
-  // poll for external changes when editor is not dirty; if file changes on disk show indicator
+  // Poll for changes made outside the editor. Without local edits the new text
+  // is picked up silently; with local edits it is a conflict, raised now so
+  // autosave does not have to run into it.
   externalPollTimer = setInterval(async function () {
-    if (dirty || !monacoEditor || pageDisposed || externalPollInFlight) return
+    if (!monacoEditor || pageDisposed || externalPollInFlight || saving || conflict) return
     externalPollInFlight = true
     const revision = editRevision
+    const epoch = syncEpoch
     try {
       const stat = await sendRequest('editor-stat', { path: editorFilePath })
-      if (pageDisposed || dirty || revision !== editRevision) return
-      if (stat && stat.mtimeMs !== null && stat.mtimeMs !== loadedMtimeMs) {
-        // file changed externally and we have no unsaved edits: reload silently
-        const result = await sendRequest('editor-read', { path: editorFilePath })
-        if (pageDisposed || dirty || revision !== editRevision) return
-        // preserve cursor position
-        const pos = monacoEditor.getPosition()
-        applyingExternalContent = true
-        try {
-          monacoEditor.setValue(result.content)
-          if (pos) monacoEditor.setPosition(pos)
-        } finally {
-          applyingExternalContent = false
-        }
-        loadedMtimeMs = stat.mtimeMs
-        savedRevision = editRevision
-        setDirty(false)
+      if (pageDisposed || saving || conflict || revision !== editRevision || epoch !== syncEpoch) return
+      if (!stat || stat.mtimeMs === null || stat.mtimeMs === loadedMtimeMs) return
+      if (dirty) {
+        enterConflict(stat.mtimeMs)
+        return
       }
+      // file changed externally and we have no unsaved edits: reload silently
+      const result = await sendRequest('editor-read', { path: editorFilePath })
+      if (pageDisposed || dirty || saving || revision !== editRevision || epoch !== syncEpoch) return
+      // preserve cursor position
+      const pos = monacoEditor.getPosition()
+      applyingExternalContent = true
+      try {
+        monacoEditor.setValue(result.content)
+        if (pos) monacoEditor.setPosition(pos)
+      } finally {
+        applyingExternalContent = false
+      }
+      loadedMtimeMs = result.mtimeMs != null ? result.mtimeMs : stat.mtimeMs
+      syncEpoch++
+      savedRevision = editRevision
+      setDirty(false)
     } catch (e) {} finally {
       externalPollInFlight = false
     }
@@ -380,6 +466,9 @@ document.addEventListener('visibilitychange', function () {
   }
 })
 window.addEventListener('blur', flushAutosave)
+
+document.getElementById('editor-conflict-overwrite').addEventListener('click', overwriteDisk)
+document.getElementById('editor-conflict-reload').addEventListener('click', reloadFromDisk)
 
 // expose dirty state for main process tab close confirmation (via executeJavaScript)
 window.editorIsDirty = function () { return dirty }
