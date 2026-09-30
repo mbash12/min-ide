@@ -8,7 +8,10 @@ view has context isolation, so the page can only see this through
 contextBridge - and it needs it before its own scripts run, which is why the
 lookup is synchronous. */
 try {
-  electron.contextBridge.exposeInMainWorld('minViewResource', ipc.sendSync('getViewResource') || { resource: null, rootPath: null })
+  // Only the fork's own pages ask (and the main process answers only them):
+  // this preload also runs in ordinary web pages and their frames.
+  const internalPage = window.location.protocol === 'min:'
+  electron.contextBridge.exposeInMainWorld('minViewResource', (internalPage && ipc.sendSync('getViewResource')) || { resource: null, rootPath: null })
 } catch (e) {}
 
 var propertiesToClone = ['deltaX', 'deltaY', 'metaKey', 'ctrlKey', 'defaultPrevented', 'clientX', 'clientY']

@@ -60,7 +60,7 @@ async function main () {
     isPathInside: (root, candidate) => candidate.startsWith(root + path.sep),
     viewMap: { tab: view },
     ipc: { on: (name, fn) => { events[name] = fn }, handle () {} },
-    windows: { getCurrent: () => win, getState: () => ({ selectedView: 'tab' }) },
+    windows: { windowFromContents: () => ({ win }), getCurrent: () => win, getState: () => ({ selectedView: 'tab' }) },
     getWindowWebContents: () => wc,
     sendIPCToWindow: (window, channel, data) => {
       if (channel !== 'browser-control') return
@@ -68,7 +68,7 @@ async function main () {
       const allowed = data.payload.workspaceId === 'workspace' && data.payload.taskId === 'task' && (!data.payload.tabId || data.payload.tabId === 'tab')
       const result = { ok: true, tabId: 'tab', taskId: 'task', workspaceId: 'workspace' }
       if (data.action === 'listTabs') Object.assign(result, { tabs: [{ id: 'tab' }], selected: 'tab' })
-      events['browser-control-result']({}, { id: data.id, result: allowed ? result : { ok: false, error: 'Tab not found in this workspace' } })
+      events['browser-control-result']({ sender: wc }, { id: data.id, result: allowed ? result : { ok: false, error: 'Tab not found in this workspace' } })
     }
   })
   context.global = context

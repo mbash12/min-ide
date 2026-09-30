@@ -11,7 +11,7 @@ const electron = require('electron')
 
 if (typeof electron === 'string') {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'min-google-auth-'))
-  const child = require('child_process').spawn(electron, [__filename, '--auth-test-dir=' + scratch], { stdio: 'inherit' })
+  const child = require('child_process').spawn(electron, [__filename, '--auth-test-dir=' + scratch].concat(process.argv.slice(2)), { stdio: 'inherit' })
   const cleanup = () => fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   child.once('error', function (error) {
     console.error(error)

@@ -230,6 +230,7 @@ const tabBar = {
   },
   updateTab: function (tabId, tabEl = tabBar.getTab(tabId)) {
     var tabData = tabs.get(tabId)
+    if (!tabData || !tabEl) return
 
     // update tab title
     var tabTitle
@@ -409,19 +410,19 @@ isn't shown in the bar (background task), so guard getTab */
 webviews.bindEvent('did-start-loading', function (tabId) {
   var tabEl = tabBar.getTab(tabId)
   if (tabEl) progressBar.update(tabEl.querySelector('.progress-bar'), 'start')
-  tabs.update(tabId, { loaded: false })
+  webviews.updateTabState(tabId, { loaded: false })
 })
 
 webviews.bindEvent('did-stop-loading', function (tabId) {
   var tabEl = tabBar.getTab(tabId)
   if (tabEl) progressBar.update(tabEl.querySelector('.progress-bar'), 'finish')
-  tabs.update(tabId, { loaded: true })
+  webviews.updateTabState(tabId, { loaded: true })
   if (tabEl) tabBar.updateTab(tabId)
 })
 
 tasks.on('tab-updated', function (id, key) {
   var updateKeys = ['title', 'secure', 'url', 'muted', 'hasAudio', 'preview', 'favicon']
-  if (updateKeys.includes(key)) {
+  if (updateKeys.includes(key) && tabs.has(id)) {
     tabBar.updateTab(id)
     updateSplitGroupIndicators()
   }

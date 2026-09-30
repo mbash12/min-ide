@@ -231,6 +231,7 @@ function browserVisualDestination (params, label) {
 function browserVisualSave (image, params, label, rect) {
   const dest = browserVisualDestination(params, label)
   fs.mkdirSync(path.dirname(dest), { recursive: true })
+  try { require(require('path').join(__dirname, 'main/lib/git/exclude.js')).excludeFromGit(path.dirname(dest)) } catch (e) {}
   fs.writeFileSync(dest, image.toPNG())
   return Object.assign({ label: label, path: dest, cssRect: rect }, image.getSize())
 }

@@ -142,6 +142,28 @@ function handleDocumentChanged (tabId, args) {
 function getTabRecordForId (tabId) {
   if (tabId === null || tabId === undefined) return null
 
+  if (typeof workspaces !== 'undefined' && workspaces && typeof workspaces.findTaskContainingTab === 'function') {
+    const task = workspaces.findTaskContainingTab(tabId)
+    if (task && task.tabs) {
+      let tab = task.tabs.get(tabId)
+      if (!tab) {
+        tab = task.tabs.get().find(function (entry) { return String(entry.id) === String(tabId) })
+      }
+      const identity = getDocumentIdentity(tab && tab.url)
+      if (identity) {
+        const list = task.tabs.parentTaskList
+        return {
+          id: tab.id,
+          workspaceId: identity.workspaceId,
+          documentId: identity.documentId,
+          tab: tab,
+          workspace: list && list.workspace,
+          task: task
+        }
+      }
+    }
+  }
+
   let found = null
   forEachWorkspace(function (workspace) {
     if (found || !workspace || !workspace.tasks) return
@@ -270,8 +292,9 @@ function open (workspaceId, documentId, title) {
 
 function updateTitle (workspaceId, documentId, title) {
   const record = getTabRecord(workspaceId, documentId)
+  if (!record) return false
   const taskTabs = record.task ? record.task.tabs : null
-  if (!record || !taskTabs || typeof taskTabs.update !== 'function') return false
+  if (!taskTabs || typeof taskTabs.update !== 'function') return false
   taskTabs.update(record.id, { title: String(title || '') })
   return true
 }

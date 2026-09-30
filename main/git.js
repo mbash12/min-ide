@@ -4,280 +4,36 @@ fs, path and ipc are provided by main.js (concatenated bundle).
 Uses the system `git` binary via child_process.
 */
 
-var childProcess
-try { childProcess = require('child_process') } catch (e) { childProcess = null }
-
-function isDirectoryPath (dirPath) {
-  return typeof dirPath === 'string' && fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()
-}
-
-/* keeps git file arguments inside cwd; rejects absolute paths and .. */
-function sanitizeRepoFiles (cwd, files) {
-  if (!Array.isArray(files) || files.length === 0) return null
-  const root = path.resolve(cwd)
-  const out = []
-  for (var i = 0; i < files.length; i++) {
-    if (typeof files[i] !== 'string' || !files[i] || files[i].indexOf('\0') !== -1) return null
-    var full = path.resolve(root, files[i])
-    if (!isPathInside(root, full)) return null
-    var rel = path.relative(root, full)
-    if (!rel || rel === '.') return null
-    out.push(rel)
-  }
-  return out
-}
-
-function isSafeGitRef (value) {
-  if (typeof value !== 'string' || !value || value[0] === '-' || value.indexOf('\0') !== -1) return false
-  if (value.indexOf('..') !== -1 || value.indexOf(':') !== -1 || /\s/.test(value)) return false
-  return true
-}
-
-/* Runs git without blocking the main process: spawn + kill-on-timeout.
-GIT_TERMINAL_PROMPT=0 makes remote operations (pull/push/fetch) fail fast
-instead of waiting on a credential prompt that can never be answered. */
-var GIT_TIMEOUT_MS = 15000
-var GIT_MAX_BUFFER = 10 * 1024 * 1024
-
-function runGit (cwd, args, options) {
-  options = options || {}
-  return new Promise(function (resolve) {
-    if (!childProcess) {
-      resolve({ stdout: '', stderr: 'child_process not available', status: 1 })
-      return
-    }
-    var proc
-    try {
-      proc = childProcess.spawn('git', args, {
-        cwd: cwd,
-        env: Object.assign({}, process.env, { GIT_TERMINAL_PROMPT: '0' }, options.env || {})
-      })
-    } catch (err) {
-      resolve({ stdout: '', stderr: err.message || String(err), status: 1, error: err })
-      return
-    }
-    // collect raw buffers so binary output (image diffs) survives intact;
-    // text callers get a utf8 string, binary callers get base64
-    var stdoutChunks = []
-    var stderrChunks = []
-    var stdoutLength = 0
-    var stderrLength = 0
-    var settled = false
-    var timedOut = false
-    var finish = function (result) {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(result)
-    }
-    var kill = function () {
-      try { proc.kill('SIGKILL') } catch (e) {}
-    }
-    var timer = setTimeout(function () {
-      timedOut = true
-      kill()
-    }, options.timeout || GIT_TIMEOUT_MS)
-    proc.stdout.on('data', function (d) {
-      if (stdoutLength >= GIT_MAX_BUFFER) return
-      stdoutChunks.push(d)
-      stdoutLength += d.length
-      if (stdoutLength > GIT_MAX_BUFFER) {
-        kill()
-      }
-    })
-    proc.stderr.on('data', function (d) {
-      if (stderrLength >= GIT_MAX_BUFFER) return
-      stderrChunks.push(d)
-      stderrLength += d.length
-    })
-    function stdoutText () {
-      var buf = Buffer.concat(stdoutChunks)
-      if (buf.length > GIT_MAX_BUFFER) buf = buf.subarray(0, GIT_MAX_BUFFER)
-      return options.binary ? buf.toString('base64') : buf.toString('utf8')
-    }
-    function stderrText () {
-      var buf = Buffer.concat(stderrChunks)
-      if (buf.length > GIT_MAX_BUFFER) buf = buf.subarray(0, GIT_MAX_BUFFER)
-      return buf.toString('utf8')
-    }
-    proc.on('error', function (err) {
-      finish({ stdout: stdoutText(), stderr: stderrText() || err.message || String(err), status: 1, error: err })
-    })
-    proc.on('close', function (code) {
-      finish({
-        stdout: stdoutText(),
-        stderr: timedOut ? (stderrText() + '\ngit timed out').trim() : stderrText(),
-        status: timedOut ? 1 : code
-      })
-    })
-  })
-}
-
-async function findGitRoot (startPath) {
-  if (!isDirectoryPath(startPath)) return null
-  var current = path.resolve(startPath)
-  while (true) {
-    if (fs.existsSync(path.join(current, '.git'))) {
-      return current
-    }
-    var parent = path.dirname(current)
-    if (parent === current) break
-    // also ask git, but fs check is faster for normal repos
-    current = parent
-  }
-  // fallback: ask git rev-parse
-  var r = await runGit(startPath, ['rev-parse', '--show-toplevel'])
-  if (r.status === 0) {
-    var p = r.stdout.trim()
-    if (p && isDirectoryPath(p)) return p
-  }
-  return null
-}
-
-function parsePorcelain (cwd, output) {
-  var lines = output.split('\n')
-  var branch = null
-  var ahead = 0
-  var behind = 0
-  var staged = []
-  var unstaged = []
-  var untracked = []
-  var conflicted = []
-
-  // first line is branch info when using -b: "## master...origin/master [ahead 1, behind 2]"
-  // or "## No commits yet on master" etc
-  if (lines.length && lines[0].startsWith('##')) {
-    var header = lines[0].slice(2).trim()
-    // parse branch name
-    // examples:
-    // master
-    // master...origin/master
-    // master...origin/master [ahead 1, behind 2]
-    // HEAD (no branch)
-    // No commits yet on master
-    var branchMatch = header.match(/^(?:No commits yet on )?([^\s.]+)/)
-    if (branchMatch) {
-      branch = branchMatch[1]
-      if (branch === 'HEAD') branch = null
-    }
-    var aheadMatch = header.match(/ahead (\d+)/)
-    var behindMatch = header.match(/behind (\d+)/)
-    if (aheadMatch) ahead = parseInt(aheadMatch[1], 10)
-    if (behindMatch) behind = parseInt(behindMatch[1], 10)
-    lines = lines.slice(1)
-  }
-
-  lines.forEach(function (line) {
-    if (!line) return
-    // porcelain v1 format: XY <path>  or XY <path> -> <newpath> for renames
-    // X = index, Y = working tree
-    var x = line[0]
-    var y = line[1]
-    var filePart = line.slice(3)
-    // handle renames: "R  original -> new"
-    var arrowIdx = filePart.indexOf(' -> ')
-    var filePath = arrowIdx !== -1 ? filePart.slice(arrowIdx + 4) : filePart
-    var oldPath = arrowIdx !== -1 ? filePart.slice(0, arrowIdx).trim() : null
-    filePath = filePath.trim()
-    // strip quotes if git quoted
-    if (filePath[0] === '"' && filePath[filePath.length - 1] === '"') {
-      try { filePath = JSON.parse(filePath) } catch (e) {}
-    }
-    if (oldPath && oldPath[0] === '"' && oldPath[oldPath.length - 1] === '"') {
-      try { oldPath = JSON.parse(oldPath) } catch (e) {}
-    }
-    var fullPath = path.join(cwd, filePath)
-
-    // untracked
-    if (x === '?' && y === '?') {
-      untracked.push({ path: filePath, fullPath: fullPath, status: 'untracked', x: x, y: y, raw: line })
-      return
-    }
-    // ignored !! - skip
-    if (x === '!' && y === '!') return
-
-    // conflicted: both modified or UU, AA, DD etc
-    var conflictStatuses = ['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']
-    if (conflictStatuses.includes(x + y)) {
-      conflicted.push({ path: filePath, fullPath: fullPath, status: 'conflicted', x: x, y: y, raw: line })
-      return
-    }
-
-    var hasStaged = x !== ' ' && x !== '?' && x !== '!'
-    var hasUnstaged = y !== ' ' && y !== '?' && y !== '!'
-
-    if (hasStaged) {
-      staged.push({ path: filePath, fullPath: fullPath, status: stagedStatus(x), oldPath: oldPath, x: x, y: y, raw: line })
-    }
-    if (hasUnstaged) {
-      unstaged.push({ path: filePath, fullPath: fullPath, status: unstagedStatus(y), oldPath: oldPath, x: x, y: y, raw: line })
-    }
-    // If both staged and unstaged for same file, it will appear in both lists (VSCode does similar)
-    // But if file is only staged or only unstaged, it goes to one list
-  })
-
-  return { branch: branch, ahead: ahead, behind: behind, staged: staged, unstaged: unstaged, untracked: untracked, conflicted: conflicted }
-}
-
-function stagedStatus (x) {
-  if (x === 'M') return 'modified'
-  if (x === 'A') return 'added'
-  if (x === 'D') return 'deleted'
-  if (x === 'R') return 'renamed'
-  if (x === 'C') return 'copied'
-  if (x === 'U') return 'unmerged'
-  return x
-}
-function unstagedStatus (y) {
-  if (y === 'M') return 'modified'
-  if (y === 'D') return 'deleted'
-  if (y === 'A') return 'added'
-  return y
-}
-
-async function getStatus (cwd) {
-  var r = await runGit(cwd, ['status', '--porcelain=v1', '-b', '--untracked-files=all'])
-  if (r.status !== 0) {
-    return { error: r.stderr || 'git status failed', raw: r.stdout + r.stderr }
-  }
-  var parsed = parsePorcelain(cwd, r.stdout)
-  // get branch if not found via porcelain header, try rev-parse
-  if (!parsed.branch) {
-    var br = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
-    if (br.status === 0) {
-      var b = br.stdout.trim()
-      if (b && b !== 'HEAD') parsed.branch = b
-    }
-  }
-  // recent commit message?
-  var log = await runGit(cwd, ['log', '-1', '--pretty=%B'])
-  if (log.status === 0) {
-    parsed.lastCommitMessage = log.stdout.trim()
-  }
-  return parsed
-}
+var gitCore = require(require('path').join(__dirname, 'main/lib/git/core.js'))({
+  fs: fs,
+  path: path,
+  childProcess: require('child_process'),
+  process: process,
+  isPathInside: isPathInside
+})
+var isDirectoryPath = gitCore.isDirectoryPath
+var sanitizeRepoFiles = gitCore.sanitizeRepoFiles
+var resolveRepoFile = gitCore.resolveRepoFile
+var isSafeGitRef = gitCore.isSafeGitRef
+var runGit = gitCore.runGit
+var resolveGitRoot = gitCore.resolveGitRoot
+var gitDiscard = require(require('path').join(__dirname, 'main/lib/git/discard.js'))({
+  fs: fs,
+  path: path,
+  runGit: runGit,
+  isPathInside: isPathInside
+})
+var gitHistory = require(require('path').join(__dirname, 'main/lib/git/history.js'))(runGit, isDirectoryPath)
 
 ipc.handle('gitIsRepo', async function (e, cwd) {
   if (!isDirectoryPath(cwd)) return { isRepo: false }
-  var r = await runGit(cwd, ['rev-parse', '--is-inside-work-tree'])
-  return { isRepo: r.status === 0 && r.stdout.trim() === 'true', gitRoot: await findGitRoot(cwd) }
+  var gitRoot = await resolveGitRoot(cwd)
+  return { isRepo: !!gitRoot, gitRoot: gitRoot }
 })
 
 ipc.handle('gitStatus', async function (e, cwd) {
-  if (!isDirectoryPath(cwd)) {
-    return { error: 'Invalid path', isRepo: false }
-  }
-  var isRepoCheck = await runGit(cwd, ['rev-parse', '--is-inside-work-tree'])
-  if (isRepoCheck.status !== 0 || isRepoCheck.stdout.trim() !== 'true') {
-    return { isRepo: false }
-  }
-  var gitRoot = (await findGitRoot(cwd)) || cwd
-  var status = await getStatus(gitRoot)
-  if (status.error) return { isRepo: true, error: status.error, gitRoot: gitRoot }
-  status.isRepo = true
-  status.gitRoot = gitRoot
-  // also fetch branch upstream info if possible
-  return status
+  if (!isDirectoryPath(cwd)) return { error: 'Invalid path', isRepo: false }
+  return gitCore.getRepositoryStatus(cwd)
 })
 
 ipc.handle('gitInit', async function (e, cwd) {
@@ -331,46 +87,7 @@ ipc.handle('gitDiscard', async function (e, cwd, files) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   var safe = sanitizeRepoFiles(cwd, files)
   if (!safe) return 'Invalid path'
-  var root = path.resolve(cwd)
-  // for untracked, remove file
-  // for modified, restore
-  var r = await runGit(cwd, ['restore', '--', ...safe])
-  if (r.status !== 0) {
-    r = await runGit(cwd, ['checkout', '--', ...safe])
-  }
-  if (r.status !== 0) {
-    // fallback: checkout with HEAD
-    r = await runGit(cwd, ['checkout', 'HEAD', '--', ...safe])
-  }
-  // Also need to handle untracked after discard failure - delete files
-  // Try to remove untracked if still failing
-  if (r.status !== 0) {
-    // check if any file is untracked and delete
-    var hadError = false
-    for (var i = 0; i < safe.length; i++) {
-      var f = safe[i]
-      var full = path.resolve(root, f)
-      if (!isPathInside(root, full)) {
-        hadError = true
-        continue
-      }
-      try {
-        var stat = await fs.promises.lstat(full)
-        if (stat.isDirectory()) {
-          await fs.promises.rm(full, { recursive: true, force: true })
-        } else {
-          await fs.promises.unlink(full)
-        }
-      } catch (err) {
-        // try git clean for untracked
-        var cr = await runGit(cwd, ['clean', '-f', '--', f])
-        if (cr.status !== 0) hadError = true
-      }
-    }
-    if (hadError) return r.stderr || 'git discard failed'
-    return null
-  }
-  return null
+  return gitDiscard.discardFiles(cwd, safe)
 })
 
 ipc.handle('gitDiscardAll', async function (e, cwd) {
@@ -392,23 +109,19 @@ ipc.handle('gitCommit', async function (e, cwd, message) {
   return null
 })
 
-/* the repo a diff/editor view may touch: the git root has to be the
-workspace folder or one of its ancestors/descendants, so a page cannot read
-or write inside an unrelated repository */
-function repoAllowedForSender (sender, cwd) {
-  if (!sender || sender.isDestroyed() || !isDirectoryPath(cwd)) return false
+/* the repo a diff/editor view may touch: the git root of the workspace folder,
+or a repository nested inside it (see isRepoAllowedForWorkspace), so a page
+cannot read or write inside an unrelated repository or a folder above it */
+async function repoAllowedForSender (sender, cwd) {
+  if (!sender || sender.isDestroyed()) return false
   var view = getViewResource(getViewIdForContents(sender))
-  var ws = view && view.rootPath
-  if (!ws) return false
-  var root = path.resolve(cwd)
-  var work = path.resolve(ws)
-  return root === work || isPathInside(root, work) || isPathInside(work, root)
+  return gitCore.isRepoAllowedForWorkspace(view && view.rootPath, cwd)
 }
 
 /* file content at a git ref ('HEAD', a commit hash, '' for the index).
 Missing paths return an error; callers treat them as an empty side. */
 ipc.handle('gitFileAtRef', async function (e, cwd, ref, relPath, binary) {
-  if (!repoAllowedForSender(e.sender, cwd)) return { error: 'Invalid path' }
+  if (!(await repoAllowedForSender(e.sender, cwd))) return { error: 'Invalid path' }
   if (ref && !isSafeGitRef(ref)) return { error: 'Invalid ref' }
   var safe = sanitizeRepoFiles(cwd, [relPath])
   if (!safe) return { error: 'Invalid path' }
@@ -422,10 +135,9 @@ ipc.handle('gitFileAtRef', async function (e, cwd, ref, relPath, binary) {
 /* working tree file inside the repo (may live outside the workspace root
 when the repo root is an ancestor of it) */
 ipc.handle('gitWorktreeRead', async function (e, cwd, relPath, binary) {
-  if (!repoAllowedForSender(e.sender, cwd)) return { error: 'Invalid path' }
-  var safe = sanitizeRepoFiles(cwd, [relPath])
-  if (!safe) return { error: 'Invalid path' }
-  var full = path.resolve(cwd, safe[0])
+  if (!(await repoAllowedForSender(e.sender, cwd))) return { error: 'Invalid path' }
+  var full = resolveRepoFile(cwd, relPath)
+  if (!full) return { error: 'Invalid path' }
   try {
     var stat = fs.lstatSync(full)
     if (!stat.isFile()) return { error: 'Not a regular file' }
@@ -441,11 +153,11 @@ ipc.handle('gitWorktreeRead', async function (e, cwd, relPath, binary) {
 })
 
 ipc.handle('gitWorktreeWrite', async function (e, cwd, relPath, content) {
-  if (!repoAllowedForSender(e.sender, cwd)) return 'Invalid path'
-  var safe = sanitizeRepoFiles(cwd, [relPath])
-  if (!safe || typeof content !== 'string') return 'Invalid path'
+  if (!(await repoAllowedForSender(e.sender, cwd))) return 'Invalid path'
+  var full = typeof content === 'string' ? resolveRepoFile(cwd, relPath) : null
+  if (!full) return 'Invalid path'
   try {
-    fs.writeFileSync(path.resolve(cwd, safe[0]), content, 'utf8')
+    fs.writeFileSync(full, content, 'utf8')
     return null
   } catch (err) {
     return err.message || 'Write failed'
@@ -597,6 +309,10 @@ ipc.handle('gitLogDetailed', async function (e, cwd, limit) {
     return { hash: parts[0], shortHash: parts[1], message: parts[2], author: parts[3], date: parts[4], refs: parts[5] }
   })
   return { commits: commits }
+})
+
+ipc.handle('gitGraphData', async function (e, cwd, limit) {
+  return gitHistory.getGraphData(cwd, limit)
 })
 
 ipc.handle('gitPull', async function (e, cwd) {

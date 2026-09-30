@@ -12,7 +12,6 @@ var tabEditor = require('navbar/tabEditor.js')
 var searchbar = require('searchbar/searchbar.js')
 var splitView = require('splitView.js')
 var editorView = require('editorView.js')
-var profiles = require('profiles.js')
 
 /* Ask before throwing away any editor content that only exists in a view.
 The check is intentionally renderer-side: closeTab and workspace actions are
@@ -23,14 +22,12 @@ function confirmDiscardTabs (tabList) {
   })
 }
 
-/* creates a new workspace: one Workspace record owning one initial task */
-
-function addWorkspace (workspace) {
-  workspace = workspace || {}
-  const id = workspaces.add(workspace)
-  switchToWorkspace(id)
-  return id
-}
+const { addWorkspace, summarizeWorkspace, closeWorkspace, removeWorkspaceState, archiveWorkspace, restoreWorkspace } = require('workspaces/workspaceLifecycle.js')({
+  workspaces, splitView, editorView, webviews, confirmDiscardTabs, switchToWorkspace
+})
+const { setWorkspaceProfile, handleProfileDeleted, applyProfileDeleted, getProfileUsageWorkspaces, clearProfileData } = require('workspaces/profileLifecycle.js')({
+  workspaces, tasks, splitView, editorView, webviews, confirmDiscardTabs, switchToTab, addTab
+})
 
 /* creates a new task inside the selected workspace */
 
@@ -69,7 +66,8 @@ function addTab (tabId = tabs.add(), options = {}) {
     splitView.pause()
   }
 
-  if (!options.openInBackground && !tabs.get(tabs.getSelected()).url && ((!tabs.get(tabs.getSelected()).private && tabs.get(tabId).private) || tabs.get(tabId).url)) {
+  const selectedTab = tabs.getSelected() && tabs.get(tabs.getSelected())
+  if (!options.openInBackground && selectedTab && selectedTab.id !== tabId && !selectedTab.url && ((!selectedTab.private && tabs.get(tabId).private) || tabs.get(tabId).url)) {
     destroyTab(tabs.getSelected())
   }
 
@@ -111,9 +109,8 @@ function destroyTask (id) {
     return false
   }
 
-  // A task lifecycle change invalidates both the shown split and paused
-  // groups. Clear them before destroying the task's views.
-  splitView.clearAll()
+  if (tasks.getSelected() === task) splitView.clearAll()
+  ipc.send('agent-destroy-task-session', { taskId: id })
 
   task.tabs.get().forEach(function (tab) {
     editorView.allowDiscard(tab.id)
@@ -152,9 +149,6 @@ A workspace is never left taskless: closing the last task recreates an empty one
 function closeTask (taskId) {
   var previousCurrentTask = tasks.getSelected() && tasks.getSelected().id
 
-  // stop the task's agent session before tearing down its views
-  ipc.send('agent-destroy-task-session', { taskId: taskId })
-
   if (!destroyTask(taskId)) {
     return false
   }
@@ -179,69 +173,6 @@ function closeTask (taskId) {
       return switchToTask(mostRecent.id)
     }
   }
-}
-
-/* destroys a workspace: all of its tasks, views and workspace-scoped state */
-
-function closeWorkspace (id) {
-  var ws = workspaces.get(id)
-  if (!ws) {
-    return false
-  }
-
-  const wasSelected = workspaces.getSelected() && workspaces.getSelected().id === id
-
-  // stop every task agent session in the workspace first
-  ws.tasks.forEach(function (task) {
-    ipc.send('agent-destroy-task-session', { taskId: task.id })
-  })
-
-  if (!confirmDiscardTabs(ws.tasks.map(task => task.tabs.get()).reduce((all, arr) => all.concat(arr), []))) {
-    return false
-  }
-
-  splitView.clearAll()
-
-  ws.tasks.forEach(function (task) {
-    task.tabs.get().forEach(function (tab) {
-      editorView.allowDiscard(tab.id)
-      webviews.destroy(tab.id)
-    })
-  })
-
-  var taskIds = ws.tasks.map(function (task) { return task.id })
-
-  workspaces.destroy(id)
-  removeWorkspaceState(id, taskIds)
-
-  if (wasSelected) {
-    const remaining = workspaces.getActive()
-    if (remaining.length > 0) {
-      const mostRecent = remaining.sort(function (a, b) {
-        return workspaces.getLastActivity(b.id) - workspaces.getLastActivity(a.id)
-      })[0]
-      return switchToWorkspace(mostRecent.id)
-    } else {
-      return addWorkspace()
-    }
-  }
-}
-
-/* removes workspace-scoped persisted state (sidebar, tree, git, docs, agents) */
-function removeWorkspaceState (id, taskIds) {
-  try {
-    var uiStateDB = require('util/uiStateDB.js')
-    if (uiStateDB.deleteWorkspaceState) {
-      uiStateDB.deleteWorkspaceState(id)
-    }
-  } catch (e) {}
-  try {
-    var customDataStore = require('util/customDataStore.js')
-    if (customDataStore.deleteWorkspaceDocuments) {
-      customDataStore.deleteWorkspaceDocuments(id)
-    }
-  } catch (e) {}
-  ipc.send('agent-destroy-workspace-sessions', { workspaceId: id, taskIds: taskIds || [] })
 }
 
 /* destroys a tab, and either switches to the next tab or creates a new one */
@@ -279,7 +210,7 @@ function setWindowTitle () {
   if (!task) {
     return
   }
-  const tab = task.tabs.get(task.tabs.getSelected())
+  const tab = task.tabs.getSelected() && task.tabs.get(task.tabs.getSelected())
 
   const truncateString = (str, len) => {
     if (str.length > len) {
@@ -290,7 +221,7 @@ function setWindowTitle () {
   }
 
   const title = [
-    truncateString(tab.title || '', 100),
+    truncateString((tab && tab.title) || '', 100),
     truncateString(task.name || '', 100),
     'Min'
   ].filter(str => !!str).join(' | ')
@@ -301,244 +232,12 @@ function setWindowTitle () {
   }
 }
 
-/* changes the profile (session partition) used by a workspace. Only web tab
-views are recreated: a partition is a creation-time webPreference, so it
-cannot be swapped on a live webContents - the web tabs' views are destroyed
-and lazily rebuilt on the new partition, while editor/terminal/document/note
-tabs, tasks, and the split layout all stay untouched. Private tabs keep their
-own per-tab partition and are not affected either. */
-
-function setWorkspaceProfile (workspaceId, profileId, options) {
-  options = options || {}
-  var ws = workspaces.get(workspaceId)
-  if (!ws) {
-    return false
-  }
-
-  if (ws.profileId === profileId) {
-    return true
-  }
-
-  // update the record first so any view recreated from now on gets the new
-  // partition
-  workspaces.update(workspaceId, { profileId: profileId })
-
-  const isSelected = !!(workspaces.getSelected() && workspaces.getSelected().id === workspaceId)
-  const selectedTabId = isSelected && tasks.getSelected() && tasks.getSelected().tabs.getSelected()
-
-  ws.tasks.forEach(function (task) {
-    task.tabs.get().forEach(function (tab) {
-      if ((tab.kind || 'web') !== 'web' || tab.private) {
-        return
-      }
-      webviews.destroy(tab.id, { preserveSplit: true })
-    })
-  })
-
-  if (isSelected) {
-    // rebuild the visible surface: showSplit recreates missing pane views,
-    // switchToTab recreates a destroyed selected tab (no-op for live views)
-    if (splitView.isSplit()) {
-      splitView.showSplit()
-    }
-    if (selectedTabId) {
-      switchToTab(selectedTabId, { focusWebview: true })
-    } else if (tasks.getSelected() && tasks.getSelected().tabs.count() === 0) {
-      addTab()
-    }
-  }
-  return true
-}
-
-/* Handles a profile being deleted from Pro Settings. The live workspace
-assignment is updated first, and all old views are recreated lazily against
-the default partition instead of leaving the deleted profile id in memory. */
-function getProfileDeletionTasks (profileId) {
-  const affected = []
-  workspaces.forEach(function (ws) {
-    if (ws.profileId === profileId) {
-      ws.tasks.forEach(function (task) {
-        affected.push({ workspace: ws, task: task })
-      })
-    }
-  })
-  return affected
-}
-
-function confirmProfileDeletion (profileId) {
-  const affectedTasks = getProfileDeletionTasks(profileId)
-  const affectedTabs = []
-  affectedTasks.forEach(function (entry) {
-    affectedTabs.push.apply(affectedTabs, entry.task.tabs.get())
-  })
-  return confirmDiscardTabs(affectedTabs)
-}
-
-function applyProfileDeleted (profileId) {
-  if (!profileId) {
-    return false
-  }
-
-  const affectedTasks = getProfileDeletionTasks(profileId)
-
-  const selectedTask = tasks.getSelected()
-  const selectedTaskId = selectedTask && selectedTask.id
-  const selectedTabId = selectedTask && selectedTask.tabs.getSelected()
-
-  splitView.clearAll()
-  affectedTasks.forEach(function (entry) {
-    entry.task.tabs.get().forEach(function (tab) {
-      /* Only web views depend on the deleted profile's partition; editors,
-      terminals and other internal surfaces must be left running. */
-      if ((tab.kind || 'web') !== 'web') {
-        return
-      }
-      editorView.allowDiscard(tab.id)
-      webviews.destroy(tab.id)
-    })
-    workspaces.update(entry.workspace.id, { profileId: null })
-  })
-
-  // Recreate the selected tab immediately so the user does not see a blank
-  // content area after deleting the profile. Other workspaces recreate views
-  // when they are selected.
-  if (selectedTaskId && affectedTasks.some(function (entry) { return entry.task.id === selectedTaskId })) {
-    const task = workspaces.findTask(selectedTaskId)
-    if (selectedTabId && task.tabs.has(selectedTabId)) {
-      switchToTab(selectedTabId, { focusWebview: true })
-    } else if (task.tabs.count() === 0) {
-      addTab()
-    }
-  }
-  return true
-}
-
-function handleProfileDeleted (profileId) {
-  if (!profileId || !confirmProfileDeletion(profileId)) {
-    return false
-  }
-  return applyProfileDeleted(profileId)
-}
-
-/* Workspace names that currently use a profile (archived ones count - the
-profile is still assigned to them). Deletion is blocked while this is
-non-empty, per the blueprint's "profile tidak boleh dihapus selama masih
-digunakan Workspace". */
-function getProfileUsageWorkspaces (profileId) {
-  const names = []
-  workspaces.forEach(function (ws) {
-    if (ws.profileId === profileId) {
-      names.push(ws.name || ws.id)
-    }
-  })
-  return names
-}
-
-/* Clears selected data types on a profile's session partition, then reloads
-the live web tabs of every workspace that uses it so the effect (e.g. being
-logged out) is visible immediately. Non-web tabs are left alone - editors,
-terminals, documents and notes do not depend on site storage. Tabs whose
-views were never created just pick up the cleared partition when they are
-opened. `profileId` null means the default profile (persist:webcontent). */
-function clearProfileData (profileId, types) {
-  const partition = profiles.getPartition(profileId) || 'persist:webcontent'
-  return ipc.invoke('clearProfileData', { partition: partition, types: types }).then(function (ok) {
-    if (!ok) {
-      return { ok: false }
-    }
-    var reloaded = 0
-    workspaces.forEach(function (ws) {
-      if ((ws.profileId || null) !== (profileId || null)) {
-        return
-      }
-      ws.tasks.forEach(function (task) {
-        task.tabs.get().forEach(function (tab) {
-          if ((tab.kind || 'web') !== 'web' || !webviews.hasViewForTab(tab.id)) {
-            return
-          }
-          webviews.callAsync(tab.id, 'reload')
-          reloaded++
-        })
-      })
-    })
-    return { ok: true, reloaded: reloaded }
-  }, function () {
-    return { ok: false }
-  })
-}
-
-/* archives a workspace: switches away from it if it is open, stops its agent
-sessions, destroys all of its views to free memory, and marks it as archived
-so it no longer appears in the regular workspace list. Its state (including
-activeTaskId) is kept so it can be restored later. */
-
-function archiveWorkspace (id) {
-  var ws = workspaces.get(id)
-  if (!ws || ws.archived) {
-    return false
-  }
-
-  const allTabs = ws.tasks.map(task => task.tabs.get()).reduce((all, arr) => all.concat(arr), [])
-  if (!confirmDiscardTabs(allTabs)) {
-    return false
-  }
-
-  // Archived workspaces must not retain paused groups or stale attached views.
-  splitView.clearAll()
-
-  // if this workspace is open in the current window, switch away from it first
-
-  if (workspaces.getSelected() && workspaces.getSelected().id === id) {
-    var remainingWorkspaces = workspaces.getActive().filter(function (w) {
-      return w.id !== id
-    })
-
-    if (remainingWorkspaces.length > 0) {
-      var mostRecent = remainingWorkspaces.sort(function (a, b) {
-        return workspaces.getLastActivity(b.id) - workspaces.getLastActivity(a.id)
-      })[0]
-
-      switchToWorkspace(mostRecent.id)
-    } else {
-      addWorkspace()
-    }
-  }
-
-  // stop every agent session in the workspace
-  ws.tasks.forEach(function (task) {
-    ipc.send('agent-destroy-task-session', { taskId: task.id })
-  })
-
-  workspaces.update(id, { archived: true })
-
-  // free the memory used by the workspace's views; they are recreated lazily when the workspace is restored
-
-  workspaces.get(id).tasks.forEach(function (task) {
-    task.tabs.get().forEach(function (tab) {
-      editorView.allowDiscard(tab.id)
-      webviews.destroy(tab.id)
-    })
-  })
-  return true
-}
-
-/* restores an archived workspace and switches back to its last active task */
-
-function restoreWorkspace (id, options) {
-  var ws = workspaces.get(id)
-  if (!ws || !ws.archived) {
-    return
-  }
-
-  workspaces.update(id, { archived: false })
-
-  switchToWorkspace(id, options)
-}
-
 /* changes the currently-selected task inside the selected workspace and updates the UI */
 
 function switchToTask (id, options) {
   options = options || {}
+
+  if (!tasks.get(id)) return
 
   // switching tasks destroys the visible and all paused split groups
   splitView.clearAll()
@@ -604,21 +303,8 @@ function switchToWorkspace (id, options) {
     workspaces.update(id, { activeTaskId: taskId }, false)
   }
 
-  // Select the task first so window.tabs exists, then clear splits and
-  // render the tab bar against the right list.
-  tasks.setSelected(taskId, false)
-
-  // switching workspaces destroys the visible and all paused split groups
-  splitView.clearAll()
-
-  tabBar.updateAll()
-
   switchToTask(taskId, options)
 }
-
-workspaces.on('workspace-selected', function () {
-  setWindowTitle()
-})
 
 // Title subscriptions live on the WorkspaceStore (stable reference). The
 // store re-emits inner TaskList/TabList events for every workspace -
@@ -653,6 +339,7 @@ workspaces.on('workspace-selected', function () {
 
 function switchToTab (id, options) {
   options = options || {}
+  if (!window.tabs || !tabs.has(id)) return
 
   // handles both split states: switching panes while split, and
   // pausing/resuming the split group when switching tabs
@@ -690,33 +377,52 @@ tasks.on('tab-updated', function (id, key) {
   }
 })
 
-webviews.bindEvent('did-create-popup', function (tabId, popupId, initialURL, openInForeground) {
-  var popupTab = tabs.add({
-    // in most cases, initialURL will be overwritten once the popup loads, but if the URL is a downloaded file, it will remain the same
-    url: initialURL,
-    private: tabs.get(tabId).private
-  })
-  tabBar.addTab(popupTab)
-  webviews.add(popupTab, popupId)
-  if (openInForeground !== false) {
-    switchToTab(popupTab)
+function openRelatedTab (sourceId, url, foreground, existingViewId) {
+  const owner = workspaces.findTaskContainingTab(sourceId)
+  if (!owner) return
+  const home = owner.tabs.parentTaskList.workspace
+  const tabId = owner.tabs.add({ url: url, private: owner.tabs.get(sourceId).private })
+  // Adopt the native popup before switching tasks can lazily create a view
+  // for the same tab; OAuth requires keeping the original opener/session.
+  if (existingViewId) webviews.add(tabId, existingViewId)
+  if (foreground) {
+    if (workspaces.getSelected() !== home) switchToWorkspace(home.id)
+    if (tasks.getSelected() !== owner) switchToTask(owner.id)
   }
+  if (tasks.getSelected() === owner) {
+    if (existingViewId) {
+      if (!tabBar.getTab(tabId)) tabBar.addTab(tabId)
+      if (foreground) switchToTab(tabId)
+    } else {
+      addTab(tabId, { enterEditMode: false, openInBackground: !foreground })
+    }
+  } else if (!existingViewId) {
+    webviews.add(tabId, existingViewId)
+  }
+}
+
+webviews.bindEvent('did-create-popup', function (tabId, popupId, initialURL, openInForeground) {
+  openRelatedTab(tabId, initialURL, openInForeground !== false, popupId)
 })
 
 webviews.bindEvent('new-tab', function (tabId, url, openInForeground) {
-  var newTab = tabs.add({
-    url: url,
-    private: tabs.get(tabId).private // inherit private status from the current tab
-  })
-
-  addTab(newTab, {
-    enterEditMode: false,
-    openInBackground: !settings.get('openTabsInForeground') && !openInForeground
-  })
+  openRelatedTab(tabId, url, settings.get('openTabsInForeground') || openInForeground)
 })
 
-webviews.bindIPC('close-window', function (tabId, args) {
-  closeTab(tabId)
+webviews.bindIPC('close-window', function (tabId) {
+  const owner = workspaces.findTaskContainingTab(tabId)
+  if (!owner) return
+  if (owner === tasks.getSelected()) closeTab(tabId)
+  else {
+    if (focusMode.enabled()) {
+      focusMode.warn()
+      return
+    }
+    if (!editorView.confirmDiscard(tabId)) return
+    editorView.allowDiscard(tabId)
+    webviews.destroy(tabId)
+    owner.tabs.destroy(tabId)
+  }
 })
 
 /* Pro Settings lives in a webview, so its localStorage update cannot mutate
@@ -818,6 +524,7 @@ module.exports = {
   setWorkspaceProfile,
   handleProfileDeleted,
   addWorkspace,
+  summarizeWorkspace,
   closeWorkspace,
   switchToWorkspace,
   archiveWorkspace,

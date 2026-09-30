@@ -42,3 +42,61 @@ body {
   width: 32px;
   height: 32px;
 }
+
+/* The file changed on disk under unsaved edits: the bar sits above the editor
+and pushes it down, so no line is covered. */
+#editor-conflict {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  box-sizing: border-box;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  color: #f0d98c;
+  background-color: #3c3520;
+  border-bottom: 1px solid #5b4f2a;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+#editor-conflict[hidden] {
+  display: none;
+}
+
+#editor-conflict-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-conflict-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+#editor-conflict button {
+  flex: none;
+  padding: 3px 10px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid #8a7a3f;
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+}
+
+#editor-conflict button:hover {
+  background-color: #524827;
+}
+
+body.has-conflict #editor-container {
+  top: 36px;
+}

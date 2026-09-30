@@ -7,6 +7,14 @@ being replaced and behaves like a regular tab. */
 const EDITOR_BASE = 'min://app/pages/editor/index.html'
 const DIFF_BASE = 'min://app/pages/diff/index.html'
 
+function getTabData (tabId) {
+  try {
+    return require('webviews.js').getTabData(tabId) || tabs.get(tabId)
+  } catch (e) {
+    return tabs.get(tabId)
+  }
+}
+
 const editorView = {
   /* the URL of an editor tab. It is deliberately generic: the file lives in
   the tab's `resource` and reaches the page through the preload bridge, so no
@@ -21,7 +29,7 @@ const editorView = {
   },
 
   isEditorTab: function (tabId) {
-    return editorView.isEditorTabData(tabs.get(tabId))
+    return editorView.isEditorTabData(getTabData(tabId))
   },
 
   /* diff tabs show a git comparison instead of a plain file */
@@ -30,7 +38,7 @@ const editorView = {
   },
 
   isDiffTab: function (tabId) {
-    return editorView.isDiffTabData(tabs.get(tabId))
+    return editorView.isDiffTabData(getTabData(tabId))
   },
 
   /* The editor page reports its dirty state through the view IPC bridge. Keep
@@ -45,7 +53,7 @@ const editorView = {
       return true
     }
 
-    const tab = tabs.get(tabId)
+    const tab = getTabData(tabId)
     const name = tab && tab.title ? ' in "' + tab.title + '"' : ''
     return typeof confirm !== 'function' || confirm('Discard unsaved changes' + name + '?')
   },
@@ -65,7 +73,7 @@ const editorView = {
 
   /* the file an editor tab shows, kept on the tab itself */
   getFilePath: function (tabId) {
-    const tab = tabs.get(tabId)
+    const tab = getTabData(tabId)
     if (!editorView.isEditorTabData(tab)) {
       return null
     }
@@ -147,7 +155,7 @@ const editorView = {
 
   /* pins the given tab so it stops being replaced by future files */
   pinTab: function (tabId) {
-    if (tabs.get(tabId)?.preview) {
+    if (getTabData(tabId)?.preview) {
       tabs.update(tabId, { preview: false })
     }
   },
@@ -208,9 +216,10 @@ try {
   webviews.bindIPC('editorBecomeDirty', function (tabId, args) {
     const isDirty = !args || args[0] !== false
     webviews.setEditorDirty(tabId, isDirty)
-    if (tabs.get(tabId)?.preview) {
+    const tab = webviews.getTabData(tabId)
+    if (tab && tab.preview) {
       if (isDirty) {
-        tabs.update(tabId, { preview: false })
+        webviews.updateTabState(tabId, { preview: false })
       }
     }
   })

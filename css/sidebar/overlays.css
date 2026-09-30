@@ -1,0 +1,93 @@
+.agent-popover-item:hover {
+  background: rgba(127, 127, 127, 0.14);
+}
+.agent-popover-item.selected {
+  background: rgba(127, 127, 127, 0.18);
+}
+.agent-popover-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.agent-popover-item-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-popover-item-sub {
+  font-size: 11px;
+  opacity: 0.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-popover-check {
+  font-size: 13px !important;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.agent-popover-item.selected .agent-popover-check {
+  opacity: 1;
+}
+.agent-popover-empty {
+  padding: 8px;
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: center;
+}
+
+/* thin overlay scrollbar for every scrollable in the sidebar, workspace
+drawer, and agent popovers (which mount on document.body) */
+#sidebar,
+#sidebar *,
+#workspace-drawer,
+#workspace-drawer *,
+.agent-popover,
+.agent-popover * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-thumb, rgba(127, 127, 127, 0.38)) transparent;
+}
+#sidebar::-webkit-scrollbar,
+#sidebar *::-webkit-scrollbar,
+#workspace-drawer::-webkit-scrollbar,
+#workspace-drawer *::-webkit-scrollbar,
+.agent-popover::-webkit-scrollbar,
+.agent-popover *::-webkit-scrollbar {
+  width: var(--sb-width, 6px);
+  height: var(--sb-width, 6px);
+}
+#sidebar::-webkit-scrollbar-track,
+#sidebar *::-webkit-scrollbar-track,
+#workspace-drawer::-webkit-scrollbar-track,
+#workspace-drawer *::-webkit-scrollbar-track,
+.agent-popover::-webkit-scrollbar-track,
+.agent-popover *::-webkit-scrollbar-track {
+  background: transparent;
+}
+#sidebar::-webkit-scrollbar-thumb,
+#sidebar *::-webkit-scrollbar-thumb,
+#workspace-drawer::-webkit-scrollbar-thumb,
+#workspace-drawer *::-webkit-scrollbar-thumb,
+.agent-popover::-webkit-scrollbar-thumb,
+.agent-popover *::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb, rgba(127, 127, 127, 0.38));
+  border-radius: 8px;
+}
+#sidebar::-webkit-scrollbar-thumb:hover,
+#sidebar *::-webkit-scrollbar-thumb:hover,
+#workspace-drawer::-webkit-scrollbar-thumb:hover,
+#workspace-drawer *::-webkit-scrollbar-thumb:hover,
+.agent-popover::-webkit-scrollbar-thumb:hover,
+.agent-popover *::-webkit-scrollbar-thumb:hover {
+  background: var(--sb-thumb-hover, rgba(127, 127, 127, 0.55));
+}
+#sidebar::-webkit-scrollbar-corner,
+#sidebar *::-webkit-scrollbar-corner,
+#workspace-drawer::-webkit-scrollbar-corner,
+#workspace-drawer *::-webkit-scrollbar-corner,
+.agent-popover::-webkit-scrollbar-corner,
+.agent-popover *::-webkit-scrollbar-corner {
+  background: transparent;
+}

@@ -178,7 +178,7 @@ const userscripts = {
     })
   },
   runScript: function (tabId, script) {
-    if (urlParser.isInternalURL(tabs.get(tabId).url)) {
+    if (urlParser.isInternalURL(webviews.getTabData(tabId).url)) {
       return
     }
     webviews.callAsync(tabId, 'executeJavaScript', [script.content, false, null])
@@ -188,7 +188,7 @@ const userscripts = {
       return
     }
 
-    var src = tabs.get(tabId).url
+    var src = webviews.getTabData(tabId).url
 
     userscripts.getMatchingScripts(src).forEach(function (script) {
       // TODO run different types of scripts at the correct time

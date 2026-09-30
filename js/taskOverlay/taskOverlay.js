@@ -89,11 +89,7 @@ var taskOverlay = {
         var droppedTaskId = e.item.getAttribute('data-task')
         const insertionPoint = Array.from(taskContainer.children).indexOf(e.item)
 
-        // remove the task from the tasks list
-        var droppedTask = tasks.splice(tasks.getIndex(droppedTaskId), 1)[0]
-
-        // reinsert the task
-        tasks.splice(insertionPoint, 0, droppedTask)
+        tasks.reorder(tasks.getIndex(droppedTaskId), insertionPoint)
       }
     })
     taskOverlay.sortableInstances.push(sortable)

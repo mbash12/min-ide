@@ -120,7 +120,10 @@
     "updateFilters": "node ./ext/filterLists/updateEasylist.js",
     "updateHttpsList": "node ./ext/httpsUpgrade/updateHttpsList.js",
     "updateSuffixes": "node ./ext/publicSuffixes/updateSuffixes.js",
-    "lint": "prettier --write **/**/*.css **/**/*.md **/**/*.html **/**/*.json && standard --fix js/**/*.js main/*.js | snazzy"
+    "lint": "prettier --write **/**/*.css **/**/*.md **/**/*.html **/**/*.json && standard --fix js/**/*.js main/*.js | snazzy",
+    "test:custom-mods": "node scripts/runCustomModsTests.js",
+    "test:custom-mods-smoke": "node scripts/runCustomModsSmoke.js",
+    "benchmark:workspaces": "node scripts/benchmarkWorkspaceState.js"
   },
   "repository": {
     "type": "git",

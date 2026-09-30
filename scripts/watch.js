@@ -10,23 +10,21 @@ const buildMain = require('./buildMain.js')
 const buildBrowser = require('./buildBrowser.js')
 const buildPreload = require('./buildPreload.js')
 const buildBrowserStyles = require('./buildBrowserStyles.js')
+const createBuildQueue = require('./lib/buildQueue.js')
 
-chokidar.watch(mainDir).on('change', function () {
-  console.log('rebuilding main')
-  buildMain()
-})
+function watchBuild (paths, name, build, options = {}) {
+  const run = createBuildQueue(async function () {
+    console.log('rebuilding ' + name)
+    await build()
+  })
+  chokidar.watch(paths, Object.assign({ ignoreInitial: true }, options)).on('all', function (event) {
+    if (event !== 'add' && event !== 'change' && event !== 'unlink') return
+    run().catch(error => console.error('Failed to build ' + name, error.message))
+  })
+}
 
-chokidar.watch(jsDir, { ignored: preloadDir }).on('change', function () {
-  console.log('rebuilding browser')
-  buildBrowser()
-})
-
-chokidar.watch(preloadDir).on('change', function () {
-  console.log('rebuilding preload script')
-  buildPreload()
-})
-
-chokidar.watch(browserStylesDir).on('change', function () {
-  console.log('rebuilding browser styles')
-  buildBrowserStyles()
-})
+const settingsPreload = path.join(jsDir, 'util/settings/settingsPreload.js')
+watchBuild(mainDir, 'main', buildMain)
+watchBuild(jsDir, 'browser', buildBrowser, { ignored: [preloadDir, settingsPreload] })
+watchBuild([preloadDir, settingsPreload], 'preload script', buildPreload)
+watchBuild(browserStylesDir, 'browser styles', buildBrowserStyles)

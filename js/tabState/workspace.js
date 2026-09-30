@@ -1,4 +1,6 @@
 const TaskList = require('tabState/task.js')
+const OwnershipIndex = require('tabState/ownershipIndex.js')
+const copyWorkspace = require('tabState/workspaceSerialization.js')
 
 // Fork workspace level: Workspace -> Task -> Tab.
 //
@@ -35,13 +37,15 @@ function restoreTaskList (ws, taskRecords) {
 class WorkspaceStore {
   constructor () {
     this.workspaces = [] // each workspace is {id, name, profileId, path, archived, activeTaskId, collapsed, selectedInWindow, tasks: TaskList}
+    this.byId = new Map()
+    this.index = new OwnershipIndex()
     this.events = []
-    this.pendingCallbacks = []
-    this.pendingCallbackTimeout = null
   }
 
   on (name, fn) {
-    this.events.push({ name, fn })
+    const listener = { name, fn }
+    this.events.push(listener)
+    return () => { this.events = this.events.filter(entry => entry !== listener) }
   }
 
   /* Emit synchronously like upstream TaskList: batching callbacks through
@@ -49,7 +53,7 @@ class WorkspaceStore {
   and then reads state assuming subscribers already ran. Cross-window
   batching still happens in windowSync's pendingEvents queue. */
   emit (name, ...data) {
-    this.events.forEach(listener => {
+    this.events.slice().forEach(listener => {
       if (listener.name === name || listener.name === '*') {
         listener.fn.apply(this, (listener.name === '*' ? [name] : []).concat(data))
       }
@@ -57,6 +61,7 @@ class WorkspaceStore {
   }
 
   add (workspace = {}, index, emit = true) {
+    if (workspace.id && this.get(workspace.id)) return workspace.id
     const newWorkspace = makeWorkspace(workspace)
     restoreTaskList(newWorkspace, workspace.tasks)
 
@@ -66,10 +71,13 @@ class WorkspaceStore {
       this.workspaces.push(newWorkspace)
     }
 
+    this.byId.set(newWorkspace.id, newWorkspace)
+    newWorkspace.tasks.workspace = newWorkspace
+    newWorkspace.tasks.index.attach(this.index)
     wireTaskEvents(this, newWorkspace)
 
     if (emit) {
-      this.emit('workspace-added', newWorkspace.id, describeWorkspace(newWorkspace), index)
+      this.emit('workspace-added', newWorkspace.id, copyWorkspace(newWorkspace), index)
     }
 
     return newWorkspace.id
@@ -84,7 +92,7 @@ class WorkspaceStore {
       if (data[key] === undefined) {
         throw new ReferenceError('Key ' + key + ' is undefined.')
       }
-      if (key === 'tasks') continue
+      if (key === 'tasks' || Object.is(ws[key], data[key])) continue
       ws[key] = data[key]
       if (key !== 'updatedAt') {
         ws.updatedAt = Date.now()
@@ -97,7 +105,7 @@ class WorkspaceStore {
 
   getStringifyableState () {
     return {
-      workspaces: this.workspaces.map(ws => stringifyWorkspace(ws))
+      workspaces: this.workspaces.map(ws => copyWorkspace(ws, true))
     }
   }
 
@@ -108,7 +116,7 @@ class WorkspaceStore {
   }
 
   get (id) {
-    return this.find(ws => ws.id === id) || null
+    return this.byId.get(id) || null
   }
 
   getSelected () {
@@ -125,33 +133,26 @@ class WorkspaceStore {
 
   // The task's parent list, or null. Task ids are globally unique randoms.
   getTaskList (taskId) {
-    for (let i = 0; i < this.workspaces.length; i++) {
-      if (this.workspaces[i].tasks.get(taskId)) {
-        return this.workspaces[i].tasks
-      }
-    }
-    return null
+    const task = this.findTask(taskId)
+    return task ? task.tabs.parentTaskList : null
   }
 
   findWorkspaceContainingTask (taskId) {
-    return this.find(ws => ws.tasks.get(taskId)) || null
+    const list = this.getTaskList(taskId)
+    return list ? list.workspace : null
   }
 
   findTask (taskId) {
-    const list = this.getTaskList(taskId)
-    return list ? list.get(taskId) : null
+    return this.index.tasks.get(taskId) || null
   }
 
-  // Task ids and tab ids are separate namespaces, so a tab must be routed
-  // through the task that owns it.
   findWorkspaceContainingTab (tabId) {
-    if (!tabId) return null
-    return this.find(ws => ws.tasks.find(task => task.tabs.has(tabId))) || null
+    const task = this.findTaskContainingTab(tabId)
+    return task ? task.tabs.parentTaskList.workspace : null
   }
 
   findTaskContainingTab (tabId) {
-    const ws = this.findWorkspaceContainingTab(tabId)
-    return ws ? ws.tasks.getTaskContainingTab(tabId) : null
+    return this.index.tabs.get(tabId) || null
   }
 
   getSelectedTask () {
@@ -160,6 +161,7 @@ class WorkspaceStore {
   }
 
   setSelected (id, emit = true, onWindow = windowId) {
+    if (!this.get(id)) return false
     for (let i = 0; i < this.workspaces.length; i++) {
       if (this.workspaces[i].selectedInWindow === onWindow) {
         this.workspaces[i].selectedInWindow = null
@@ -186,6 +188,8 @@ class WorkspaceStore {
       this.emit('workspace-destroyed', id)
     }
     if (index < 0) return false
+    ws.tasks.dispose()
+    this.byId.delete(id)
     this.workspaces.splice(index, 1)
     return index
   }
@@ -239,60 +243,15 @@ class WorkspaceStore {
   }
 }
 
-// Forward inner task/tab events to store subscribers. Events keep their
-// exact upstream payload shapes; the owning workspace id is available via
-// findWorkspaceContainingTask, so sync can route them.
+// Append the owner to task creation events so another window never restores
+// a new background task into whichever workspace happens to be selected there.
 function wireTaskEvents (store, ws) {
   ws.tasks.on('*', function (name, ...args) {
     if (name === 'state-sync-change') return
     if (name === 'tab-multi-selected' || name === 'tab-multi-selection-cleared') return
+    if (name === 'task-added') args.push(ws.id)
     store.emit(name, ...args)
   })
-}
-
-function describeWorkspace (ws) {
-  return {
-    id: ws.id,
-    name: ws.name,
-    profileId: ws.profileId,
-    path: ws.path,
-    archived: ws.archived,
-    activeTaskId: ws.activeTaskId,
-    collapsed: ws.collapsed,
-    taskIds: ws.tasks.map(task => task.id)
-  }
-}
-
-function stringifyWorkspace (ws) {
-  const stringified = ws.tasks.getStringifyableState().tasks
-  const result = {
-    id: ws.id,
-    name: ws.name,
-    profileId: ws.profileId,
-    path: ws.path,
-    archived: ws.archived,
-    activeTaskId: ws.activeTaskId,
-    collapsed: ws.collapsed,
-    createdAt: ws.createdAt,
-    updatedAt: ws.updatedAt,
-    tasks: stringified
-  }
-  if (result.collapsed === undefined) delete result.collapsed
-  return result
-}
-
-function copyWorkspace (ws) {
-  return {
-    id: ws.id,
-    name: ws.name,
-    profileId: ws.profileId,
-    path: ws.path,
-    archived: ws.archived,
-    activeTaskId: ws.activeTaskId,
-    collapsed: ws.collapsed,
-    selectedInWindow: ws.selectedInWindow,
-    tasks: ws.tasks.getCopyableState().tasks
-  }
 }
 
 module.exports = WorkspaceStore

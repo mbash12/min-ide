@@ -1,3 +1,4 @@
+/* global ipc */
 /* Whether each workspace's stored folder is still there.
  *
  * A folder that was moved or deleted must not break its workspace: the
@@ -11,6 +12,7 @@
 const cache = {} // workspaceId: { path, usable }
 const checksInFlight = {}
 const listeners = []
+const cacheLifetime = 5000
 
 function notify () {
   listeners.forEach(function (fn) {
@@ -31,6 +33,10 @@ function isUsable (workspaceId, path) {
 
 function onChange (fn) {
   listeners.push(fn)
+  return function () {
+    const index = listeners.indexOf(fn)
+    if (index !== -1) listeners.splice(index, 1)
+  }
 }
 
 async function refresh (workspace) {
@@ -42,6 +48,7 @@ async function refresh (workspace) {
   // a workspace without a path is a different case: the sidebar hides the
   // path-dependent tabs on its own
   if (!storedPath) {
+    delete checksInFlight[workspace.id]
     if (cache[workspace.id]) {
       delete cache[workspace.id]
       notify()
@@ -49,15 +56,21 @@ async function refresh (workspace) {
     return
   }
   const workspaceKey = String(workspace.id)
-  if (checksInFlight[workspaceKey] === storedPath) {
-    return
+  if (checksInFlight[workspaceKey] && checksInFlight[workspaceKey].path === storedPath) {
+    return checksInFlight[workspaceKey].promise
   }
   const cached = cache[workspaceKey]
-  if (cached && cached.path === storedPath) {
+  if (cached && cached.path === storedPath && Date.now() - cached.checkedAt < cacheLifetime) {
     return
   }
 
-  checksInFlight[workspaceKey] = storedPath
+  const request = { path: storedPath }
+  checksInFlight[workspaceKey] = request
+  request.promise = check(workspaceKey, storedPath, request)
+  return request.promise
+}
+
+async function check (workspaceKey, storedPath, request) {
   let usable = true
   try {
     const result = await ipc.invoke('workspacePathStatus', storedPath)
@@ -67,17 +80,30 @@ async function refresh (workspace) {
     // folder that may well be fine
     usable = true
   }
-  if (checksInFlight[workspaceKey] === storedPath) delete checksInFlight[workspaceKey]
+  if (checksInFlight[workspaceKey] !== request) return
+  delete checksInFlight[workspaceKey]
 
-  const current = workspaces.get(workspace.id)
+  const current = workspaces.get(workspaceKey)
   if (!current || current.path !== storedPath) {
     // A newer path may have been selected while this check was running. Make
     // sure its status is checked even if its initial refresh hit this request.
     if (current) refresh(current)
     return
   }
-  cache[workspaceKey] = { path: storedPath, usable: usable }
-  notify()
+  const previous = cache[workspaceKey]
+  cache[workspaceKey] = { path: storedPath, usable: usable, checkedAt: Date.now() }
+  if (!previous || previous.path !== storedPath || previous.usable !== usable) notify()
 }
 
-module.exports = { isUsable, onChange, refresh }
+function forget (workspaceId) {
+  delete cache[workspaceId]
+  delete checksInFlight[workspaceId]
+}
+
+workspaces.on('workspace-destroyed', forget)
+window.addEventListener('focus', function () {
+  const ws = workspaces.getSelected()
+  if (ws) refresh(ws)
+})
+
+module.exports = { isUsable, onChange, refresh, forget }

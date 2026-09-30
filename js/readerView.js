@@ -10,7 +10,7 @@ var readerView = {
     return readerView.readerURL + '?url=' + url
   },
   isReader: function (tabId) {
-    return tabs.get(tabId).url.indexOf(readerView.readerURL) === 0
+    return webviews.getTabData(tabId).url.indexOf(readerView.readerURL) === 0
   },
   getButton: function (tabId) {
     // TODO better icon
@@ -36,7 +36,8 @@ var readerView = {
   },
   updateButton: function (tabId, button) {
     var button = button || document.querySelector('.reader-button[data-tab="{id}"]'.replace('{id}', tabId))
-    var tab = tabs.get(tabId)
+    var tab = webviews.getTabData(tabId)
+    if (!tab || !button) return
 
     if (readerView.isReader(tabId)) {
       button.classList.add('is-reader')
@@ -53,15 +54,15 @@ var readerView = {
     }
   },
   enter: function (tabId, url) {
-    var newURL = readerView.readerURL + '?url=' + encodeURIComponent(url || tabs.get(tabId).url)
-    tabs.update(tabId, { url: newURL })
+    var newURL = readerView.readerURL + '?url=' + encodeURIComponent(url || webviews.getTabData(tabId).url)
+    webviews.updateTabState(tabId, { url: newURL })
     webviews.update(tabId, newURL)
   },
   exit: function (tabId) {
-    var src = urlParser.getSourceURL(tabs.get(tabId).url)
+    var src = urlParser.getSourceURL(webviews.getTabData(tabId).url)
     // this page should not be automatically readerable in the future
     readerDecision.setURLStatus(src, false)
-    tabs.update(tabId, { url: src })
+    webviews.updateTabState(tabId, { url: src })
     webviews.update(tabId, src)
   },
   printArticle: function (tabId) {
@@ -74,10 +75,10 @@ var readerView = {
   initialize: function () {
     // This is a defense-in-depth measure to prevent content inside the reader page from manipulating the url query parma
     // Without this, if content from origin A escaped the sandbox, it could rewrite the param to origin B, and then fetch cross-origin content from that origin
-    webviews.bindEvent('did-navigate-in-page', function (event, url, isMainFrame, frameProcessId, frameRoutingId) {
+    webviews.bindEvent('did-navigate-in-page', function (tabId, url, isMainFrame, frameProcessId, frameRoutingId) {
       if (url.startsWith(readerView.readerURL)) {
         console.warn('Resetting reader view because in-page navigation occurred')
-        webviews.callAsync(tabs.getSelected(), 'reload')
+        webviews.callAsync(tabId, 'reload')
       }
     })
 
@@ -91,7 +92,7 @@ var readerView = {
         // if this URL has previously been marked as readerable, load reader view without waiting for the page to load
         readerView.enter(tabId, url)
       } else if (isMainFrame) {
-        tabs.update(tabId, {
+        webviews.updateTabState(tabId, {
           readerable: false // assume the new page can't be readered, we'll get another message if it can
         })
 
@@ -100,12 +101,12 @@ var readerView = {
     })
 
     webviews.bindIPC('canReader', function (tab) {
-      if (readerDecision.shouldRedirect(tabs.get(tab).url) >= 0) {
+      if (readerDecision.shouldRedirect(webviews.getTabData(tab).url) >= 0) {
         // if automatic reader mode has been enabled for this domain, and the page is readerable, enter reader mode
         readerView.enter(tab)
       }
 
-      tabs.update(tab, {
+      webviews.updateTabState(tab, {
         readerable: true
       })
       readerView.updateButton(tab)

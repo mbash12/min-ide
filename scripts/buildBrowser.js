@@ -2,6 +2,8 @@ const browserify = require('browserify')
 const renderify = require('electron-renderify')
 const path = require('path')
 const fs = require('fs')
+const { pipeline } = require('stream/promises')
+const createBuildQueue = require('./lib/buildQueue.js')
 
 const rootDir = path.resolve(__dirname, '../')
 const jsDir = path.resolve(__dirname, '../js')
@@ -14,7 +16,7 @@ const fileList = [
   'js/default.js'
 ]
 
-function buildBrowser () {
+const buildBrowser = createBuildQueue(async function () {
   // build localization support first, since it is included in the browser bundle
   require('./buildLocalization.js')()
 
@@ -37,16 +39,20 @@ function buildBrowser () {
   instance.exclude('write-file-atomic')
 
   instance.transform(renderify)
-  const stream = fs.createWriteStream(outFile, { encoding: 'utf-8' })
-  instance.bundle()
-    .on('error', function (e) {
-      console.warn('\x1b[31m' + 'Error while building: ' + e.message + '\x1b[30m')
-    })
-    .pipe(stream)
-}
+  const temporaryOutput = outFile + '.' + process.pid + '.tmp'
+  try {
+    await pipeline(instance.bundle(), fs.createWriteStream(temporaryOutput, { encoding: 'utf-8' }))
+    await fs.promises.rename(temporaryOutput, outFile)
+  } finally {
+    await fs.promises.rm(temporaryOutput, { force: true })
+  }
+})
 
 if (module.parent) {
   module.exports = buildBrowser
 } else {
-  buildBrowser()
+  buildBrowser().catch(function (error) {
+    console.error('Error while building browser:', error.message)
+    process.exitCode = 1
+  })
 }

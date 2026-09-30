@@ -1,0 +1,278 @@
+/* VSCode-style sidebar: a vertical activity bar with tab icons and a panel
+   that holds the content of the active tab. The sidebar shifts the webviews
+   instead of overlaying them. */
+
+#sidebar {
+  position: fixed;
+  top: calc(36px + var(--control-space-top));
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: row;
+  z-index: 4;
+  background: #fff;
+  color: #000;
+  --sb-width: 6px;
+  --sb-thumb: rgba(127, 127, 127, 0.38);
+  --sb-thumb-hover: rgba(127, 127, 127, 0.55);
+}
+#sidebar[hidden] {
+  display: none;
+}
+body.dark-mode #sidebar {
+  background: rgb(37, 41, 48);
+  color: lightgrey;
+  --sb-thumb: rgba(255, 255, 255, 0.16);
+  --sb-thumb-hover: rgba(255, 255, 255, 0.28);
+}
+
+/* vertical strip of tab icons on the left */
+
+#activity-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  /* 42px centers the icons under the navbar's 36px sidebar toggle, which sits
+  var(--control-space-left) in from the window edge */
+  width: 42px;
+  flex-shrink: 0;
+  padding-top: 0.25em;
+  background: rgb(50, 52, 58);
+  color: lightgrey;
+}
+body.dark-mode #activity-bar {
+  background: rgb(25, 28, 33);
+}
+
+.activity-bar-bottom {
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+/* when the panel is collapsed, the sidebar is just the activity bar */
+#sidebar.panel-collapsed #sidebar-panels {
+  display: none;
+}
+
+.activity-bar-tab {
+  position: relative;
+  width: 42px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+  opacity: 0.55;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  box-sizing: border-box;
+}
+.activity-bar-tab.codicon {
+  font-size: 20px !important;
+}
+.activity-bar-tab:hover {
+  opacity: 0.9;
+  background: rgba(255, 255, 255, 0.08);
+}
+.activity-bar-tab.active {
+  opacity: 1;
+  color: #fff;
+  /* keep the ::after box inside this tab's stacking context */
+  isolation: isolate;
+}
+/* filled box behind the icon instead of the border indicator (the icon glyph
+lives in ::before). z-index -1 puts it behind the glyph but above the tab's
+own background */
+.activity-bar-tab.active::after {
+  content: "";
+  position: absolute;
+  inset: 6px 5px; /* 32px square box inside the 42x44 tab */
+  background: cornflowerblue;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 4px rgba(100, 149, 237, 0.45);
+  z-index: -1;
+}
+
+/* panel that holds the content of the active tab */
+
+#sidebar-panels {
+  position: relative;
+  width: 300px; /* overridden by JS when the user resizes the sidebar */
+  flex-shrink: 0;
+  border-left: 1px solid rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+body.dark-mode #sidebar-panels {
+  border-left-color: rgba(255, 255, 255, 0.1);
+}
+
+/* drag handle on the panel's right edge. It is a normal flex item so it is
+part of the sidebar's width - the webview margin is applied after it, keeping
+the strip in renderer space where it can actually be grabbed (native views
+paint above the renderer and would swallow the clicks otherwise). */
+
+#sidebar-resizer {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+}
+#sidebar-resizer:hover,
+body.is-resizing-sidebar #sidebar-resizer {
+  background-color: rgba(0, 0, 0, 0.15);
+}
+body.dark-mode #sidebar-resizer:hover,
+body.dark-mode.is-resizing-sidebar #sidebar-resizer {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+body.is-resizing-sidebar {
+  cursor: col-resize;
+  user-select: none;
+}
+.sidebar-panel {
+  display: none;
+  height: 100%;
+  padding: 1em;
+  box-sizing: border-box;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+.sidebar-panel.active {
+  display: block;
+  overflow-y: auto;
+}
+/* hidden tabs/panels (no workspace path) always stay hidden */
+.activity-bar-tab[hidden],
+.sidebar-panel[hidden] {
+  display: none !important;
+}
+.sidebar-panel-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 13px;
+  opacity: 0.5;
+  text-align: center;
+}
+
+/* compact prompt/confirm, same look as workspace modal but sized for the panel */
+#sidebar-prompt-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  background: rgba(255, 255, 255, 0.55);
+}
+body.dark-mode #sidebar-prompt-backdrop {
+  background: rgba(33, 37, 43, 0.55);
+}
+#sidebar-prompt-backdrop[hidden] {
+  display: none !important;
+}
+.sidebar-prompt-modal {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 50%;
+  z-index: 16;
+  transform: translateY(-50%);
+  padding: 0.85em 0.95em 0.9em;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  animation: sidebar-prompt-appear 0.18s;
+}
+body.dark-mode .sidebar-prompt-modal {
+  background-color: rgb(33, 37, 43);
+}
+@keyframes sidebar-prompt-appear {
+  0% {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.94);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+}
+.sidebar-prompt-modal .modal-title {
+  font-size: 1.05em;
+  margin-bottom: 0.6em;
+}
+.sidebar-prompt-modal .modal-close-button {
+  top: 0.4em;
+  right: 0.4em;
+  font-size: 1.25em !important;
+}
+#app-prompt-message {
+  margin: 0 0 0.7em;
+  font-size: 12px;
+  line-height: 1.4;
+  /* messages may carry several lines (a command to approve) and long paths */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+#app-prompt-message[hidden],
+#app-prompt-field[hidden] {
+  display: none !important;
+}
+.sidebar-prompt-modal .ws-modal-field {
+  gap: 0.45em;
+  margin-bottom: 0.55em;
+}
+.sidebar-prompt-modal .ws-modal-field label {
+  width: 48px;
+  min-width: 48px;
+  font-size: 12px;
+}
+.sidebar-prompt-modal .ws-modal-field input[type="text"] {
+  padding: 0.35em 0.5em;
+  font-size: 12px;
+}
+.sidebar-prompt-modal .ws-modal-actions {
+  justify-content: flex-end;
+  margin-top: 0.75em;
+}
+#app-prompt-ok {
+  background: royalblue;
+  color: #fff;
+  border: 0;
+  padding: 0.35em 0.85em;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+#app-prompt-ok:hover {
+  background: #3255c7;
+}
+#app-prompt-cancel {
+  background: rgba(0, 0, 0, 0.06);
+  border: 0;
+  padding: 0.35em 0.75em;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+#app-prompt-cancel:hover {
+  background: rgba(0, 0, 0, 0.12);
+}
+body.dark-mode #app-prompt-cancel {
+  background: rgba(255, 255, 255, 0.1);
+  color: lightgrey;
+}
+body.dark-mode #app-prompt-cancel:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+body.dark-mode #app-prompt-ok {
+  background: #4169e1;
+}
+body.dark-mode #app-prompt-ok:hover {
+  background: #5578e8;
+}

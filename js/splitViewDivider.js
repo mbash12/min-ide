@@ -14,7 +14,8 @@ viewManager relay in the main process.
 let splitView = null // set by initialize()
 
 let dividerElements = []
-let dragState = null // { index }
+let dragState = null // { index, group }
+let cancelDrag = null
 
 /* creates or removes dividers so there is exactly one per gutter */
 function getDividerElements () {
@@ -43,6 +44,7 @@ function getDividerElements () {
 }
 
 function removeDividers () {
+  if (cancelDrag) cancelDrag()
   dividerElements.forEach(function (el) {
     el.remove()
   })
@@ -69,12 +71,14 @@ function updateDividerPositions () {
 }
 
 function moveDivider (index, windowX) {
+  if (!dragState || dragState.group !== splitView.getActiveGroup()) return
   splitView.setDividerPosition(index, windowX, true)
   updateDividerPositions()
 }
 
 function startDragging (e, index) {
-  dragState = { index }
+  if (cancelDrag) cancelDrag()
+  dragState = { index, group: splitView.getActiveGroup() }
   const dragged = dividerElements[index]
   if (dragged) {
     dragged.classList.add('is-dragging')
@@ -92,8 +96,10 @@ function startDragging (e, index) {
       dragged.classList.remove('is-dragging')
     }
     dragState = null
+    cancelDrag = null
   }
 
+  cancelDrag = onMouseUp
   document.addEventListener('mousemove', onMouseMove)
   document.addEventListener('mouseup', onMouseUp)
   document.body.classList.add('is-resizing-split')

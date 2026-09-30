@@ -12,6 +12,7 @@ const crypto = require('crypto')
 function loadModule (fetchStub) {
   const context = vm.createContext({
     require,
+    __dirname: path.resolve(__dirname, '..'),
     fs,
     path,
     console,
@@ -159,6 +160,42 @@ test('code flow: manual code input completes exchange against token endpoint', a
   assert.equal(url.searchParams.get('scope'), 'scope-a scope-b')
 })
 
+test('code flow closes the unused loopback listener when manual code input wins', async t => {
+  const tokenServer = http.createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ access_token: 'acc-manual', expires_in: 60 }))
+    })
+  })
+  await new Promise(resolve => tokenServer.listen(0, '127.0.0.1', resolve))
+  t.after(() => tokenServer.close())
+
+  const probe = http.createServer()
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
+  const callbackPort = probe.address().port
+  await new Promise(resolve => probe.close(resolve))
+
+  const { _internals } = loadModule()
+  const spec = {
+    clientId: 'cid-manual',
+    authorizeUrl: 'https://auth.example.com/authorize',
+    callback: { port: callbackPort, path: '/callback', timeoutMs: 60000 },
+    token: { url: `http://127.0.0.1:${tokenServer.address().port}/token`, body: 'form' },
+    credential: { access: 'access_token', expires: { mode: 'never' } }
+  }
+  await _internals.runCodeFlow(spec, {
+    async onManualCodeInput () { return 'manual-code' }
+  })
+
+  const released = await new Promise(resolve => {
+    const listener = http.createServer()
+    listener.once('error', () => resolve(false))
+    listener.listen(callbackPort, '127.0.0.1', () => listener.close(() => resolve(true)))
+  })
+  assert.equal(released, true)
+})
+
 test('code flow: loopback callback server completes exchange', async t => {
   const requests = []
   const server = http.createServer((req, res) => {
@@ -208,6 +245,102 @@ test('code flow: loopback callback server completes exchange', async t => {
   const sent = new URLSearchParams(requests[0])
   assert.equal(sent.get('code'), 'cb-code')
   assert.equal(sent.get('redirect_uri'), `http://127.0.0.1:${cbPort}/callback`)
+})
+
+function httpGetStatus (url) {
+  return new Promise(function (resolve, reject) {
+    http.get(url, res => {
+      res.resume()
+      res.on('end', () => resolve(res.statusCode))
+    }).on('error', reject)
+  })
+}
+
+test('stray requests to the loopback callback cannot inject a code or cancel the login', async t => {
+  const requests = []
+  const tokenServer = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', c => { body += c })
+    req.on('end', () => {
+      requests.push(new URLSearchParams(body))
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ access_token: 'acc-legit', expires_in: 60 }))
+    })
+  })
+  await new Promise(resolve => tokenServer.listen(0, '127.0.0.1', resolve))
+  t.after(() => tokenServer.close())
+
+  const probe = http.createServer()
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
+  const cbPort = probe.address().port
+  await new Promise(resolve => probe.close(resolve))
+
+  const { _internals } = loadModule()
+  const spec = {
+    clientId: 'cid-stray',
+    authorizeUrl: 'https://auth.example.com/authorize',
+    pkce: true,
+    callback: { port: cbPort, path: '/callback', hostname: '127.0.0.1' },
+    token: { url: `http://127.0.0.1:${tokenServer.address().port}/token`, body: 'form' },
+    credential: { access: 'access_token', expires: { mode: 'never' } }
+  }
+  let authUrl = null
+  const flow = _internals.runCodeFlow(spec, { onAuth (info) { authUrl = info.url } })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  const state = new URL(authUrl).searchParams.get('state')
+  const base = `http://127.0.0.1:${cbPort}/callback`
+
+  // a page in any browser can fire these while the login is pending
+  assert.equal(await httpGetStatus(base + '?code=attacker-code'), 400)
+  assert.equal(await httpGetStatus(base + '?code=attacker-code&state=guess'), 400)
+  assert.equal(await httpGetStatus(base + '?error=access_denied'), 400)
+  assert.equal(await httpGetStatus(base + '?error=access_denied&state=guess'), 400)
+  assert.equal(requests.length, 0)
+
+  assert.equal(await httpGetStatus(`${base}?code=legit-code&state=${state}`), 200)
+  assert.equal((await flow).access, 'acc-legit')
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].get('code'), 'legit-code')
+})
+
+test('the loopback callback still reports a provider error that carries this login\'s state', async t => {
+  const probe = http.createServer()
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
+  const cbPort = probe.address().port
+  await new Promise(resolve => probe.close(resolve))
+
+  const { _internals } = loadModule()
+  const waiting = _internals.callbackServer({ port: cbPort, path: '/callback', hostname: '127.0.0.1', state: 'expected' })
+  const assertion = assert.rejects(waiting, /access_denied/)
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(await httpGetStatus(`http://127.0.0.1:${cbPort}/callback?error=access_denied&state=expected`), 400)
+  await assertion
+})
+
+test('a pasted code#state with another state is rejected, a bare pasted code is not', async () => {
+  const { _internals } = loadModule()
+  const spec = {
+    clientId: 'cid',
+    authorizeUrl: 'https://auth.example.com/authorize',
+    callback: { manualOnly: true, redirectUri: 'custom://cb' },
+    token: { url: 'http://127.0.0.1:1/unused', body: 'form' },
+    credential: { access: 'access_token' },
+    refresh: {}
+  }
+  await assert.rejects(
+    _internals.runCodeFlow(spec, {
+      onAuth () {},
+      async onManualCodeInput () { return 'the-code#not-the-state' }
+    }),
+    /state mismatch/
+  )
+  await assert.rejects(
+    _internals.runCodeFlow(spec, {
+      onAuth () {},
+      async onManualCodeInput () { return 'custom://cb?code=x&state=' + 'not-ours' }
+    }),
+    /state mismatch/
+  )
 })
 
 test('state mismatch is rejected', async () => {

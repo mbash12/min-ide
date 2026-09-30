@@ -5,7 +5,7 @@
     <!-- title is set in JS -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="script-src 'self'; style-src 'self' 'unsafe-inline'"
+      content="script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'"
     />
     <link rel="stylesheet" href="monaco/vs/editor/editor.main.css" />
     <link rel="stylesheet" href="editor.css" />
@@ -17,6 +17,12 @@
     <div id="editor-error" hidden>
       <i class="i carbon:warning-alt editor-error-icon"></i>
       <span id="editor-error-text"></span>
+    </div>
+    <div id="editor-conflict" role="alert" hidden>
+      <i class="i carbon:warning-alt editor-conflict-icon"></i>
+      <span id="editor-conflict-text"></span>
+      <button id="editor-conflict-overwrite" type="button" data-string="editorConflictOverwrite"></button>
+      <button id="editor-conflict-reload" type="button" data-string="editorConflictReload"></button>
     </div>
     <div id="editor-container"></div>
     <script src="../../dist/localization.build.js"></script>

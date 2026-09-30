@@ -1,3 +1,4 @@
+/* global AbortSignal */
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('fs')
@@ -14,6 +15,7 @@ async function harness (t) {
   const bridgeCalls = []
   const context = vm.createContext({
     require,
+    __dirname: path.resolve(__dirname, '..'),
     fs,
     path,
     console,
@@ -44,10 +46,12 @@ async function agentHarness (t) {
   const home = path.join(h.cwd, 'home')
   for (const dir of [userData, workspace, home]) fs.mkdirSync(dir)
   const handlers = new Map()
+  const eventHandlers = new Map()
   const values = new Map()
   const c = h.context
   c.require = name => name === 'electron' ? { app: { getPath: () => userData } } : name === 'os' ? Object.assign({}, os, { homedir: () => home }) : require(name)
   c.ipc.handle = (name, handler) => handlers.set(name, handler)
+  c.ipc.on = (name, handler) => eventHandlers.set(name, handler)
   c.settings = { get: key => ({ agentProvider: 'openai', agentModel: 'gpt-4o-mini' })[key], listen () {} }
   c.kvGet = (scope, key) => values.get(scope + ':' + key)
   c.kvSet = (scope, key, value) => values.set(scope + ':' + key, value)
@@ -72,8 +76,26 @@ async function agentHarness (t) {
     fs.writeFileSync(file, '---\nname: ' + name + '\ndescription: Fixture for ' + name + '\n---\nUse this fixture.\n')
     return file
   }
-  return Object.assign(h, { sdk, workspace, userData, home, handlers, writeSkill, createModelRuntime })
+  return Object.assign(h, { sdk, workspace, userData, home, handlers, eventHandlers, writeSkill, createModelRuntime })
 }
+
+test('registering the same agent sender repeatedly installs only one destroy listener', async t => {
+  const h = await agentHarness(t)
+  const sender = {
+    destroyListeners: 0,
+    isDestroyed: () => false,
+    once (event) {
+      assert.equal(event, 'destroyed')
+      this.destroyListeners++
+    },
+    send () {}
+  }
+  const handler = h.eventHandlers.get('agent-set-thinking')
+  handler({ sender }, { taskId: 'sender-task', cwd: h.workspace, level: 'high' })
+  handler({ sender }, { taskId: 'sender-task', cwd: h.workspace, level: 'high' })
+  assert.equal(sender.destroyListeners, 1)
+  assert.equal(vm.runInContext('agentSenders.size', h.context), 1)
+})
 
 test('manual model refresh forces discovery after adapters and credentials are installed', async t => {
   const h = await agentHarness(t)
@@ -141,6 +163,167 @@ test('a manual refresh during initial loading still performs forced discovery', 
   release()
   await Promise.all([initial, refresh, repeatedRefresh])
   assert.deepEqual(calls, [false, true])
+})
+
+test('provider invalidation during discovery does not let an older catalog overwrite the cache', async t => {
+  const h = await agentHarness(t)
+  const c = h.context
+  c.agentOAuth = { replicaLabels: {} }
+  let firstGetStarted
+  const firstStarted = new Promise(resolve => { firstGetStarted = resolve })
+  let releaseFirst
+  const firstResult = new Promise(resolve => { releaseFirst = resolve })
+  let calls = 0
+  c.createAgentModelRuntime = async () => {
+    calls++
+    const generation = calls
+    return {
+      getProviders: () => [{ id: 'openai' }],
+      getAvailable: async () => {
+        if (generation === 1) {
+          firstGetStarted()
+          await firstResult
+          return [{ id: 'stale-model', name: 'Stale', provider: 'openai' }]
+        }
+        return [{ id: 'fresh-model', name: 'Fresh', provider: 'openai' }]
+      }
+    }
+  }
+
+  const oldRequest = c.fetchAgentModels(false)
+  await firstStarted
+  c.invalidateModelCatalog()
+  const currentRequest = c.fetchAgentModels(false)
+  releaseFirst()
+  await Promise.all([oldRequest, currentRequest])
+
+  assert.equal(calls, 2)
+  assert.deepEqual(Array.from(vm.runInContext('modelCatalogCache', c), model => model.id), ['fresh-model'])
+})
+
+test('a model catalog refresh does not replace a same-config streaming session', async t => {
+  const h = await agentHarness(t)
+  const c = h.context
+  const taskId = 'streaming-task'
+  const cwd = h.workspace
+  const workspaceId = 'workspace'
+  const session = { isStreaming: true, abort: async () => {}, dispose () {} }
+  const entry = {
+    apiKey: null,
+    modelId: 'gpt-4o-mini',
+    provider: 'openai',
+    cwd: cwd,
+    workspaceId: workspaceId,
+    runtimeRevision: 0,
+    configRevision: 0,
+    session: session
+  }
+  vm.runInContext('agentSessions', c).set(c.getSessionKey(taskId, cwd), entry)
+  c.invalidateModelCatalog()
+
+  assert.equal(await c.ensureSession(taskId, cwd, undefined, workspaceId), entry)
+})
+
+test('destroying a task while its session is being created prevents late publication', async t => {
+  const h = await agentHarness(t)
+  const c = h.context
+  const createStarted = new Promise(resolve => { c.signalSessionCreateStarted = resolve })
+  let releaseCreate
+  const finishCreate = new Promise(resolve => { releaseCreate = resolve })
+  let disposed = 0
+  const stagedSession = {
+    sessionFile: path.join(h.userData, 'staged.jsonl'),
+    isStreaming: false,
+    subscribe: () => () => {},
+    setThinkingLevel () {},
+    getThinkingLevel: () => 'medium',
+    getAvailableThinkingLevels: () => ['off', 'medium'],
+    getSessionStats: () => null,
+    dispose: () => { disposed++ }
+  }
+  const sdk = {
+    SettingsManager: { create: () => ({}) },
+    SessionManager: { create: () => ({}) },
+    createAgentSession: async () => {
+      c.signalSessionCreateStarted()
+      await finishCreate
+      return { session: stagedSession }
+    }
+  }
+  c.loadPiSdk = async () => sdk
+  c.loadMinCustomTools = async () => []
+  c.createAgentResourceLoader = async () => ({})
+  c.resolveSessionFile = async () => ({ path: null })
+  c.createAgentModelRuntime = async () => ({ getModel: () => null })
+
+  const taskId = 'racing-task'
+  const cwd = h.workspace
+  const workspaceId = 'workspace'
+  const sessionKey = c.getSessionKey(taskId, cwd)
+  const setup = c.ensureSession(taskId, cwd, { createNew: true }, workspaceId)
+  await createStarted
+  const teardown = c.destroySession(sessionKey)
+  releaseCreate()
+
+  assert.equal(await setup, null)
+  await teardown
+  assert.equal(disposed, 1)
+  assert.equal(vm.runInContext('agentSessions.has(' + JSON.stringify(sessionKey) + ')', c), false)
+})
+
+test('a read restoring state during first prompt setup does not cancel that session', async t => {
+  const h = await agentHarness(t)
+  const c = h.context
+  const createStarted = new Promise(resolve => { c.signalSessionCreateStarted = resolve })
+  let releaseCreate
+  const finishCreate = new Promise(resolve => { releaseCreate = resolve })
+  let creates = 0
+  const session = {
+    sessionFile: path.join(h.userData, 'prompt-session.jsonl'),
+    isStreaming: false,
+    messages: [],
+    subscribe: () => () => {},
+    setThinkingLevel () {},
+    getThinkingLevel: () => 'medium',
+    getAvailableThinkingLevels: () => ['off', 'medium'],
+    getSessionStats: () => null,
+    dispose () {}
+  }
+  c.loadPiSdk = async () => ({
+    SettingsManager: { create: () => ({}) },
+    SessionManager: { create: () => ({}) },
+    createAgentSession: async () => {
+      creates++
+      c.signalSessionCreateStarted()
+      await finishCreate
+      return { session: session }
+    }
+  })
+  c.loadMinCustomTools = async () => []
+  c.createAgentResourceLoader = async () => ({})
+  c.resolveSessionFile = async () => ({ path: null })
+  c.createAgentModelRuntime = async () => ({ getModel: () => null })
+
+  const sender = { isDestroyed: () => false, once () {}, send () {} }
+  const taskId = 'first-prompt-task'
+  const cwd = h.workspace
+  const workspaceId = 'workspace'
+  const promptSetup = c.ensureSession(taskId, cwd, undefined, workspaceId)
+  await createStarted
+  const stateRead = h.handlers.get('agent-get-state')({ sender }, {
+    taskId: taskId,
+    cwd: cwd,
+    workspaceId: workspaceId,
+    restore: true
+  })
+  releaseCreate()
+
+  const entry = await promptSetup
+  const state = await stateRead
+  assert.equal(entry.session, session)
+  assert.equal(state.ok, true)
+  assert.equal(state.sessionPath, session.sessionFile)
+  assert.equal(creates, 1)
 })
 
 test('sessions and Settings share Min/workspace skills and expose every Min tool', async t => {

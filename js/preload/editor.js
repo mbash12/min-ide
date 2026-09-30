@@ -30,7 +30,7 @@ window.addEventListener('message', function (e) {
       }, window.location.toString())
     })
   } else if (data.message === 'editor-write') {
-    ipc.invoke('editorWriteFile', data.path, data.content).then(function (error) {
+    ipc.invoke('editorWriteFile', data.path, data.content, data.expectedMtimeMs).then(function (error) {
       window.postMessage({
         message: 'editor-result',
         requestId: requestId,

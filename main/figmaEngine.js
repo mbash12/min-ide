@@ -17,6 +17,7 @@ var figmaEngineChild = null
 var figmaEngineContext = null
 var figmaEngineStarting = null
 var figmaEngineStopping = null
+var figmaEngineLifecycleGeneration = 0
 var figmaEngineConnecting = null
 var figmaEngineOperations = Promise.resolve()
 var figmaEngineControlReady = false
@@ -24,6 +25,11 @@ var figmaEngineWindowVisible = false
 var figmaEnginePhase = 'stopped'
 var figmaEnginePhaseError = null
 var figmaEngineSenders = new Set()
+/* Secret for this engine's loopback control API, generated per spawn and handed
+to the child through its environment. Without it any web page could drive the
+engine (open URLs, replace its Figma session cookies) with a blind POST. */
+var figmaEngineControlToken = null
+var FIGMA_ENGINE_TOKEN_HEADER = 'x-min-engine-token'
 
 function figmaParseUrl (raw) {
   var url = String(raw || '')
@@ -67,8 +73,11 @@ function figmaEngineUserData () {
   return path.join(app.getPath('userData'), 'figma-engine')
 }
 
+/* The engine loads a copy of figma-plugin/ that carries this run's bridge
+token (see figmaBridgePreparePlugin); the source folder holds only a
+placeholder. */
 function figmaEnginePluginPath () {
-  return path.join(__dirname, 'figma-plugin')
+  return minFigmaBridge.preparePlugin(path.join(figmaEngineUserData(), 'plugin'))
 }
 
 function figmaEngineVendorRoot () {
@@ -122,7 +131,8 @@ function figmaEngineRpc (method, params, timeoutMs) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload)
+        'Content-Length': Buffer.byteLength(payload),
+        [FIGMA_ENGINE_TOKEN_HEADER]: figmaEngineControlToken || ''
       },
       timeout: timeoutMs || 8000
     }, function (res) {
@@ -153,6 +163,7 @@ function figmaEngineGetStatus (timeoutMs) {
       host: '127.0.0.1',
       port: FIGMA_ENGINE_CONTROL_PORT,
       path: '/status',
+      headers: { [FIGMA_ENGINE_TOKEN_HEADER]: figmaEngineControlToken || '' },
       timeout: timeoutMs || 3000
     }, function (res) {
       var chunks = []
@@ -288,7 +299,11 @@ function figmaEngineSpawn () {
 
   fs.mkdirSync(figmaEngineUserData(), { recursive: true })
 
+  figmaEngineControlToken = require('crypto').randomBytes(24).toString('hex')
   var env = Object.assign({}, process.env, {
+    MIN_FIGMA_CONTROL_TOKEN: figmaEngineControlToken,
+    // The engine's login flow posts the grant URL to the bridge's /auth/open.
+    MIN_FIGMA_BRIDGE_TOKEN: minFigmaBridge.token,
     MIN_FIGMA_ENGINE: '1',
     MIN_FIGMA_PLUGIN: figmaEnginePluginPath(),
     MIN_FIGMA_CONTROL_PORT: String(FIGMA_ENGINE_CONTROL_PORT),
@@ -342,6 +357,7 @@ function figmaEngineSpawn () {
 }
 
 function figmaEngineStopNow () {
+  figmaEngineLifecycleGeneration++
   var child = figmaEngineChild
   figmaEngineChild = null
   figmaEngineControlReady = false
@@ -352,6 +368,7 @@ function figmaEngineStopNow () {
 }
 
 function figmaEngineStop () {
+  figmaEngineLifecycleGeneration++
   figmaEngineControlReady = false
   figmaEngineContext = null
   figmaEngineWindowVisible = false
@@ -386,25 +403,37 @@ function figmaEngineStop () {
 async function figmaEngineEnsureStarted () {
   if (figmaEngineChild && !figmaEngineChild.killed && figmaEngineControlReady) return Promise.resolve()
   if (figmaEngineStarting) return figmaEngineStarting
+  var lifecycleGeneration = figmaEngineLifecycleGeneration
+  function assertLifecycleCurrent () {
+    if (lifecycleGeneration !== figmaEngineLifecycleGeneration) {
+      throw new Error('Figma engine startup cancelled')
+    }
+  }
   figmaEngineStarting = (async function () {
     figmaEngineEmitPhase('loading-engine', {})
     if (figmaEngineStopping) await figmaEngineStopping
     await minFigmaBridge.start()
+    assertLifecycleCurrent()
     if (!figmaEngineChild) {
       // A stale engine from a crashed Min session may still hold the control
       // port. A new spawn would die with EADDRINUSE and the panel would see a
       // fake "stopped". Clear the port owner before spawning.
       await figmaEngineClearStaleEngine()
+      assertLifecycleCurrent()
     }
     await figmaEngineSpawn()
+    assertLifecycleCurrent()
     var engine = await figmaEngineWaitReady()
-    if (!engine.backgroundRuntime || !engine.offscreenRendering) {
+    assertLifecycleCurrent()
+    if (!engine.backgroundRuntime || !engine.offscreenRendering || !engine.controlAuth) {
       throw new Error('Rebuild the Figma engine with the background runtime patches (vendor/figma-linux-next: bun run build).')
     }
     figmaEngineControlReady = true
     if (!figmaEngineContext) figmaEngineEmitPhase('engine-ready', {})
   })().catch(function (err) {
-    figmaEngineEmitPhase('error', { error: err.message || String(err) })
+    if (lifecycleGeneration === figmaEngineLifecycleGeneration) {
+      figmaEngineEmitPhase('error', { error: err.message || String(err) })
+    }
     throw err
   }).finally(function () {
     figmaEngineStarting = null
@@ -450,15 +479,42 @@ function figmaEngineClearStaleEngine () {
   })
 }
 
+/* PIDs that LISTEN on the control port, from `lsof -Fp -sTCP:LISTEN` output or
+Windows `netstat -ano`. Plain `lsof -ti tcp:PORT` also lists every process that
+merely holds a connection to the port - including Min's own keep-alive socket
+from the status probe that just ran - so the listener filter and the self
+exclusion are both needed to avoid signalling Min itself. */
+function figmaEngineListenerPids (stdout, platform, port, selfPid) {
+  var pids = []
+  var lines = String(stdout || '').split(/\r?\n/)
+  if (platform === 'win32') {
+    lines.forEach(function (line) {
+      var cols = line.trim().split(/\s+/)
+      // Proto  Local  Foreign  State  PID
+      if (cols.length >= 5 && /^TCP$/i.test(cols[0]) && /LISTENING/i.test(cols[3]) &&
+          new RegExp(':' + port + '$').test(cols[1])) {
+        pids.push(cols[4])
+      }
+    })
+  } else {
+    lines.forEach(function (line) {
+      if (line[0] === 'p') pids.push(line.slice(1))
+    })
+  }
+  return pids.filter(function (pid, index) {
+    return /^\d+$/.test(pid) && Number(pid) !== selfPid && pids.indexOf(pid) === index
+  })
+}
+
 function figmaEngineKillPortOwner () {
   return new Promise(function (resolve) {
     var cmd, args
     if (process.platform === 'win32') {
       cmd = 'netstat'
-      args = ['-ano']
+      args = ['-ano', '-p', 'TCP']
     } else {
       cmd = 'lsof'
-      args = ['-ti', 'tcp:' + FIGMA_ENGINE_CONTROL_PORT]
+      args = ['-nP', '-Fp', '-iTCP:' + FIGMA_ENGINE_CONTROL_PORT, '-sTCP:LISTEN']
     }
     childProcess.execFile(cmd, args, { timeout: 5000 }, function (err, stdout) {
       if (err || !stdout) {
@@ -466,9 +522,7 @@ function figmaEngineKillPortOwner () {
         resolve()
         return
       }
-      var pids = String(stdout).trim().split(/\s+/)
-      pids.forEach(function (pid) {
-        if (!/^\d+$/.test(pid)) return
+      figmaEngineListenerPids(stdout, process.platform, FIGMA_ENGINE_CONTROL_PORT, process.pid).forEach(function (pid) {
         try {
           process.kill(Number(pid), 'SIGTERM')
         } catch (e) {}

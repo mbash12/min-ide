@@ -1,0 +1,309 @@
+/* Build list (design spec) */
+
+.design-spec {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.design-spec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.design-spec-head .design-section-label {
+  padding-bottom: 0;
+}
+.design-spec-head-actions {
+  display: flex;
+  gap: 2px;
+}
+.design-spec-empty {
+  font-size: 11px;
+  opacity: 0.55;
+  padding: 8px 10px;
+  border: 1px dashed rgba(127, 127, 127, 0.3);
+  border-radius: 6px;
+  line-height: 1.4;
+}
+
+/* panel tabs — Build list | Queue */
+.design-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px 0;
+}
+.design-tab {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+}
+.design-tab:hover { background: var(--vsc-hover-bg); }
+.design-tab.active {
+  opacity: 1;
+  border-bottom-color: #58a6ff;
+}
+
+/* queue — recent bridge commands */
+.design-queue { display: flex; flex-direction: column; }
+.design-job {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+.design-job:hover { background: var(--vsc-hover-bg); }
+.design-job-icon { flex: none; margin-top: 1px; }
+.design-job.state-done .design-job-icon { color: #3fb950; }
+.design-job.state-error .design-job-icon { color: #f85149; }
+.design-job.state-queued .design-job-icon,
+.design-job.state-sent .design-job-icon { color: #58a6ff; }
+.design-job-main { flex: 1; min-width: 0; }
+.design-job-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.design-job-error {
+  font-size: 10px;
+  color: #f85149;
+  opacity: 0.9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.design-job-meta {
+  flex: none;
+  font-size: 10px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+.design-entry {
+  border: 1px solid rgba(127, 127, 127, 0.18);
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.05);
+  overflow: hidden;
+}
+.design-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 0;
+  cursor: pointer;
+}
+.design-entry-head:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+.design-entry-chevron {
+  flex-shrink: 0;
+}
+.design-entry-title-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.design-entry-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-entry-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0;
+}
+.design-variants {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 6px 6px 22px;
+}
+.design-variant {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+}
+.design-variant:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+.design-variant.overlay-active {
+  border-color: rgba(88, 166, 255, 0.55);
+  background: rgba(88, 166, 255, 0.08);
+}
+.design-variant-thumb {
+  flex-shrink: 0;
+  width: 40px;
+  height: 28px;
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(127, 127, 127, 0.12);
+  color: rgba(127, 127, 127, 0.6);
+  font-size: 14px;
+}
+.design-variant-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+}
+.design-variant-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.design-variant-label {
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.design-variant-meta {
+  font-size: 10px;
+  opacity: 0.6;
+  display: flex;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.design-variant-node {
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.design-variant-actions {
+  flex-shrink: 0;
+  display: flex;
+}
+.design-variant.overlay-active .design-overlay-toggle {
+  color: #58a6ff;
+}
+.design-variant-empty {
+  font-size: 10px;
+  opacity: 0.5;
+  padding: 2px 6px;
+}
+.design-entry-form,
+.design-variant-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px dashed rgba(127, 127, 127, 0.3);
+  border-radius: 6px;
+  margin: 2px 0 6px;
+}
+.design-variant-form-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.design-form-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: var(--color-bg, #1e1f22);
+  color: inherit;
+}
+.design-variant-size .design-form-input {
+  width: 48px;
+  flex: none;
+}
+.design-form-select {
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: var(--color-bg, #1e1f22);
+  color: inherit;
+}
+.design-variant-size {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.design-form-x {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.design-form-cancel {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: rgba(127, 127, 127, 0.12);
+  color: inherit;
+  cursor: pointer;
+}
+.design-form-cancel:hover {
+  background: rgba(127, 127, 127, 0.2);
+}
+.design-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.design-import-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.design-import-item:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+.design-import-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.design-import-meta {
+  flex-shrink: 0;
+  font-size: 10px;
+  opacity: 0.55;
+  font-family: monospace;
+}
+.design-import-empty {
+  font-size: 11px;
+  opacity: 0.6;
+  padding: 10px;
+  text-align: center;
+}

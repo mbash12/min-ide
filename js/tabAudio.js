@@ -22,7 +22,7 @@ var tabAudio = {
   },
   updateButton: function (tabId, button) {
     var button = button || document.querySelector('.tab-audio-button[data-tab="{id}"]'.replace('{id}', tabId))
-    var tab = tabs.get(tabId)
+    var tab = webviews.getTabData(tabId)
 
     var muteIcon = tabAudio.muteIcon
     var volumeIcon = tabAudio.volumeIcon
@@ -40,11 +40,11 @@ var tabAudio = {
     }
   },
   toggleAudio: function (tabId) {
-    var tab = tabs.get(tabId)
+    var tab = webviews.getTabData(tabId)
     // can be muted if has audio, can be unmuted if muted
     if (tab.hasAudio || tab.muted) {
       webviews.callAsync(tabId, 'setAudioMuted', !tab.muted)
-      tabs.update(tabId, { muted: !tab.muted })
+      webviews.updateTabState(tabId, { muted: !tab.muted })
     }
   },
   initialize: function () {
@@ -53,10 +53,10 @@ var tabAudio = {
     })
 
     webviews.bindEvent('media-started-playing', function (tabId) {
-      tabs.update(tabId, { hasAudio: true })
+      webviews.updateTabState(tabId, { hasAudio: true })
     })
     webviews.bindEvent('media-paused', function (tabId) {
-      tabs.update(tabId, { hasAudio: false })
+      webviews.updateTabState(tabId, { hasAudio: false })
     })
   }
 }

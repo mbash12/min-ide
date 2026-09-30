@@ -5,20 +5,23 @@ var navigationButtons = {
   container: document.getElementById('toolbar-navigation-buttons'),
   backButton: document.getElementById('back-button'),
   forwardButton: document.getElementById('forward-button'),
-  update: function () {
-    if (!tabs.get(tabs.getSelected()).url) {
+  update: function (eventTabId) {
+    const tabId = window.tabs && tabs.getSelected()
+    if (eventTabId && eventTabId !== tabId) return
+    const tab = tabId && tabs.get(tabId)
+    if (!tab || !tab.url) {
       navigationButtons.backButton.disabled = true
       navigationButtons.forwardButton.disabled = true
       return
     }
-    webviews.callAsync(tabs.getSelected(), 'canGoBack', function (err, canGoBack) {
-      if (err) {
+    webviews.callAsync(tabId, 'canGoBack', function (err, canGoBack) {
+      if (err || !window.tabs || tabs.getSelected() !== tabId) {
         return
       }
       navigationButtons.backButton.disabled = !canGoBack
     })
-    webviews.callAsync(tabs.getSelected(), 'canGoForward', function (err, canGoForward) {
-      if (err) {
+    webviews.callAsync(tabId, 'canGoForward', function (err, canGoForward) {
+      if (err || !window.tabs || tabs.getSelected() !== tabId) {
         return
       }
       navigationButtons.forwardButton.disabled = !canGoForward

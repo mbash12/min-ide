@@ -18,6 +18,7 @@
   let savedRevision = 0
   let saveInFlight = false
   let ready = false
+  let pageDisposed = false
 
   function invoke (action, payload) {
     return new Promise(function (resolve) {
@@ -57,8 +58,10 @@
    * preview pane (diagram replaces the block) and the WYSIWYG surface
    * (diagram under the editable code block), skipping whichever is hidden. */
   function renderMermaidPreview () {
-    if (window.MinMermaid) {
+    if (!pageDisposed && window.MinMermaid) {
+      const revision = editRevision
       window.MinMermaid.render(editorEl).then(function (result) {
+        if (pageDisposed || revision !== editRevision) return
         if (result && result !== 'rendered' && result !== 'none' && result !== 'no-preview' && result !== 'hidden-preview') {
           setStatus('mermaid: ' + result, true)
         }
@@ -66,13 +69,14 @@
     }
   }
 
-  function scheduleMermaidRender () {
+  function scheduleMermaidRender (delay) {
+    if (pageDisposed) return
     clearTimeout(mermaidTimer)
-    mermaidTimer = setTimeout(renderMermaidPreview, 500)
+    mermaidTimer = setTimeout(renderMermaidPreview, delay === undefined ? 500 : delay)
   }
 
   function scheduleSave () {
-    if (!ready) return
+    if (!ready || pageDisposed) return
     editRevision++
     setStatus('Unsaved')
     clearTimeout(saveTimer)
@@ -83,26 +87,44 @@
   async function flushSave () {
     clearTimeout(saveTimer)
     saveTimer = null
-    if (!ready || saveInFlight || savedRevision === editRevision) return
+    if (!ready || pageDisposed || savedRevision === editRevision) return
+    if (saveInFlight) return
     const revision = editRevision
+    const title = titleInput.value.trim() || 'Untitled'
+    const markdown = editor.getMarkdown()
     saveInFlight = true
     setStatus('Saving…')
-    const result = await invoke('update', {
-      workspaceId: workspaceId,
-      id: documentId,
-      title: titleInput.value.trim() || 'Untitled',
-      markdown: editor.getMarkdown()
-    })
+    let result
+    try {
+      result = await invoke('update', {
+        workspaceId: workspaceId,
+        id: documentId,
+        title: title,
+        markdown: markdown
+      })
+    } catch (err) {
+      result = { ok: false, error: err && err.message ? err.message : 'Save failed' }
+    }
     saveInFlight = false
+    if (pageDisposed) return
     if (!result || result.ok === false) {
-      setStatus((result && result.error) || 'Save failed', true)
+      const hasNewerChanges = editRevision !== revision
+      if (hasNewerChanges) {
+        setStatus('Unsaved')
+      } else {
+        setStatus((result && result.error) || 'Save failed', true)
+      }
+      if (hasNewerChanges) flushSave()
       return
     }
     savedRevision = revision
-    document.title = (result.document && result.document.title) || titleInput.value.trim() || 'Untitled'
-    if (editRevision === savedRevision) {
+    document.title = (result.document && result.document.title) || title
+    const shouldDrain = editRevision !== savedRevision
+    if (!shouldDrain) {
       setStatus('Saved')
     } else {
+      clearTimeout(saveTimer)
+      saveTimer = null
       flushSave()
     }
   }
@@ -115,11 +137,17 @@
     privateInput.disabled = true
     setStatus('Saving…')
     const desired = privateInput.checked
-    const result = await invoke('update', {
-      workspaceId: workspaceId,
-      id: documentId,
-      private: desired
-    })
+    let result
+    try {
+      result = await invoke('update', {
+        workspaceId: workspaceId,
+        id: documentId,
+        private: desired
+      })
+    } catch (err) {
+      result = { ok: false, error: err && err.message ? err.message : 'Privacy update failed' }
+    }
+    if (pageDisposed) return
     privateInput.disabled = false
     if (!result || result.ok === false) {
       privateInput.checked = !desired
@@ -133,6 +161,13 @@
     if (document.visibilityState === 'hidden') flushSave()
   })
   window.addEventListener('beforeunload', flushSave)
+  window.addEventListener('pagehide', function () {
+    pageDisposed = true
+    clearTimeout(saveTimer)
+    clearTimeout(mermaidTimer)
+    saveTimer = null
+    mermaidTimer = null
+  })
 
   async function load () {
     if (!workspaceId || !documentId) {
@@ -140,6 +175,7 @@
       return
     }
     const result = await invoke('get', { workspaceId: workspaceId, id: documentId })
+    if (pageDisposed) return
     if (!result || result.ok === false || !result.document) {
       showError((result && result.error) || 'Document not found.')
       return
@@ -176,7 +212,7 @@
         change: scheduleSave,
         blur: flushSave,
         changeMode: function () {
-          setTimeout(renderMermaidPreview, 50)
+          scheduleMermaidRender(50)
         }
       }
     })
@@ -192,6 +228,6 @@
   }
 
   load().catch(function (err) {
-    showError(err && err.message ? err.message : 'Could not load this document.')
+    if (!pageDisposed) showError(err && err.message ? err.message : 'Could not load this document.')
   })
 })()
