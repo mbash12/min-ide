@@ -51,6 +51,7 @@ function minToolPack (value, options) {
   try {
     const dir = options.cwd ? path.join(options.cwd, '.min', 'agent-results') : path.join(app.getPath('userData'), 'agent-results', String(options.workspaceId || 'default').replace(/[^\w.-]/g, '_'))
     fs.mkdirSync(dir, { recursive: true })
+    try { require(require('path').join(__dirname, 'main/lib/git/exclude.js')).excludeFromGit(dir) } catch (e) {}
     const file = path.join(dir, Date.now() + '-' + require('crypto').randomBytes(6).toString('hex') + '.json')
     fs.writeFileSync(file, raw + '\n')
     output.fullResultPath = file

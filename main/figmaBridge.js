@@ -148,6 +148,7 @@ function figmaBridgeWriteExport (payload, pending) {
     dir = path.join(app.getPath('userData'), 'figma-exports')
   }
   fs.mkdirSync(dir, { recursive: true })
+  try { require(require('path').join(__dirname, 'main/lib/git/exclude.js')).excludeFromGit(dir) } catch (e) {}
   var format = String(payload.format || 'PNG').toLowerCase()
   var ext = format === 'svg' ? 'svg' : format === 'jpg' ? 'jpg' : 'png'
   var base = figmaBridgeSafeName(payload.fileName || (payload.node && payload.node.name) || payload.nodeId)

@@ -504,6 +504,23 @@ test('an export lands in the directory the command asked for, not the one the re
   assert.equal(fs.existsSync(attacker), false)
 })
 
+test('Figma exports written under .min stay out of the repository\'s commits', async t => {
+  const { context, port, token } = await bridgeHarness(t)
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'min-bridge-repo-')))
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }))
+  require('child_process').execFileSync('git', ['init', '-q'], { cwd: repo })
+  const headers = { 'x-min-figma-bridge': token, 'content-type': 'application/json' }
+  const base = 'http://127.0.0.1:' + port
+
+  const pending = context.minFigmaBridge.command('export-node', { fileKey: 'target', exportDir: path.join(repo, '.min', 'design', 'exports') })
+  const command = (await (await fetch(base + '/command/poll?fileKey=target', { headers })).json()).command
+  const response = await fetch(base + '/export', { method: 'POST', headers, body: JSON.stringify({ id: command.id, dataBase64: 'ZGF0YQ==', fileName: 'frame', format: 'PNG' }) })
+  assert.equal(response.status, 200)
+  assert.equal(path.dirname((await pending).payload.path), path.join(repo, '.min', 'design', 'exports'))
+  const status = require('child_process').execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: repo, encoding: 'utf8' })
+  assert.equal(status, '')
+})
+
 test('the plugin copy Min hands the engine carries this run\'s token and nothing else does', async t => {
   const { context, token } = await bridgeHarness(t)
   const source = ['code.js', 'ui.html'].map(name => fs.readFileSync(path.join(__dirname, '../figma-plugin', name), 'utf8'))
