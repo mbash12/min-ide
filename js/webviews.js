@@ -175,7 +175,9 @@ const webviews = {
   },
   /* what the view for a tab should be told it is showing: the file or folder
   an internal surface points at, plus the workspace it belongs to (the editor
-  uses that as its file access boundary). Web tabs have neither. */
+  uses that as its file access boundary). Web tabs carry the workspace path
+  too, but only min:// pages are ever told it (see getViewResource in
+  main/viewManager.js). */
   getViewResourceFor: function (tabId) {
     const tab = webviews.getTabData(tabId)
     const home = workspaces.findWorkspaceContainingTab(tabId)

@@ -155,3 +155,24 @@ test('background tab metadata handlers update their owner, even with another tas
   callbacks['did-navigate']('background', 'https://example.test/next')
   assert.deepEqual(records.get('background'), { url: 'https://example.test/next', title: 'new', secure: true })
 })
+
+test('only min:// pages are told which file or workspace folder their view points at', () => {
+  const h = harness()
+  const view = h.context.createView(null, 'tab', {}, JSON.stringify(h.bounds), [], '/work/app/src/a.js', '/work/app', { fontSize: 14 }, 1)
+  const answer = frameUrl => {
+    const event = { sender: view.webContents, senderFrame: frameUrl === undefined ? null : { url: frameUrl }, returnValue: undefined }
+    h.ipcHandlers.get('getViewResource')(event)
+    return event.returnValue
+  }
+  const nothing = { resource: null, rootPath: null, extra: null }
+
+  assert.deepEqual({ ...answer('min://app/pages/editor/index.html') }, { resource: '/work/app/src/a.js', rootPath: '/work/app', extra: { fontSize: 14 } })
+  // an ordinary site and a third-party iframe inside it learn nothing
+  assert.deepEqual({ ...answer('https://example.com/') }, nothing)
+  assert.deepEqual({ ...answer('https://ads.example.net/frame.html?min://app') }, nothing)
+  assert.deepEqual({ ...answer('file:///etc/hosts') }, nothing)
+  assert.deepEqual({ ...answer('') }, nothing)
+  assert.deepEqual({ ...answer(undefined) }, nothing)
+  // main-process access checks keep reading the stored resource directly
+  assert.equal(h.context.getViewResource('tab').rootPath, '/work/app')
+})

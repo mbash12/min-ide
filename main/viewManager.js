@@ -558,9 +558,20 @@ ipc.on('createView', function (e, args) {
   publishViewGeneration(args.id, e.sender)
 })
 
-/* the preload reads this synchronously, before the page's own scripts run */
+/* the preload reads this synchronously, before the page's own scripts run.
+Only the fork's own min:// pages get an answer. The preload also runs in web
+pages and in every frame inside them, third-party iframes included, and the
+workspace folder it would reveal carries the account name and project layout.
+The main-process file access checks read the stored resource directly through
+getViewResource and are not affected. */
 ipc.on('getViewResource', function (e) {
-  e.returnValue = getViewResource(getViewIdForContents(e.sender))
+  let internal = false
+  try {
+    internal = !!e.senderFrame && /^min:\/\//.test(e.senderFrame.url)
+  } catch (err) {}
+  e.returnValue = internal
+    ? getViewResource(getViewIdForContents(e.sender))
+    : { resource: null, rootPath: null, extra: null }
 })
 
 /* internal surfaces can point their view at another file without rebuilding it */
