@@ -38,10 +38,6 @@ function oauthGeneratePKCE () {
   return { verifier: verifier, challenge: challenge }
 }
 
-function oauthDecodeB64 (value) {
-  return Buffer.from(value, 'base64').toString('utf8')
-}
-
 function oauthDotGet (obj, pathExpr) {
   if (!pathExpr) return undefined
   return String(pathExpr).split('.').reduce(function (acc, key) {
@@ -453,49 +449,6 @@ async function oauthCursorRefresh (credentials, signal) {
 }
 
 /* ------------------------------------------------------------------ */
-/* google code-assist project hook (port of omp's after-exchange hooks) */
-/* ------------------------------------------------------------------ */
-
-async function oauthGoogleCloudCodeProject (accessToken, endpoint, signal) {
-  const headers = {
-    Authorization: 'Bearer ' + accessToken,
-    'Content-Type': 'application/json'
-  }
-  const load = await oauthFetch(endpoint + '/v1internal:loadCodeAssist', {
-    method: 'POST',
-    headers: headers,
-    body: JSON.stringify({ metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' } }),
-    signal: signal
-  })
-  if (!load.ok) throw new Error('loadCodeAssist failed (' + load.status + ')')
-  let info = await load.json()
-  let projectId = info.cloudaicompanionProject
-  if (!projectId) {
-    /* account not onboarded yet: start onboarding and poll until the project
-    appears (omp does the same, up to 5 minutes) */
-    const onboard = await oauthFetch(endpoint + '/v1internal:onboardUser', {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify({ tierId: 'free-tier', metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' } }),
-      signal: signal
-    })
-    if (!onboard.ok) throw new Error('onboardUser failed (' + onboard.status + ')')
-    let operation = await onboard.json()
-    const deadline = Date.now() + 5 * 60 * 1000
-    while (operation && operation.done !== true && Date.now() < deadline) {
-      await oauthSleep(5000, signal)
-      const poll = await oauthFetch(endpoint + '/v1internal/' + operation.name, { headers: headers, signal: signal })
-      if (poll.ok) operation = await poll.json()
-      else break
-    }
-    const refreshed = await oauthFetch(endpoint + '/v1internal:loadCodeAssist', { method: 'POST', headers: headers, body: JSON.stringify({ metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' } }), signal: signal })
-    if (refreshed.ok) info = await refreshed.json()
-    projectId = info.cloudaicompanionProject
-  }
-  return projectId || null
-}
-
-/* ------------------------------------------------------------------ */
 /* provider replica specs (translated from omp auth/*.kdl)              */
 /* ------------------------------------------------------------------ */
 
@@ -539,76 +492,6 @@ const OMP_OAUTH_CODE_SPECS = {
       expires: { mode: 'seconds', path: 'expires_in', from: 'created_at', skewMs: 300000 }
     },
     refresh: {}
-  },
-  'google-gemini-cli': {
-    name: 'Google Cloud Code Assist (Gemini CLI)',
-    clientId: oauthDecodeB64(''),
-    clientSecret: oauthDecodeB64(''),
-    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-    scopes: [
-      'https://www.googleapis.com/auth/cloud-platform',
-      'https://www.googleapis.com/auth/userinfo.email',
-      'https://www.googleapis.com/auth/userinfo.profile'
-    ],
-    authorizeParams: { access_type: 'offline', prompt: 'consent' },
-    instructions: 'Complete the sign-in in your browser.',
-    callback: { port: 8085, path: '/oauth2callback', hostname: '127.0.0.1' },
-    token: {
-      url: 'https://oauth2.googleapis.com/token',
-      body: 'form',
-      params: {
-        client_id: '{client_id}',
-        client_secret: oauthDecodeB64('')
-      }
-    },
-    credential: {
-      access: 'access_token',
-      refresh: 'refresh_token',
-      expires: { mode: 'seconds', path: 'expires_in', skewMs: 300000 }
-    },
-    userinfo: { url: 'https://www.googleapis.com/oauth2/v1/userinfo?alt=json', email: 'email' },
-    refresh: {},
-    afterExchange: function (credentials, signal) {
-      return oauthGoogleCloudCodeProject(credentials.access, 'https://cloudcode-pa.googleapis.com', signal)
-        .then(function (projectId) { if (projectId) credentials.projectId = projectId })
-        .catch(function () {})
-    }
-  },
-  'google-antigravity': {
-    name: 'Antigravity (Gemini 3, Claude, GPT-OSS)',
-    clientId: oauthDecodeB64(''),
-    clientSecret: oauthDecodeB64(''),
-    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-    scopes: [
-      'https://www.googleapis.com/auth/cloud-platform',
-      'https://www.googleapis.com/auth/userinfo.email',
-      'https://www.googleapis.com/auth/userinfo.profile',
-      'https://www.googleapis.com/auth/cclog',
-      'https://www.googleapis.com/auth/experimentsandconfigs'
-    ],
-    authorizeParams: { access_type: 'offline', prompt: 'consent' },
-    instructions: 'Complete the sign-in in your browser.',
-    callback: { port: 51121, path: '/oauth-callback', hostname: '127.0.0.1' },
-    token: {
-      url: 'https://oauth2.googleapis.com/token',
-      body: 'form',
-      params: {
-        client_id: '{client_id}',
-        client_secret: oauthDecodeB64('')
-      }
-    },
-    credential: {
-      access: 'access_token',
-      refresh: 'refresh_token',
-      expires: { mode: 'seconds', path: 'expires_in', skewMs: 300000 }
-    },
-    userinfo: { url: 'https://www.googleapis.com/oauth2/v1/userinfo?alt=json', email: 'email' },
-    refresh: {},
-    afterExchange: function (credentials, signal) {
-      return oauthGoogleCloudCodeProject(credentials.access, 'https://daily-cloudcode-pa.googleapis.com', signal)
-        .then(function (projectId) { if (projectId) credentials.projectId = projectId })
-        .catch(function () {})
-    }
   },
   'zai-coding-plan': {
     name: 'Z.AI (GLM Coding Plan)',
@@ -714,18 +597,6 @@ function ompCredentialToken (credential) {
   return null
 }
 
-/* google streams expect options.apiKey to be a JSON blob carrying token +
-projectId (+ refresh/expiry for staleness checks), not a bare token */
-function oauthGoogleApiKey (credentials) {
-  return JSON.stringify({
-    token: credentials.access,
-    projectId: credentials.projectId,
-    refreshToken: credentials.refresh,
-    expiresAt: credentials.expires,
-    email: credentials.email
-  })
-}
-
 /* wraps an omp discovery fn: resolves the token from the SDK credential,
 returns undefined when there's nothing to query. Discovery failures reach
 the SDK, which preserves the stored catalog and reports a refresh warning. */
@@ -765,8 +636,6 @@ api here must equal the api stamped on each registered model:
 - gitlab-duo models carry standard wire apis (anthropic/openai) but
   streamGitLabDuo routes internally by model.id after exchanging the OAuth
   token for a direct-access token — so we stamp api 'gitlab-duo' on them
-- google gemini-cli + antigravity share api 'google-gemini-cli'; the stream
-  branches on model.provider, which the runtime sets from the provider id
 - zai rides the standard wires (models carry anthropic-messages /
   openai-completions) so it needs no streamSimple at all */
 function ompWireFor (id, omp) {
@@ -796,31 +665,6 @@ function ompWireFor (id, omp) {
       } catch (err) {}
       return { api: 'gitlab-duo', streamSimple: omp.streamGitLabDuo, models: models }
     }
-    case 'google-gemini-cli':
-      return {
-        api: 'google-gemini-cli',
-        streamSimple: omp.streamGoogleGeminiCli,
-        models: ompSeedModels(omp, 'google-gemini-cli'),
-        refreshModels: ompRefreshModels(function (credential, context) {
-          return omp.fetchGeminiCliQuotaModels({
-            token: credential.access,
-            projectId: credential.projectId,
-            signal: context && context.signal
-          })
-        })
-      }
-    case 'google-antigravity':
-      return {
-        api: 'google-gemini-cli',
-        streamSimple: omp.streamGoogleGeminiCli,
-        models: ompSeedModels(omp, 'google-antigravity'),
-        refreshModels: ompRefreshModels(function (credential, context) {
-          return omp.fetchAntigravityDiscoveryModels({
-            token: credential.access,
-            signal: context && context.signal
-          })
-        })
-      }
     case 'zai-coding-plan':
       return { models: ompSeedModels(omp, 'zai') }
     default:
@@ -883,32 +727,6 @@ const OMP_PROVIDER_CONFIGS = {
       },
       refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS['gitlab-duo'], credentials, signal) },
       getApiKey: oauthGetApiKey
-    },
-    models: []
-  },
-  'google-gemini-cli': {
-    name: 'Google Cloud Code Assist (Gemini CLI)',
-    baseUrl: 'https://cloudcode-pa.googleapis.com',
-    oauth: {
-      name: 'Google Cloud Code Assist (Gemini CLI)',
-      isSubscription: true,
-      login: function (callbacks) { return oauthCodeFlowFor(OMP_OAUTH_CODE_SPECS['google-gemini-cli'])(callbacks) },
-      refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS['google-gemini-cli'], credentials, signal) },
-      /* the vendored stream parses apiKey as a JSON credential blob */
-      getApiKey: oauthGoogleApiKey
-    },
-    models: []
-  },
-  'google-antigravity': {
-    name: 'Antigravity (Gemini 3, Claude, GPT-OSS)',
-    baseUrl: 'https://daily-cloudcode-pa.googleapis.com',
-    oauth: {
-      name: 'Antigravity (Gemini 3, Claude, GPT-OSS)',
-      isSubscription: true,
-      login: function (callbacks) { return oauthCodeFlowFor(OMP_OAUTH_CODE_SPECS['google-antigravity'])(callbacks) },
-      refreshToken: function (credentials, signal) { return oauthRunRefresh(OMP_OAUTH_CODE_SPECS['google-antigravity'], credentials, signal) },
-      /* the vendored stream parses apiKey as a JSON credential blob */
-      getApiKey: oauthGoogleApiKey
     },
     models: []
   },

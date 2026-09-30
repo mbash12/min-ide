@@ -450,8 +450,12 @@ test('devin spec matches the omp KDL contract', async () => {
 
 test('replica registry exposes the omp provider set', async () => {
   const agentOAuth = loadModule()
-  for (const id of ['cursor', 'devin', 'gitlab-duo', 'google-antigravity', 'google-gemini-cli', 'zai-coding-plan']) {
+  for (const id of ['cursor', 'devin', 'gitlab-duo', 'zai-coding-plan']) {
     assert.ok(agentOAuth.replicaIds.includes(id), id + ' registered')
     assert.ok(agentOAuth.replicaLabels[id], id + ' labelled')
+  }
+  // Google sign-in through the Gemini CLI / Antigravity client was removed on purpose
+  for (const id of ['google-gemini-cli', 'google-antigravity']) {
+    assert.equal(agentOAuth.replicaIds.includes(id), false, id + ' is gone')
   }
 })
