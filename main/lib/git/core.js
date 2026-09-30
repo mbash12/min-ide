@@ -33,6 +33,60 @@ module.exports = function createGitCore (deps) {
     return out
   }
 
+  /* The absolute path of a file inside the repository rooted at cwd, or null.
+  sanitizeRepoFiles only looks at the text of the path, so a symlinked directory
+  inside the repository could still lead a read or write out of it. The folder
+  holding the file therefore has to resolve (realpath) to somewhere inside the
+  repository, and the file itself must not be a symlink. A file that does not
+  exist yet is fine as long as its folder qualifies. */
+  function resolveRepoFile (cwd, relPath) {
+    var safe = sanitizeRepoFiles(cwd, [relPath])
+    if (!safe) return null
+    try {
+      var root = fs.realpathSync(cwd)
+      var full = path.resolve(cwd, safe[0])
+      var parent = fs.realpathSync(path.dirname(full))
+      if (!isPathInside(root, parent)) return null
+      full = path.join(parent, path.basename(full))
+      try {
+        if (fs.lstatSync(full).isSymbolicLink()) return null
+      } catch (err) {
+        if (err.code !== 'ENOENT') return null
+      }
+      return full
+    } catch (err) {
+      return null
+    }
+  }
+
+  function sameFolder (a, b) {
+    try {
+      return fs.realpathSync(a) === fs.realpathSync(b)
+    } catch (e) {
+      return false
+    }
+  }
+
+  /* Whether a view whose workspace folder is workspacePath may work in the
+  repository at cwd. cwd has to be a git root, and either the repository that
+  contains the workspace or one nested inside it. Any other folder above the
+  workspace (the home folder, a filesystem root) is refused: it would expose
+  everything beneath it to the diff page's file read and write. */
+  async function isRepoAllowedForWorkspace (workspacePath, cwd) {
+    if (!workspacePath || !isDirectoryPath(workspacePath) || !isDirectoryPath(cwd)) return false
+    var root = await resolveGitRoot(cwd)
+    if (!root || !sameFolder(root, cwd)) return false
+    if (sameFolder(cwd, workspacePath)) return true
+    var work = path.resolve(workspacePath)
+    var dir = path.resolve(cwd)
+    if (isPathInside(work, dir)) return true
+    if (isPathInside(dir, work)) {
+      var workspaceRoot = await resolveGitRoot(work)
+      return !!workspaceRoot && sameFolder(workspaceRoot, dir)
+    }
+    return false
+  }
+
   function isSafeGitRef (value) {
     if (typeof value !== 'string' || !value || value[0] === '-' || value.indexOf('\0') !== -1) return false
     if (value.indexOf('..') !== -1 || value.indexOf(':') !== -1 || /\s/.test(value)) return false
@@ -224,9 +278,11 @@ module.exports = function createGitCore (deps) {
   return {
     isDirectoryPath: isDirectoryPath,
     sanitizeRepoFiles: sanitizeRepoFiles,
+    resolveRepoFile: resolveRepoFile,
     isSafeGitRef: isSafeGitRef,
     runGit: runGit,
     resolveGitRoot: resolveGitRoot,
+    isRepoAllowedForWorkspace: isRepoAllowedForWorkspace,
     parsePorcelain: parsePorcelain,
     getStatus: getStatus,
     getRepositoryStatus: getRepositoryStatus

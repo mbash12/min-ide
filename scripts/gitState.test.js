@@ -181,3 +181,94 @@ test('deleted workspace state snapshots are canceled and captured batches rechec
   await persistence.flush()
   assert.deepEqual(writes, [['git:workspace-a', { selected: 'recreated' }]])
 })
+
+test('repository file paths cannot lead out of the repository through symlinks', t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'min-git-resolve-')))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const repo = path.join(root, 'repo')
+  const outside = path.join(root, 'outside')
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true })
+  fs.mkdirSync(outside)
+  fs.writeFileSync(path.join(repo, 'src', 'a.js'), 'a')
+  fs.writeFileSync(path.join(outside, 'target.txt'), 'outside')
+  try {
+    fs.symlinkSync(outside, path.join(repo, 'dirlink'))
+    fs.symlinkSync(path.join(outside, 'target.txt'), path.join(repo, 'filelink'))
+    fs.symlinkSync(path.join(repo, 'src'), path.join(repo, 'inside-link'))
+  } catch (e) {
+    t.skip('symlinks are not available here')
+    return
+  }
+  const core = createGitCore({ fs, path, childProcess: require('node:child_process'), process, isPathInside: inside })
+  const resolve = rel => core.resolveRepoFile(repo, rel)
+
+  assert.equal(resolve('src/a.js'), path.join(repo, 'src', 'a.js'))
+  // a file that does not exist yet is fine when its folder is inside
+  assert.equal(resolve('src/new.js'), path.join(repo, 'src', 'new.js'))
+  // a symlinked directory that stays inside the repository is fine too
+  assert.equal(resolve('inside-link/a.js'), path.join(repo, 'src', 'a.js'))
+
+  assert.equal(resolve('dirlink/target.txt'), null)
+  assert.equal(resolve('dirlink/created.txt'), null)
+  assert.equal(resolve('filelink'), null)
+  assert.equal(resolve('../outside/target.txt'), null)
+  assert.equal(resolve('missing-dir/file.js'), null)
+})
+
+test('a repository reached through a symlinked path still resolves its own files', t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'min-git-resolve-root-')))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'real'))
+  fs.writeFileSync(path.join(root, 'real', 'a.js'), 'a')
+  try {
+    fs.symlinkSync(path.join(root, 'real'), path.join(root, 'alias'))
+  } catch (e) {
+    t.skip('symlinks are not available here')
+    return
+  }
+  const core = createGitCore({ fs, path, childProcess: require('node:child_process'), process, isPathInside: inside })
+  assert.equal(core.resolveRepoFile(path.join(root, 'alias'), 'a.js'), path.join(root, 'real', 'a.js'))
+})
+
+test('a view may only work in the git root of its workspace or in a repository nested inside it', async t => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'min-git-allowed-')))
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }))
+  const git = cwd => require('node:child_process').execFileSync('git', ['init', '-q'], { cwd })
+  const dir = (...parts) => {
+    const full = path.join(base, ...parts)
+    fs.mkdirSync(full, { recursive: true })
+    return full
+  }
+  const outer = dir('outer')
+  git(outer)
+  const packageDir = dir('outer', 'packages', 'web')
+  const plain = dir('plain')
+  const nested = dir('plain', 'nested')
+  git(nested)
+  const insideOuter = dir('outer', 'inner')
+  git(insideOuter)
+  const unrelated = dir('unrelated')
+  git(unrelated)
+  const core = createGitCore({ fs, path, childProcess: require('node:child_process'), process, isPathInside: inside })
+  const allowed = (workspace, cwd) => core.isRepoAllowedForWorkspace(workspace, cwd)
+
+  // the workspace is the repository, or lives inside it
+  assert.equal(await allowed(outer, outer), true)
+  assert.equal(await allowed(packageDir, outer), true)
+  // a repository nested inside the workspace folder
+  assert.equal(await allowed(plain, nested), true)
+
+  // folders above the workspace that are not its repository's root
+  assert.equal(await allowed(packageDir, path.join(outer, 'packages')), false)
+  assert.equal(await allowed(packageDir, base), false)
+  assert.equal(await allowed(nested, plain), false)
+  assert.equal(await allowed(nested, path.dirname(base)), false)
+  // a plain sub-folder of the workspace is not a repository root either
+  assert.equal(await allowed(outer, path.join(outer, 'packages')), false)
+  // an outer repository does not cover a workspace that has its own repository
+  assert.equal(await allowed(insideOuter, outer), false)
+  // unrelated repositories and missing input
+  assert.equal(await allowed(outer, unrelated), false)
+  assert.equal(await allowed(null, outer), false)
+  assert.equal(await allowed(outer, path.join(base, 'missing')), false)
+})

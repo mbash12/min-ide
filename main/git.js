@@ -13,9 +13,16 @@ var gitCore = require(require('path').join(__dirname, 'main/lib/git/core.js'))({
 })
 var isDirectoryPath = gitCore.isDirectoryPath
 var sanitizeRepoFiles = gitCore.sanitizeRepoFiles
+var resolveRepoFile = gitCore.resolveRepoFile
 var isSafeGitRef = gitCore.isSafeGitRef
 var runGit = gitCore.runGit
 var resolveGitRoot = gitCore.resolveGitRoot
+var gitDiscard = require(require('path').join(__dirname, 'main/lib/git/discard.js'))({
+  fs: fs,
+  path: path,
+  runGit: runGit,
+  isPathInside: isPathInside
+})
 var gitHistory = require(require('path').join(__dirname, 'main/lib/git/history.js'))(runGit, isDirectoryPath)
 
 ipc.handle('gitIsRepo', async function (e, cwd) {
@@ -80,46 +87,7 @@ ipc.handle('gitDiscard', async function (e, cwd, files) {
   if (!isDirectoryPath(cwd)) return 'Invalid path'
   var safe = sanitizeRepoFiles(cwd, files)
   if (!safe) return 'Invalid path'
-  var root = path.resolve(cwd)
-  // for untracked, remove file
-  // for modified, restore
-  var r = await runGit(cwd, ['restore', '--', ...safe])
-  if (r.status !== 0) {
-    r = await runGit(cwd, ['checkout', '--', ...safe])
-  }
-  if (r.status !== 0) {
-    // fallback: checkout with HEAD
-    r = await runGit(cwd, ['checkout', 'HEAD', '--', ...safe])
-  }
-  // Also need to handle untracked after discard failure - delete files
-  // Try to remove untracked if still failing
-  if (r.status !== 0) {
-    // check if any file is untracked and delete
-    var hadError = false
-    for (var i = 0; i < safe.length; i++) {
-      var f = safe[i]
-      var full = path.resolve(root, f)
-      if (!isPathInside(root, full)) {
-        hadError = true
-        continue
-      }
-      try {
-        var stat = await fs.promises.lstat(full)
-        if (stat.isDirectory()) {
-          await fs.promises.rm(full, { recursive: true, force: true })
-        } else {
-          await fs.promises.unlink(full)
-        }
-      } catch (err) {
-        // try git clean for untracked
-        var cr = await runGit(cwd, ['clean', '-f', '--', f])
-        if (cr.status !== 0) hadError = true
-      }
-    }
-    if (hadError) return r.stderr || 'git discard failed'
-    return null
-  }
-  return null
+  return gitDiscard.discardFiles(cwd, safe)
 })
 
 ipc.handle('gitDiscardAll', async function (e, cwd) {
@@ -141,23 +109,19 @@ ipc.handle('gitCommit', async function (e, cwd, message) {
   return null
 })
 
-/* the repo a diff/editor view may touch: the git root has to be the
-workspace folder or one of its ancestors/descendants, so a page cannot read
-or write inside an unrelated repository */
-function repoAllowedForSender (sender, cwd) {
-  if (!sender || sender.isDestroyed() || !isDirectoryPath(cwd)) return false
+/* the repo a diff/editor view may touch: the git root of the workspace folder,
+or a repository nested inside it (see isRepoAllowedForWorkspace), so a page
+cannot read or write inside an unrelated repository or a folder above it */
+async function repoAllowedForSender (sender, cwd) {
+  if (!sender || sender.isDestroyed()) return false
   var view = getViewResource(getViewIdForContents(sender))
-  var ws = view && view.rootPath
-  if (!ws) return false
-  var root = path.resolve(cwd)
-  var work = path.resolve(ws)
-  return root === work || isPathInside(root, work) || isPathInside(work, root)
+  return gitCore.isRepoAllowedForWorkspace(view && view.rootPath, cwd)
 }
 
 /* file content at a git ref ('HEAD', a commit hash, '' for the index).
 Missing paths return an error; callers treat them as an empty side. */
 ipc.handle('gitFileAtRef', async function (e, cwd, ref, relPath, binary) {
-  if (!repoAllowedForSender(e.sender, cwd)) return { error: 'Invalid path' }
+  if (!(await repoAllowedForSender(e.sender, cwd))) return { error: 'Invalid path' }
   if (ref && !isSafeGitRef(ref)) return { error: 'Invalid ref' }
   var safe = sanitizeRepoFiles(cwd, [relPath])
   if (!safe) return { error: 'Invalid path' }
@@ -171,10 +135,9 @@ ipc.handle('gitFileAtRef', async function (e, cwd, ref, relPath, binary) {
 /* working tree file inside the repo (may live outside the workspace root
 when the repo root is an ancestor of it) */
 ipc.handle('gitWorktreeRead', async function (e, cwd, relPath, binary) {
-  if (!repoAllowedForSender(e.sender, cwd)) return { error: 'Invalid path' }
-  var safe = sanitizeRepoFiles(cwd, [relPath])
-  if (!safe) return { error: 'Invalid path' }
-  var full = path.resolve(cwd, safe[0])
+  if (!(await repoAllowedForSender(e.sender, cwd))) return { error: 'Invalid path' }
+  var full = resolveRepoFile(cwd, relPath)
+  if (!full) return { error: 'Invalid path' }
   try {
     var stat = fs.lstatSync(full)
     if (!stat.isFile()) return { error: 'Not a regular file' }
@@ -190,11 +153,11 @@ ipc.handle('gitWorktreeRead', async function (e, cwd, relPath, binary) {
 })
 
 ipc.handle('gitWorktreeWrite', async function (e, cwd, relPath, content) {
-  if (!repoAllowedForSender(e.sender, cwd)) return 'Invalid path'
-  var safe = sanitizeRepoFiles(cwd, [relPath])
-  if (!safe || typeof content !== 'string') return 'Invalid path'
+  if (!(await repoAllowedForSender(e.sender, cwd))) return 'Invalid path'
+  var full = typeof content === 'string' ? resolveRepoFile(cwd, relPath) : null
+  if (!full) return 'Invalid path'
   try {
-    fs.writeFileSync(path.resolve(cwd, safe[0]), content, 'utf8')
+    fs.writeFileSync(full, content, 'utf8')
     return null
   } catch (err) {
     return err.message || 'Write failed'
