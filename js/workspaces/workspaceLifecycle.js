@@ -9,6 +9,21 @@ module.exports = function ({ workspaces, splitView, editorView, webviews, confir
     return id
   }
 
+  /* what deleting a workspace takes with it, so the confirmation can say so */
+
+  function summarizeWorkspace (id) {
+    var ws = workspaces.get(id)
+    if (!ws) {
+      return null
+    }
+    var tabs = ws.tasks.map(task => task.tabs.get()).reduce((all, arr) => all.concat(arr), [])
+    return {
+      tasks: ws.tasks.getLength(),
+      tabs: tabs.length,
+      terminals: tabs.filter(tab => tab.kind === 'terminal').length
+    }
+  }
+
   /* destroys a workspace: all of its tasks, views and workspace-scoped state */
 
   function closeWorkspace (id) {
@@ -133,5 +148,5 @@ module.exports = function ({ workspaces, splitView, editorView, webviews, confir
     switchToWorkspace(id, options)
   }
 
-  return { addWorkspace, closeWorkspace, removeWorkspaceState, archiveWorkspace, restoreWorkspace }
+  return { addWorkspace, summarizeWorkspace, closeWorkspace, removeWorkspaceState, archiveWorkspace, restoreWorkspace }
 }

@@ -7,6 +7,7 @@ const profiles = require('profiles.js')
 const settings = require('util/settings/settings.js')
 const proSettingsPage = require('util/proSettingsPage.js')
 const editorView = require('editorView.js')
+const promptModal = require('promptModal.js')
 const reconcileChildren = require('util/reconcileChildren.js')
 const rowCache = new Map()
 let archivedHeadingCache = null
@@ -77,6 +78,26 @@ function openWorkspaceModal (workspaceId) {
   workspaceModal.hidden = false
   workspaceModalNameInput.focus()
   workspaceModalNameInput.select()
+}
+
+async function confirmWorkspaceDelete (id) {
+  const ws = workspaces.get(id)
+  const summary = browserUI.summarizeWorkspace(id)
+  if (!ws || !summary) return false
+  const name = ws.name || l('defaultWorkspaceName').replace('%n', workspaces.getIndex(id) + 1)
+  // one pass with a function replacer, so a workspace named "%t" or "$&" stays literal
+  const values = { w: name, t: String(summary.tasks), b: String(summary.tabs), n: String(summary.terminals) }
+  const fill = text => text.replace(/%([wtbn])/g, (match, key) => values[key])
+  let message = fill(l('workspaceDeleteConfirm'))
+  if (summary.terminals > 0) {
+    message += ' ' + fill(l('workspaceDeleteTerminals'))
+  }
+  return promptModal.confirm({
+    title: l('workspaceDelete'),
+    message: message,
+    ok: l('workspaceDelete'),
+    cancel: l('dialogSkipButton')
+  })
 }
 
 function closeWorkspaceModal () {
@@ -337,13 +358,15 @@ var workspaceDrawer = {
       })
     }
     workspaceModal.querySelector('.modal-close-button').addEventListener('click', closeWorkspaceModal)
-    workspaceModalDelete.addEventListener('click', function () {
+    workspaceModalDelete.addEventListener('click', async function () {
       const id = modalWorkspaceId
       closeWorkspaceModal()
-      if (id) {
-        browserUI.closeWorkspace(id)
-        workspaceDrawer.render()
-      }
+      if (!id) return
+      // Unlike deleting a task there is no undo here: the workspace's documents
+      // and AI chat history go with it, and its terminals are stopped.
+      if (!(await confirmWorkspaceDelete(id))) return
+      browserUI.closeWorkspace(id)
+      workspaceDrawer.render()
     })
     workspaceModalNameInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') saveWorkspaceModal()

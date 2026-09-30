@@ -22,7 +22,7 @@ function confirmDiscardTabs (tabList) {
   })
 }
 
-const { addWorkspace, closeWorkspace, removeWorkspaceState, archiveWorkspace, restoreWorkspace } = require('workspaces/workspaceLifecycle.js')({
+const { addWorkspace, summarizeWorkspace, closeWorkspace, removeWorkspaceState, archiveWorkspace, restoreWorkspace } = require('workspaces/workspaceLifecycle.js')({
   workspaces, splitView, editorView, webviews, confirmDiscardTabs, switchToWorkspace
 })
 const { setWorkspaceProfile, handleProfileDeleted, applyProfileDeleted, getProfileUsageWorkspaces, clearProfileData } = require('workspaces/profileLifecycle.js')({
@@ -524,6 +524,7 @@ module.exports = {
   setWorkspaceProfile,
   handleProfileDeleted,
   addWorkspace,
+  summarizeWorkspace,
   closeWorkspace,
   switchToWorkspace,
   archiveWorkspace,

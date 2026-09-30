@@ -163,6 +163,26 @@ test('cancelling workspace close keeps agent sessions and native views alive', (
   assert.deepEqual(calls, [])
 })
 
+test('a workspace delete summary counts tasks, tabs and terminals, and is null for a missing workspace', () => {
+  const h = harness()
+  const ws = workspace(h, 'a')
+  const task = ws.tasks.byIndex(0)
+  task.tabs.add({ id: 'shell', kind: 'terminal' }, { atEnd: true }, false)
+  task.tabs.add({ id: 'shell-2', kind: 'terminal' }, { atEnd: true }, false)
+  h.store.get('a').tasks.add({ id: 'second', tabs: [{ id: 'other', url: '', selected: true }] })
+  h.scope.ipc = { send () {} }
+  const lifecycle = h.load('workspaces/workspaceLifecycle.js')({
+    workspaces: h.store,
+    splitView: { clearAll () {} },
+    editorView: { allowDiscard () {} },
+    webviews: { destroy () {} },
+    confirmDiscardTabs: () => true,
+    switchToWorkspace () {}
+  })
+  assert.deepEqual({ ...lifecycle.summarizeWorkspace('a') }, { tasks: 2, tabs: 4, terminals: 2 })
+  assert.equal(lifecycle.summarizeWorkspace('missing'), null)
+})
+
 test('archiving a background workspace leaves the active split layout attached', () => {
   const h = harness()
   const calls = []
