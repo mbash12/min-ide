@@ -4,6 +4,7 @@ const agentMarkdown = require('sidebar/agentMarkdown.js')
 const agentSlash = require('sidebar/agentSlash.js')
 const agentPanelLifecycle = require('sidebar/agentPanelLifecycle.js')
 const taskPrefs = require('taskPrefs.js')
+require('sidebar/agentApproval.js')
 
 /* Chat UI for the sidebar's AI tab. The pi agent session runs in the main
 process (main/agent.js); this module renders the streaming transcript and

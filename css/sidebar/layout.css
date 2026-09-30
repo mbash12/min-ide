@@ -212,6 +212,11 @@ body.dark-mode .sidebar-prompt-modal {
   margin: 0 0 0.7em;
   font-size: 12px;
   line-height: 1.4;
+  /* messages may carry several lines (a command to approve) and long paths */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 40vh;
+  overflow-y: auto;
 }
 #app-prompt-message[hidden],
 #app-prompt-field[hidden] {

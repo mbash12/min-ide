@@ -123,6 +123,10 @@ const promptModal = {
       return name || null
     })
   },
+  /* closes the open dialog as if it had been cancelled */
+  dismiss: function () {
+    finish(cancelledValue())
+  },
   confirm: function (options) {
     return openModal(Object.assign({}, options, { kind: 'confirm' })).then(function (value) {
       return value === true

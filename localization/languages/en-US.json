@@ -375,6 +375,12 @@
     "taskSettings": "Task settings",
     "taskRename": "Rename task",
     "taskDelete": "Delete task",
+    "agentApprovalTitle": "Allow this action?",
+    "agentApprovalRunCommand": "The AI assistant wants to run this command:",
+    "agentApprovalWriteFile": "The AI assistant wants to write this file:",
+    "agentApprovalEditFile": "The AI assistant wants to edit this file:",
+    "agentApprovalAllow": "Allow",
+    "agentApprovalDeny": "Deny",
     "workspaceDelete": "Delete workspace",
     "workspaceDeleteConfirm": "Delete workspace \"%w\"? Its tasks (%t) and tabs (%b) will be closed, and its documents and AI chat history will be permanently deleted. This cannot be undone.", //%w is the workspace name; %t and %b are counts
     "workspaceDeleteTerminals": "Terminal tabs that will be stopped: %n.", //%n is a count

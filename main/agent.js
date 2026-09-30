@@ -1,4 +1,4 @@
-/* global fs, ipc, net, settings, kvGet, kvSet, kvList, AbortSignal, minAgentTools, agentOAuth */
+/* global fs, ipc, net, settings, kvGet, kvSet, kvList, AbortSignal, minAgentTools, agentOAuth, windows, getWindowWebContents */
 /* AI sidebar agent: runs a pi SDK (https://pi.dev) AgentSession in the main
 process and streams its events to the renderer over IPC. The renderer's chat
 UI lives in js/sidebar/agentPanel.js.
@@ -26,6 +26,22 @@ task's own conversation and context. */
 const agentSessions = new Map() // sessionKey -> { sessionKey, taskId, cwd, apiKey, modelId, provider, session, unsubscribe, modelRuntime, resolvedModel }
 const prefsByCwd = new Map() // sessionKey -> { modelId, provider, thinkingLevel }
 const agentSessionLifecycle = require(require('path').join(__dirname, 'main/lib/agent/lifecycleCoordinator.js')).createLifecycleCoordinator()
+const agentApproval = require(require('path').join(__dirname, 'main/lib/agent/approval.js'))({
+  fs: fs,
+  path: require('path'),
+  os: require('os')
+})
+/* the window asked before the agent reaches outside its workspace: the focused
+one if it takes agent events, otherwise any live one */
+const agentApprovalBroker = agentApproval.createBroker({
+  pickSender: function () {
+    try {
+      const current = typeof windows !== 'undefined' && windows.getCurrent() ? getWindowWebContents(windows.getCurrent()) : null
+      if (current && !current.isDestroyed() && agentSenders.has(current)) return current
+    } catch (e) {}
+    return Array.from(agentSenders).find(function (sender) { return !sender.isDestroyed() }) || null
+  }
+})
 const agentSessionSerialization = require(require('path').join(__dirname, 'main/lib/agent/sessionSerialization.js'))
 const serializeAgentEvent = agentSessionSerialization.serializeAgentEvent
 const serializeMessages = agentSessionSerialization.serializeMessages
@@ -574,6 +590,7 @@ function serializeSessionInfo (info) {
 async function disposeSessionEntry (sessionKey) {
   const entry = sessionKey != null ? agentSessions.get(sessionKey) : null
   if (!entry) return
+  agentApprovalBroker.cancelSession(sessionKey)
   try {
     if (entry.session && entry.session.isStreaming) {
       await entry.session.abort()
@@ -792,6 +809,15 @@ async function ensureSessionInternal (taskId, cwd, options, toolWorkspaceId, lif
     throw err
   }
   const session = created && created.session
+  if (session && session.agent) {
+    // outside the workspace only with the user's say-so (see main/lib/agent/approval.js)
+    agentApproval.guard(session.agent, {
+      cwd: effectiveCwd,
+      ask: function (request, signal) {
+        return agentApprovalBroker.ask({ sessionKey: sessionKey, taskId: clientTaskId, workspaceId: toolWorkspaceId || null }, request, signal)
+      }
+    })
+  }
   if (!lifecycle.isCurrent()) {
     try { if (session) session.dispose() } catch (e) {}
     try { if (modelRuntime && typeof modelRuntime.dispose === 'function') modelRuntime.dispose() } catch (e) {}
@@ -927,6 +953,10 @@ ipc.on('agent-prompt', function (e, data) {
   }).catch(function (err) {
     broadcastAgentEvent({ type: 'error', message: (err && err.message) || String(err) }, sessionKey, clientTaskId, data && data.workspaceId)
   })
+})
+
+ipc.on('agent-approval-respond', function (e, data) {
+  agentApprovalBroker.respond(e.sender, data)
 })
 
 ipc.on('agent-abort', function (e, data) {
