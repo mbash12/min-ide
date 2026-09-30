@@ -243,6 +243,7 @@ async function oauthRunCodeFlow (spec, callbacks) {
       port: spec.callback.port,
       hostname: spec.callback.hostname,
       path: spec.callback.path,
+      state: state,
       timeoutMs: spec.callback.timeoutMs
     }, channelController.signal)
     /* a late rejection after the other channel won would otherwise surface
@@ -300,7 +301,6 @@ async function oauthRunCodeFlow (spec, callbacks) {
   }
 
   if (!code) throw new Error('OAuth flow produced no authorization code')
-  if (codeState && state && codeState !== state) throw new Error('OAuth state mismatch')
   oauthThrowIfAborted(signal)
 
   /* providers may echo `code#state`; the fragment wins over callback state
@@ -312,6 +312,13 @@ async function oauthRunCodeFlow (spec, callbacks) {
     exchangeCode = code.slice(0, fragment)
     exchangeState = code.slice(fragment + 1) || codeState
   }
+
+  /* Whatever state came back has to be the one this login sent. A redirect
+  that carries none is refused too: anyone can send a request to the loopback
+  port. Only a code the user pasted by hand may omit it (a bare code). */
+  if (codeState && codeState !== state) throw new Error('OAuth state mismatch')
+  if (exchangeState && exchangeState !== state) throw new Error('OAuth state mismatch')
+  if (first.result && !exchangeState) throw new Error('OAuth state mismatch')
 
   const tokenFields = Object.assign({}, values, {
     code: exchangeCode,

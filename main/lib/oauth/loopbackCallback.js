@@ -7,7 +7,13 @@ module.exports = function createLoopbackCallbackServer (http) {
 
   /* Listens on the spec'd loopback port until the provider redirects the user's
   browser back with ?code&state. Resolves {code,state}; rejects on timeout,
-  abort, or bind failure. `server` is exposed so callers can stop it early. */
+  abort, or bind failure.
+
+  Any web page can send a request to this port while the login is pending, so
+  when spec.state is given only a request carrying exactly that state counts:
+  anything else is answered with the error page and ignored, and can neither
+  inject someone else's authorization code nor cancel the login by sending
+  ?error=. */
   return function oauthStartCallbackServer (spec, signal) {
     return new Promise(function (resolve, reject) {
       let settled = false
@@ -28,6 +34,11 @@ module.exports = function createLoopbackCallbackServer (http) {
         const code = url.searchParams.get('code')
         const error = url.searchParams.get('error')
         res.setHeader('Content-Type', 'text/html')
+        if (spec.state && url.searchParams.get('state') !== spec.state) {
+          res.statusCode = 400
+          res.end(OAUTH_ERROR_HTML)
+          return
+        }
         if (error || !code) {
           res.statusCode = 400
           res.end(OAUTH_ERROR_HTML)
